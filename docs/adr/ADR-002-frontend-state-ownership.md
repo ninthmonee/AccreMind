@@ -1,13 +1,13 @@
-# ADR-002：TanStack Query 管理服务端状态，P0 不引入 Zustand
+# ADR-002：TanStack Query 与 Zustand 分别管理服务端和客户端状态
 
 - 状态：Accepted
 - 日期：2026-09-09
 
 ## 决策
 
-AccreMind Studio 使用 TanStack Query 作为唯一的服务端缓存和 mutation 协调层。筛选、分页、排序、team/project 和当前资源 ID 使用 React Router URL 状态；经验编辑与审核草稿由表单/编辑器局部持有；短暂交互使用组件状态；P0 不安装 Zustand。
+AccreMind Studio 使用 TanStack Query 作为唯一的服务端缓存和 mutation 协调层，使用 Zustand 管理纯客户端的全局状态。筛选、分页、排序、team/project 和当前资源 ID 仍使用 React Router URL 状态；经验编辑与审核正文由表单/编辑器局部持有。
 
-只有出现无法合理放入 URL、服务端、表单或组件，且确实需要跨路由长期共享的复杂客户端状态时，才引入按领域拆分的小型 Zustand store。
+Zustand 按 `uiStore`、`workbenchStore` 和 `importStore` 拆分，用于 UI 偏好、多面板导航、跨页面选择和导入向导状态。它不保存 API response、请求状态、Token、经验正文或文件内容。
 
 ## 原因
 
@@ -29,22 +29,18 @@ usageKeys.summary(scope, dateRange)
 
 所有 key 必须包含有效 scope。mutation 成功后失效最小相关 key；除非用户体验确实要求，不默认实现复杂 optimistic update，审核、发布、合并等治理动作优先等待服务端确认。
 
-## Zustand 引入门槛
+## Zustand Store 约定
 
-满足下列全部条件才引入：
-
-1. 状态被多个不相邻路由或组件同时消费；
-2. 它不是服务端数据的副本；
-3. 放入 URL 会过大、敏感或语义不合理；
-4. 表单或 React Context 无法清晰表达生命周期；
-5. 已有真实功能和测试证明需要，而不是提前预防。
-
-可能满足条件的后续能力包括多面板工作台、跨路由未提交批量选择和可恢复的复杂导入向导。
+1. `uiStore`：侧栏、密度、主题和命令面板等无敏感 UI 偏好；
+2. `workbenchStore`：已打开的资源 ID、当前面板和跨页选择，不存资源正文；
+3. `importStore`：导入步骤、字段映射和临时结果 ID，不存原始文件内容；
+4. selector 必须最小化订阅范围，组件不得无选择器订阅整个 Store；
+5. persist 只允许白名单字段，并提供版本和 migration；
+6. 服务端数据始终通过 TanStack Query 获取和失效。
 
 ## 后果
 
-- P0 少一个依赖和一套状态约定；
 - 服务端、URL、表单和 UI 状态各有唯一 owner；
 - 不建立全局 `useAppStore`；
-- 如果后续引入 Zustand，只存纯客户端领域状态，并按 feature 创建独立 store；
+- Zustand 只存纯客户端领域状态，并按 feature 创建独立 Store；
 - React Router 使用 Declarative 模式，避免其 loader cache 与 TanStack Query 重叠。

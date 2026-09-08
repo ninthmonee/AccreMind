@@ -13,7 +13,7 @@ AccreMind 是面向大模型开发任务的经验闭环平台。
 
 当前技术方向：Studio 使用 React + Vite + TypeScript，后端、Retriever Agent、MCP Gateway 和 Worker 主要使用 Python。
 
-前端状态管理采用 TanStack Query + URL/Form/局部状态分层；P0 不默认引入 Zustand。
+前端采用 TanStack Query + Zustand，并通过 URL/Form/局部状态明确状态所有权；组件库使用 Ant Design，Lint/Format 使用 Oxc。
 
 ## 当前文档
 

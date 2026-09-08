@@ -12,8 +12,8 @@ Frontend                    Backend
 React + Vite                Python + FastAPI
 TypeScript                  Pydantic + SQLAlchemy
 Ant Design                  PostgreSQL + pgvector
-TanStack Query              Official MCP Python SDK
-React Router                Celery + Redis
+TanStack Query + Zustand    Official MCP Python SDK
+React Router + Oxc          Celery + Redis
 ```
 
 系统采用四个运行单元：Studio Web、Core API、MCP Gateway 和 Worker。Retriever Agent 是后端独立模块，首期和 Core API 同进程，达到性能或团队边界后可以单独部署。
@@ -50,10 +50,12 @@ AccreMind Studio 是登录后的后台管理 SPA，不需要搜索引擎收录�
 | 服务端状态 | TanStack Query |
 | 表格 | Ant Design Table；复杂场景再引入 TanStack Table |
 | 表单 | Ant Design Form；Schema 动态表单再评估 React Hook Form |
-| 全局客户端状态 | P0 不引入；出现明确跨路由工作台状态时再采用 Zustand |
+| 全局客户端状态 | Zustand，按 UI/workbench/import 领域拆分 Store |
 | Markdown | react-markdown + Shiki |
 | 经验正文编辑 | Monaco Editor，简单表单先用普通编辑区 |
 | 图表 | ECharts |
+| Lint/Format | Oxc：Oxlint + Oxfmt |
+| 类型检查 | TypeScript `tsc --noEmit` |
 | 单元/组件测试 | Vitest + Testing Library |
 | 浏览器 E2E | Playwright |
 
@@ -87,12 +89,24 @@ AccreMind Studio 按状态所有权选择工具，不建立一个包揽所有数
 | URL 状态 | React Router search params/path params | 搜索词、筛选、分页、排序、team/project、当前详情 ID |
 | 表单草稿 | Ant Design Form / Monaco 局部状态 | 经验编辑、审核意见、静态导入配置 |
 | 短暂 UI 状态 | 组件 `useState`/`useReducer` | Drawer、Modal、行选择、展开折叠 |
-| 稳定全局依赖 | React Context | 主题、语言、只读的当前会话能力 |
-| 复杂跨路由工作台状态 | Zustand，满足条件后才引入 | 多面板布局、跨页面未提交选择、可恢复导入向导 |
+| 稳定依赖注入 | React Context | QueryClient、Ant Design 配置、只读运行能力 |
+| 全局客户端状态 | Zustand | UI 偏好、多面板工作台、跨页选择、导入向导步骤 |
 
 TanStack Query 只保存服务端缓存，不保存编辑器草稿、筛选条件或弹窗状态。React Router 与 Query 也不能同时为同一资源各维护一套 loader cache；当前采用 Declarative Router + TanStack Query 作为唯一服务端缓存。
 
-Zustand 不加入 P0 默认依赖。只有某项状态同时满足“跨多个远距离组件、不能自然进入 URL/服务端/表单、生命周期明显长于单组件”时才建立小型 domain store；禁止创建单一 `useAppStore`，禁止把 API response 复制进 Zustand。
+Zustand 是 P0 正式依赖，但只管理纯客户端全局状态。按 `uiStore`、`workbenchStore`、`importStore` 拆分；禁止创建单一 `useAppStore`，禁止把 API response、请求 loading/error 或 TanStack Query 数据复制进 Zustand。需要持久化时只选择无敏感的 UI 偏好和恢复指针，不持久化 Token、经验正文或上传文件内容。
+
+### Oxc 工具链边界
+
+前端使用 Oxc 套件中的 Oxlint 和 Oxfmt：
+
+- `oxlint --deny-warnings` 作为 JavaScript/TypeScript/React lint 门禁；
+- `oxfmt --check` 作为 TypeScript、TSX、JSON、YAML、CSS 和 Markdown 格式门禁；
+- 本地修复顺序为 `oxlint --fix` 后执行 `oxfmt`；
+- `tsc --noEmit` 仍是独立类型检查，Oxc 不替代 TypeScript compiler 的类型正确性验证；
+- 暂不引入 ESLint/Prettier 双轨，只有缺失且阻塞的规则才评估兼容插件或例外。
+
+Oxc 是共享解析基础上的 JavaScript 工具套件，Oxlint 面向 lint、Oxfmt 面向格式化；两者适合本地和 CI 的快速反馈。[Oxc 官方说明](https://oxc.rs/docs/guide/what-is-oxc)
 
 ## 3. Python 后端技术栈
 
@@ -163,7 +177,7 @@ backend/
 │   └── observability/
 └── tests/
 frontend/
-├── apps/studio/                # React + Vite
+├── apps/studio/                # React + Vite + Ant Design
 ├── packages/api-client/        # OpenAPI generated client
 ├── packages/design-system/
 └── tests/
@@ -301,7 +315,7 @@ Redis 只承担 broker、短缓存和限流计数，不保存正式经验或权�
 - Vitest + Testing Library；
 - MSW 模拟 OpenAPI client 边界；
 - Playwright 覆盖登录、经验编辑、静态导入、候选审核和 Token；
-- ESLint、TypeScript strict 和构建检查。
+- Oxlint、Oxfmt、TypeScript strict 和 Vite 构建检查。
 
 ## 13. 明确不选
 
@@ -309,7 +323,7 @@ Redis 只承担 broker、短缓存和限流计数，不保存正式经验或权�
 | --- | --- |
 | Vue | 不选；团队若已有强 Vue 能力可重新评估 |
 | Next.js | 不选；Studio 不需要 SSR/SEO/BFF |
-| 默认全局 Zustand Store | 不选；P0 没有需要它承载的状态 |
+| 单一全局 `useAppStore` | 不选；Zustand 必须按客户端领域拆分 |
 | Node.js 后端 | 不选；按项目方向统一 Python |
 | 自写 MCP 协议 | 不选；使用官方 Python SDK |
 | Django | 不选；当前 API/MCP/异步检索形态下 FastAPI 更轻 |

@@ -5,7 +5,7 @@
 
 ## 决策
 
-AccreMind Studio 使用 React、TypeScript、Vite 和 Ant Design。后端 Core API、Retriever Agent、MCP Gateway、CLI 和 Worker 统一使用 Python；主要框架为 FastAPI、Pydantic、SQLAlchemy、官方 MCP Python SDK 和 Celery。
+AccreMind Studio 使用 React、TypeScript、Vite、Ant Design、TanStack Query、Zustand 和 Oxc。后端 Core API、Retriever Agent、MCP Gateway、CLI 和 Worker 统一使用 Python；主要框架为 FastAPI、Pydantic、SQLAlchemy、官方 MCP Python SDK 和 Celery。
 
 ## 原因
 
