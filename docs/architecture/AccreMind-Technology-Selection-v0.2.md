@@ -50,7 +50,7 @@ AccreMind Studio 是登录后的后台管理 SPA，不需要搜索引擎收录�
 | 服务端状态 | TanStack Query |
 | 表格 | Ant Design Table；复杂场景再引入 TanStack Table |
 | 表单 | Ant Design Form；Schema 动态表单再评估 React Hook Form |
-| 轻量客户端状态 | Zustand |
+| 全局客户端状态 | P0 不引入；出现明确跨路由工作台状态时再采用 Zustand |
 | Markdown | react-markdown + Shiki |
 | 经验正文编辑 | Monaco Editor，简单表单先用普通编辑区 |
 | 图表 | ECharts |
@@ -76,6 +76,23 @@ Vue + Vite + Element Plus 也能很快完成后台。如果核心开发者已经
 - Vite SPA 的开发、部署和故障边界更简单。
 
 未来若建设公开经验社区或服务端内容门户，可新增独立 Next.js 应用，不改 Studio。
+
+### 状态管理边界
+
+AccreMind Studio 按状态所有权选择工具，不建立一个包揽所有数据的全局 Store：
+
+| 状态 | 放置位置 | 示例 |
+| --- | --- | --- |
+| 服务端状态 | TanStack Query | 经验、Candidate、审核队列、用户、Token 元数据、统计结果 |
+| URL 状态 | React Router search params/path params | 搜索词、筛选、分页、排序、team/project、当前详情 ID |
+| 表单草稿 | Ant Design Form / Monaco 局部状态 | 经验编辑、审核意见、静态导入配置 |
+| 短暂 UI 状态 | 组件 `useState`/`useReducer` | Drawer、Modal、行选择、展开折叠 |
+| 稳定全局依赖 | React Context | 主题、语言、只读的当前会话能力 |
+| 复杂跨路由工作台状态 | Zustand，满足条件后才引入 | 多面板布局、跨页面未提交选择、可恢复导入向导 |
+
+TanStack Query 只保存服务端缓存，不保存编辑器草稿、筛选条件或弹窗状态。React Router 与 Query 也不能同时为同一资源各维护一套 loader cache；当前采用 Declarative Router + TanStack Query 作为唯一服务端缓存。
+
+Zustand 不加入 P0 默认依赖。只有某项状态同时满足“跨多个远距离组件、不能自然进入 URL/服务端/表单、生命周期明显长于单组件”时才建立小型 domain store；禁止创建单一 `useAppStore`，禁止把 API response 复制进 Zustand。
 
 ## 3. Python 后端技术栈
 
@@ -292,6 +309,7 @@ Redis 只承担 broker、短缓存和限流计数，不保存正式经验或权�
 | --- | --- |
 | Vue | 不选；团队若已有强 Vue 能力可重新评估 |
 | Next.js | 不选；Studio 不需要 SSR/SEO/BFF |
+| 默认全局 Zustand Store | 不选；P0 没有需要它承载的状态 |
 | Node.js 后端 | 不选；按项目方向统一 Python |
 | 自写 MCP 协议 | 不选；使用官方 Python SDK |
 | Django | 不选；当前 API/MCP/异步检索形态下 FastAPI 更轻 |
