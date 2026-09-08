@@ -60,7 +60,7 @@ flowchart LR
 
 ### Worker
 
-处理候选校验、敏感信息检查、Embedding、近似重复、到期复核、反馈聚合和离线评测。任务使用 PostgreSQL 队列，写入仍调用领域服务或受控命令。
+处理候选校验、敏感信息检查、Embedding、近似重复、到期复核、反馈聚合和离线评测。任务由 Python Celery Worker 执行，Redis 只作为 broker/短缓存；写入仍通过领域服务或受控命令。
 
 ### Agent Integration Kit
 
@@ -148,7 +148,7 @@ Developer 编写 Markdown
 未来只有在核心闭环取得稳定复用效果后才扩展：
 
 - 检索规模超过 PostgreSQL 能力，再评估 OpenSearch；
-- 需要本地 GPU/自训练模型，再增加 Python 推理服务；
+- 需要本地 GPU/自训练模型，再从现有 Python 后端拆出独立推理服务；
 - 出现跨系统长流程，再评估 Temporal；
 - 组织权限关系明显复杂化，再评估独立策略或关系授权引擎；
 - 外部数据源只有在用户重新确认产品范围后才能引入。

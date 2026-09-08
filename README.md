@@ -11,10 +11,13 @@ AccreMind 是面向大模型开发任务的经验闭环平台。
 
 当前不连接 Git、代码托管、Wiki、需求、PR、事故、聊天、监控或实时业务系统。
 
+当前技术方向：Studio 使用 React + Vite + TypeScript，后端、Retriever Agent、MCP Gateway 和 Worker 主要使用 Python。
+
 ## 当前文档
 
 - [核心产品需求规格 v0.2](docs/product/AccreMind-Product-Requirements-v0.2.md)
 - [核心架构 v0.2](docs/architecture/AccreMind-Core-Architecture-v0.2.md)
 - [核心技术选型 v0.2](docs/architecture/AccreMind-Technology-Selection-v0.2.md)
+- [ADR-001：React + Vite 与 Python 后端](docs/adr/ADR-001-react-vite-python-fastapi.md)
 
 当前仓库处于正式项目开工前的需求与架构阶段，不包含此前的协议实验代码和样例数据。

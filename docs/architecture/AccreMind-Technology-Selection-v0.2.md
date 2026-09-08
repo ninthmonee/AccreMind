@@ -2,261 +2,315 @@
 
 - 状态：Current
 - 日期：2026-09-09
+- 决策：React 管理台 + Python 后端
 - 约束：只接收 MCP 提交经验和人工静态文件，不建设外部数据连接器
 
-## 1. 选型结论
+## 1. 最终选择
 
-核心版统一使用 TypeScript，采用四个运行单元：Studio Web、Core API、MCP Gateway 和 Worker。Retriever Agent 保留独立模块边界，但首期与 Core API 同进程部署。PostgreSQL + pgvector 同时承担经验事实库、全文检索和向量检索。
+```text
+Frontend                    Backend
+React + Vite                Python + FastAPI
+TypeScript                  Pydantic + SQLAlchemy
+Ant Design                  PostgreSQL + pgvector
+TanStack Query              Official MCP Python SDK
+React Router                Celery + Redis
+```
+
+系统采用四个运行单元：Studio Web、Core API、MCP Gateway 和 Worker。Retriever Agent 是后端独立模块，首期和 Core API 同进程，达到性能或团队边界后可以单独部署。
 
 ```text
 Coding Agent / LLM Host                 Developer
-          │ MCP                           │ Web / CLI
+          │ MCP                           │ Web
           ▼                               ▼
-  AccreMind MCP Gateway ────────► AccreMind Core API
+  Python MCP Gateway ───────────► Python Core API
                                           │
                      Experience Service · Retriever Agent
                      Candidate Service  · Static Import
                                           │
                                   PostgreSQL + pgvector
                                           ▲
-                             Worker ───────┘
-                    validate / redact / embed / dedup
+                              Celery Worker│
+                                          │
+                                        Redis
 ```
 
-这是完整但收敛的产品架构：具备 UI、API、MCP、检索、经验治理、异步处理、权限、审计和评测，而不承担外围系统集成。
+## 2. 前端框架决策
 
-## 2. 技术栈
+### 选择：React + Vite，不使用 Next.js
+
+AccreMind Studio 是登录后的后台管理 SPA，不需要搜索引擎收录、服务端渲染或 React Server Components。使用 Vite 可以减少全栈框架约束，让 Python API 成为清晰、唯一的后端边界。
+
+推荐组合：
+
+| 能力 | 选择 |
+| --- | --- |
+| 语言与构建 | TypeScript + React + Vite |
+| UI 组件 | Ant Design |
+| 路由 | React Router |
+| 服务端状态 | TanStack Query |
+| 表格 | Ant Design Table；复杂场景再引入 TanStack Table |
+| 表单 | Ant Design Form；Schema 动态表单再评估 React Hook Form |
+| 轻量客户端状态 | Zustand |
+| Markdown | react-markdown + Shiki |
+| 经验正文编辑 | Monaco Editor，简单表单先用普通编辑区 |
+| 图表 | ECharts |
+| 单元/组件测试 | Vitest + Testing Library |
+| 浏览器 E2E | Playwright |
+
+### 为什么不是 Vue
+
+Vue + Vite + Element Plus 也能很快完成后台。如果核心开发者已经明显更熟悉 Vue，它可能是个人开发速度最快的选择。但在没有既定偏好的前提下选择 React，原因是：
+
+- 复杂数据表格、Markdown/代码编辑、Diff、可视化和管理台生态更宽；
+- 与未来可能提供的前端 SDK、嵌入式组件和 Agent UI 更容易共享；
+- React 人才和企业组件生态更普遍；
+- 当前前端试点领域本身以 React 经验作为首批重点。
+
+因此这里的“最快”是指从 P0 到可持续迭代最快，而不是首页写出来最快。
+
+### 为什么不是 Next.js
+
+- 当前没有 SEO 和公开内容页需求；
+- Python 已经承担 API、认证、领域逻辑和 MCP；
+- 再引入 Next.js BFF 会产生两层后端和重复鉴权；
+- Vite SPA 的开发、部署和故障边界更简单。
+
+未来若建设公开经验社区或服务端内容门户，可新增独立 Next.js 应用，不改 Studio。
+
+## 3. Python 后端技术栈
 
 | 范围 | 选择 | 说明 |
 | --- | --- | --- |
-| Monorepo | pnpm workspaces + Turborepo | 管理应用与共享包 |
-| 语言 | TypeScript on Node.js | 前后端、MCP、Retriever 和 Worker 统一语言 |
-| Studio | Next.js + React | 经验管理、审核和设置 |
-| UI | Tailwind CSS + Radix primitives | 轻量设计系统 |
-| 数据交互 | TanStack Query + TanStack Table | Library 与 Inbox 核心交互 |
-| 编辑器 | Monaco Editor | Markdown、Front Matter 和版本 Diff |
-| Core API | Fastify + TypeBox | 低开销、Schema 驱动、易拆模块 |
-| 数据访问 | Drizzle ORM + 参数化 SQL | 领域写入用 ORM，FTS/vector 用 SQL |
-| MCP | 官方 MCP TypeScript SDK v2 | Streamable HTTP + stdio |
-| 数据库 | PostgreSQL + pgvector | Canonical、FTS、vector、版本和审计 |
-| 后台任务 | pg-boss | 复用 PostgreSQL，不引入额外队列基础设施 |
-| 静态格式 | Markdown + YAML Front Matter | 人工编写与可逆导入导出 |
-| 契约 | TypeBox + JSON Schema | REST、MCP、文件共享定义 |
-| 测试 | Vitest + Testcontainers + Playwright | 单元、数据库集成和 UI E2E |
-| 可观测性 | OpenTelemetry | trace、metric、log 关联 |
-| 本地环境 | Docker Compose | PostgreSQL/pgvector + 应用 |
-| 生产环境 | Docker；规模需要时 Kubernetes | 不把 K8s 作为开发前提 |
+| Python 管理 | uv workspace | 锁定解释器与依赖，统一命令 |
+| Web API | FastAPI | 类型驱动、异步、OpenAPI 自动生成 |
+| Schema | Pydantic v2 | API、MCP、静态文件共享模型 |
+| ORM | SQLAlchemy 2.x | 成熟、支持 async 和复杂事务 |
+| Migration | Alembic | 数据库版本迁移 |
+| PostgreSQL Driver | psycopg 3 | async、连接池和现代 PostgreSQL 支持 |
+| MCP | 官方 MCP Python SDK v2 / FastMCP | stdio + Streamable HTTP |
+| Background Jobs | Celery | embedding、去重、到期和评测任务 |
+| Broker/Cache | Redis | Celery broker、短缓存和限流计数 |
+| HTTP Client | HTTPX | 模型供应商和内部调用 |
+| Retry | Tenacity | 外部模型调用的有限重试 |
+| CLI | Typer | 静态经验预检、导入和导出 |
+| Test | pytest + pytest-asyncio + Testcontainers | 单元和真实 PostgreSQL 集成测试 |
+| Quality | Ruff + Pyright | 格式、Lint 和静态类型检查 |
+| Observability | OpenTelemetry | API、MCP、检索、模型和 Worker trace |
 
-正式 Gateway 使用官方 MCP SDK v2，不再扩展仓库中的手写 JSON-RPC 实验。[MCP TypeScript SDK v2](https://ts.sdk.modelcontextprotocol.io/v2/)
+FastAPI 基于 Python 类型与 Pydantic，自动生成 OpenAPI 和 JSON Schema，并内置常用安全模型，适合作为前端和 MCP 共用的领域 API。[FastAPI 官方特性](https://fastapi.tiangolo.com/features/)
 
-## 3. 为什么采用单 TypeScript 技术栈
+## 4. MCP Gateway
 
-当前 Retriever Agent 的职责是结构化查询理解、规则触发、PostgreSQL 混合召回、有限查询改写、重排和打包，不需要自训练模型或复杂数据科学流水线。统一 TypeScript 可以共享 Schema、减少双构建和跨服务契约，并先证明经验闭环。
+使用官方 MCP Python SDK v2，不自写 JSON-RPC。SDK 支持类型驱动的 Tool Schema、stdio 和 Streamable HTTP；本地 Agent 使用 stdio，部署服务使用 Streamable HTTP。[官方 MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 
-通过 `EmbeddingProvider`、`QueryRewriter` 和 `RerankerProvider` 保留替换边界。只有出现本地 GPU 推理、自训练 reranker 或大规模离线实验等明确需求时，才增加 Python inference/evaluation worker。
+五个工具：
 
-## 4. 正式模块边界
+- `experience_recall`
+- `experience_get`
+- `experience_submit`
+- `experience_feedback`
+- `task_complete`
+
+一个 Prompt：`task-experience-loop`。
+
+实现原则：
+
+- MCP Pydantic Input/Output Model 直接复用 `accremind_contracts`；
+- Gateway 不查询数据库，只调用 Core API application service；
+- stdio adapter 和 HTTP adapter 共享 Tool handler；
+- HTTP 使用 PAT/Bearer Token，解析出 organization/team/project scope；
+- 工具返回短文本 `content` 和结构化结果；
+- `experience_submit` 与 `task_complete` 永远只创建 Candidate；
+- MCP 不能感知所有 Host 的任务完成，Portable Prompt 为 best-effort，支持 Hook 的 Host 由 Integration Kit 增强。
+
+官方 SDK 文档明确推荐本地使用 stdio、部署使用 Streamable HTTP，SSE 只保留兼容用途。[MCP Python transport 文档](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/run/index.md)
+
+## 5. 后端模块边界
 
 ```text
-apps/
-├── studio-web/                 # Next.js
-├── core-api/                   # Fastify REST API
-├── mcp-gateway/                # 官方 MCP SDK
-└── worker/                     # pg-boss consumers
-packages/
-├── contracts/                  # TypeBox/JSON Schema 与生成类型
-├── experience-domain/          # 聚合、状态机、版本和审核规则
-├── retriever-agent/            # 检索、融合、重排和 Experience Pack
-├── candidate-processor/        # 校验、脱敏、去重和索引
-├── static-experience/          # Markdown 导入、预检和导出
-├── auth-policy/                # Token、scope 与权限
-├── evaluation/                 # dataset、scorer 和报告
-├── observability/              # OpenTelemetry 约定
-├── agent-integration/          # MCP 配置、Prompt 与可选 Host hooks
-└── design-system/
-schemas/
-├── experience.schema.json
-├── mcp-tools.schema.json
-└── events.schema.json
-evals/
-├── datasets/
-├── judgments/
-└── reports/
-deploy/
-└── compose/
+backend/
+├── apps/
+│   ├── api/                    # FastAPI Core API
+│   ├── mcp_gateway/            # FastMCP stdio/HTTP entrypoints
+│   ├── worker/                 # Celery app and tasks
+│   └── cli/                    # Typer static import/export
+├── packages/
+│   ├── contracts/              # Pydantic models + JSON Schema export
+│   ├── experience_domain/      # aggregate/state/version/review rules
+│   ├── retriever_agent/        # retrieval plan/RRF/rerank/pack
+│   ├── candidate_processor/    # validation/redaction/dedup
+│   ├── static_experience/      # Markdown front matter parser
+│   ├── auth_policy/            # PAT/RBAC/scope
+│   ├── model_providers/        # embedding/rewriter/reranker adapters
+│   ├── evaluation/             # datasets/scorers/reports
+│   └── observability/
+└── tests/
+frontend/
+├── apps/studio/                # React + Vite
+├── packages/api-client/        # OpenAPI generated client
+├── packages/design-system/
+└── tests/
+schemas/                        # generated JSON Schema/OpenAPI snapshots
+evals/                          # versioned datasets and judgments
+deploy/compose/                 # PostgreSQL/pgvector + Redis + apps
 ```
 
-MCP Gateway 不访问数据库；它验证身份和 MCP 参数后调用 Core API。Worker 只消费领域命令产生的任务，不绕过 Experience Service 修改发布状态。
+Python 后端是业务契约的权威来源。CI 从 FastAPI OpenAPI 生成 TypeScript client；前端不得手写一套重复 DTO。
 
-## 5. PostgreSQL 数据设计
+## 6. Core API 领域模块
 
-核心表：
+Core API 使用 FastAPI Router 分模块，但初期作为模块化单体部署：
 
-- `organizations`、`teams`、`projects`、`users`、`memberships`；
-- `api_tokens`：只保存 hash、scope、到期和最后使用时间；
-- `experiences`：稳定 ID、当前发布版本和治理状态；
-- `experience_versions`：不可变正文、适用范围、内容哈希和创建者；
-- `experience_embeddings`：模型、维度、文本哈希和 vector；
-- `experience_triggers`、`experience_relations`；
-- `candidates`、`candidate_duplicate_matches`、`reviews`；
-- `retrieval_runs`、`retrieval_hits`、`experience_feedback`；
-- `task_completions`：只保存结构化任务摘要和候选关联；
-- `static_imports`、`static_import_items`；
-- `audit_events`。
+- `identity`：用户、团队、项目、PAT；
+- `experiences`：经验、不可变版本、发布与弃用；
+- `candidates`：提交、审核、编辑、合并与驳回；
+- `retrieval`：Retriever Agent 和 Experience Pack；
+- `feedback`：召回、使用和负面反馈；
+- `static_import`：preview、commit 和 export；
+- `tasks`：结构化 task_complete；
+- `evaluation`：数据集和运行结果；
+- `audit`：关键操作审计。
 
-Candidate 和 Published 必须通过状态与查询隔离；生产 Retriever 只查询 `published` 且未暂停、未过期的版本。
+Router 只做协议转换，业务规则放在 application/domain service，SQLAlchemy model 不直接作为 API response。
 
-## 6. Retriever Agent
+## 7. PostgreSQL 与检索
 
-### 6.1 有限状态机
+PostgreSQL 保存组织、经验、版本、Candidate、审核、Token、反馈、任务摘要、检索运行和审计；pgvector 保存带模型版本的 embedding。
+
+Retriever Agent 固定状态机：
 
 ```text
-validate request
-→ enforce organization/team/project scope
-→ normalize query and technology aliases
+validate
+→ authorize and scope filter
+→ normalize technology aliases
 → deterministic trigger lookup
-→ PostgreSQL FTS + pgvector retrieval
-→ reciprocal rank fusion
-→ applicability / maturity / freshness / feedback rerank
-→ conflict and duplicate grouping
+→ PostgreSQL FTS + pgvector HNSW
+→ RRF fusion
+→ applicability/maturity/freshness/feedback rerank
+→ conflict grouping
 → token-budgeted Experience Pack
-→ empty result or response
+→ empty or response
 ```
 
-首期最多一次可选查询改写，不做无限 ReAct 循环。提供三种模式：
+关键策略：
 
-- `fast`：确定性触发 + FTS/vector + 本地打分；
-- `balanced`：增加一次查询改写或模型 rerank；
-- `strict`：不调用生成模型，只返回直接命中的已发布经验。
-
-### 6.2 混合检索
-
-- `tsvector`/GIN 处理术语、错误文本和技术名称；
+- team/project、published、paused 和 valid_until 条件进入召回 SQL；
+- PostgreSQL `tsvector` + GIN 处理错误信息和技术术语；
 - pgvector HNSW 处理语义相似；
-- RRF 融合排名，不直接混合不可比的原始分数；
-- team/project scope、status 和 valid_until 在召回 SQL 中执行；
-- 保存 rank、score feature、模型/索引版本和命中版本；
-- 定期用 exact search 对 HNSW 做 recall 基准。
+- RRF 融合两路名次；
+- 可选模型 rerank 只处理少量最终候选；
+- 保存查询模式、排名特征、embedding/index 版本和经验版本；
+- 定期用 exact search 评估 HNSW recall。
 
-pgvector 支持 HNSW、FTS 混合和迭代扫描，足以覆盖核心版；现阶段不引入 OpenSearch 或独立 Vector DB。[pgvector 官方文档](https://github.com/pgvector/pgvector)
+核心版不引入 OpenSearch 和独立 Vector DB。pgvector 支持 HNSW、PostgreSQL FTS 混合和迭代扫描，足够当前规模。[pgvector 官方文档](https://github.com/pgvector/pgvector)
 
-### 6.3 模型边界
+## 8. 模型能力
 
-```ts
-interface EmbeddingProvider { embed(texts: string[]): Promise<Vector[]> }
-interface QueryRewriter { rewrite(input: RecallInput): Promise<string[]> }
-interface RerankerProvider { rerank(query: string, items: Candidate[]): Promise<Score[]> }
+Python Protocol 定义三个窄接口：
+
+```python
+class EmbeddingProvider(Protocol):
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+class QueryRewriter(Protocol):
+    async def rewrite(self, request: RecallRequest) -> list[str]: ...
+
+class RerankerProvider(Protocol):
+    async def rerank(self, query: str, items: list[CandidateHit]) -> list[float]: ...
 ```
 
-默认接入 OpenAI-compatible HTTP API。模型、endpoint、维度和版本必须配置化；Embedding 切换建立新索引版本，不能在同一索引混用不同模型向量。
+默认使用 OpenAI-compatible HTTP provider，也允许本地模型。模型、endpoint、维度和版本配置化；Embedding 模型变化必须建立新索引版本，不能混用向量。
 
-## 7. MCP Gateway
+首期 Retriever Agent 不是无限循环 Agent，最多一次查询改写、两路召回和一次重排。
 
-- 使用官方 SDK 注册五个工具和一个 Prompt；
-- 本地 Agent 使用 stdio，远程团队使用 Streamable HTTP；
-- Tool Schema 从 `packages/contracts` 生成；
-- 个人 Access Token/PAT 解析为 organization/team/project 权限；
-- 返回短文本 `content` 和机器可读 `structuredContent`；
-- 每次调用生成 `trace_id`、`retrieval_id` 或 `candidate_id`；
-- 返回内容明确标注“历史经验有适用边界，必须结合当前任务验证”；
-- `experience_submit` 和 `task_complete` 只能创建 Candidate。
+## 9. Worker 和 Redis
 
-MCP 不能主动获知 Host 任务生命周期。`packages/agent-integration` 提供 Portable 配置/Prompt，以及按 Host 隔离的可选 completion hook adapter；核心领域不能依赖某个 Host 私有 API。对没有 hook 的 Host，任务结束沉淀只能是 best-effort，并纳入覆盖率指标。
+Celery 任务：
 
-## 8. 静态经验导入
+- `candidate.validate`
+- `candidate.scan_sensitive_data`
+- `candidate.find_duplicates`
+- `experience.embed`
+- `experience.review_due`
+- `feedback.aggregate`
+- `evaluation.run`
+
+Redis 只承担 broker、短缓存和限流计数，不保存正式经验或权限真相。任务携带幂等键，数据库写入使用唯一约束和事务保证重复执行安全。
+
+若后续实践证明 Celery 运维成本高且任务规模很小，可替换为 PostgreSQL 队列；领域服务不依赖 Celery Task 对象。
+
+## 10. 静态经验
 
 静态导入不是 Connector：
 
-1. Studio 上传文件，或 CLI 读取用户明确指定的目录；
-2. 解析 Markdown Front Matter；
-3. 执行 Schema、大小和敏感信息预检；
-4. 展示新增、更新、冲突和失败的 dry-run；
-5. 用户确认后创建 Candidate 或受权限控制的 Draft；
-6. 发布后异步生成 embedding；
-7. 可按 team/project 导出静态经验包。
+1. Studio 上传，或 CLI 读取用户明确指定的目录；
+2. Python 解析 Markdown + YAML Front Matter；
+3. Pydantic 执行 Schema、大小和字段校验；
+4. secret/PII scanner 检查敏感信息；
+5. 返回 create/update/conflict/error dry-run；
+6. 用户确认后创建 Candidate 或 Draft；
+7. 发布后由 Celery 生成 embedding；
+8. 可重新导出 Markdown。
 
-服务不会自行扫描磁盘、监听仓库或同步外部文件变化。
+服务不扫描磁盘、不监听仓库、不同步外部文件变化。
 
-## 9. Candidate Processor
+## 11. 权限与安全
 
-pg-boss 任务：
-
-- `candidate.validate`：Schema、长度、代码比例、敏感信息；
-- `candidate.deduplicate`：内容 hash + vector 相似候选；
-- `experience.embed`：按内容 hash 幂等生成向量；
-- `experience.review_due`：扫描 valid_until；
-- `feedback.aggregate`：汇总负面反馈并生成复核项；
-- `evaluation.run`：执行固定数据集。
-
-所有任务携带幂等键并支持失败重试。当前没有跨系统长流程，因此不引入 Temporal。
-
-## 10. 权限与安全
-
-- 首期提供本地管理员和 PAT；团队部署可接 OIDC，但不自建身份平台；
-- 应用层 RBAC + organization/team/project scope；
-- PostgreSQL Row Level Security 作为生产隔离防线；
-- Token 使用强随机值，只保存 hash，可撤销、到期和限定工具；
-- Prompt/经验正文按不可信数据处理；
-- 提交前后做 secret/PII 规则检查，超长代码默认拒绝；
-- 不保存完整外部会话；
-- 日志和 trace 默认不记录 MCP 原始正文；
+- 首期提供本地管理员和 PAT，团队部署可接外部 OIDC；
+- FastAPI dependency 执行 RBAC + organization/team/project scope；
+- PostgreSQL Row Level Security 是生产隔离防线；
+- PAT 使用强随机值，只保存 hash，可撤销、过期和限定工具；
+- 不保存外部模型的完整会话和思维过程；
+- 经验正文视为不可信数据，不能成为系统指令；
+- MCP/HTTP 原始正文默认不写日志和 trace；
+- 候选内容检查 secret、PII、完整源码和超长文本；
 - 审核、发布、弃用、Token 和权限变化写不可变审计事件。
 
-首期不引入 OPA。策略复杂到需要独立声明语言之前，使用版本化 TypeScript Policy 模块，避免维护两套权限真相。
+首期不引入 OPA 或自建 Keycloak，避免维护两套权限真相。
 
-## 11. API 与事件
+## 12. 测试和工程质量
 
-```text
-POST /v1/recall
-GET  /v1/experiences/:id
-POST /v1/candidates
-POST /v1/feedback
-POST /v1/tasks/complete
-GET  /v1/experiences
-POST /v1/experiences
-POST /v1/candidates/:id/review
-POST /v1/static-imports/preview
-POST /v1/static-imports/:id/commit
-POST /v1/tokens
-DELETE /v1/tokens/:id
-```
+后端：
 
-领域事件先使用 PostgreSQL Outbox：`candidate.submitted`、`candidate.reviewed`、`experience.published`、`experience.paused`、`experience.deprecated`、`experience.recalled`、`experience.feedback_received`、`task.completed`。当前没有跨系统消费者，不引入 Kafka。
+- pytest 单元测试领域状态机；
+- Hypothesis 测试 Schema、作用域和状态转换不变量；
+- Testcontainers 启动真实 PostgreSQL/pgvector 和 Redis；
+- MCP in-memory/stdio/HTTP contract tests；
+- 固定检索数据集验证 Recall@K、MRR 和越权过滤；
+- Ruff format/check、Pyright strict、Alembic migration check。
 
-## 12. 可观测与评测
+前端：
 
-- OpenTelemetry trace：MCP → Core API → Retriever → PostgreSQL/model；
-- 关键属性：team/project、tool、retrieval_id、query_mode、embedding_model、index_version、hit_count、latency；
-- 原始 query 和经验正文默认不进入 trace；
-- 检索数据集使用 JSONL，Judge 结果保留人工 gold labels；
-- 观测后端可被企业平台替换，不作为领域依赖。
+- Vitest + Testing Library；
+- MSW 模拟 OpenAPI client 边界；
+- Playwright 覆盖登录、经验编辑、静态导入、候选审核和 Token；
+- ESLint、TypeScript strict 和构建检查。
 
-[OpenTelemetry](https://opentelemetry.io/docs/specs/semconv/) 提供 traces、metrics 和 logs 的统一语义约定。
+## 13. 明确不选
 
-## 13. 已删除或延后的技术
-
-| 删除/延后 | 当前原因 |
+| 技术/方案 | 当前决定 |
 | --- | --- |
-| Connector Hub 与外部连接器 | 经验只有 MCP 和静态文件两个入口 |
-| Python 检索服务 | 当前能力 TypeScript 足以承担 |
-| S3/MinIO | 首期不接附件和原始快照 |
-| Redis | pg-boss 和 PostgreSQL 足够 |
-| Temporal | 没有跨系统长流程 |
-| Kafka/Redpanda | 没有大量事件消费者 |
-| OpenSearch | PostgreSQL FTS + pgvector 足够 |
-| Tree-sitter/代码索引 | 不读取代码仓库 |
-| Neo4j | 核心经验关系可由 PostgreSQL 表表达 |
-| OPA/Keycloak | 首期策略和身份复杂度不足以抵消运维成本 |
+| Vue | 不选；团队若已有强 Vue 能力可重新评估 |
+| Next.js | 不选；Studio 不需要 SSR/SEO/BFF |
+| Node.js 后端 | 不选；按项目方向统一 Python |
+| 自写 MCP 协议 | 不选；使用官方 Python SDK |
+| Django | 不选；当前 API/MCP/异步检索形态下 FastAPI 更轻 |
+| Python 微服务群 | 不选；先模块化单体，按实测边界拆分 |
+| LangChain/LlamaIndex 领域内核 | 不选；用窄接口避免框架锁定 |
+| OpenSearch/Vector DB | 不选；PostgreSQL + pgvector 足够 |
+| Kafka/Temporal/Neo4j | 不选；当前不存在对应复杂度 |
 
 ## 14. 开发顺序
 
-1. 重组 monorepo、共享 Schema、Docker Compose 和 CI；
-2. PostgreSQL 经验、版本、Candidate、权限、反馈和审计模型；
-3. Experience Service、静态文件 parser 和导入预检；
-4. FTS + pgvector Retriever Agent 和离线评测；
-5. 使用官方 SDK 实现五个 MCP 工具和 Prompt；
-6. 实现 Portable Integration Kit 和一个有 completion hook 的 Host Adapter；
-7. Studio Experience Library、Editor、Candidate Inbox 和 Token；
-8. Worker 的校验、脱敏、去重、Embedding 和到期复核；
-9. 接入一个真实 Coding Agent，完成召回 → 注入 → 完成 → 提交 → 审核 → 再召回；
-10. 根据真实评测再决定是否增加模型 rerank、OIDC 或独立 Retriever 服务。
+1. 建立 `frontend/`、`backend/`、`schemas/`、`deploy/` 正式结构；
+2. 建立 uv 和 pnpm workspace、质量门禁和 Docker Compose；
+3. 用 Pydantic 定义经验、Candidate、MCP 和静态文件契约；
+4. 建立 PostgreSQL/pgvector Schema、Alembic、RLS 和审计；
+5. 实现 Experience Service 和静态导入 dry-run；
+6. 实现 FTS + pgvector Retriever Agent 与离线评测；
+7. 使用官方 Python SDK 实现五个 MCP 工具和 Prompt；
+8. 实现 Celery 的校验、去重、Embedding 和复核任务；
+9. 开发 React Studio 的 Library、Editor、Candidate Inbox 和 Token；
+10. 生成 TypeScript API client，完成前后端联调；
+11. 实现 Portable Integration Kit 和一个 completion Hook Adapter；
+12. 跑通召回 → 注入 → 完成 → 提交 → 审核 → 再召回。
