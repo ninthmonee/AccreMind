@@ -1,0 +1,1710 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AccreMind Core API",
+    "description": "面向 Coding Agent 的经验闭环核心 API。当前版本提供候选提交、人工发布、经验查询和基础召回；开发态身份通过 X-* 请求头传入。",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "检查服务存活状态",
+        "description": "只检查 FastAPI 进程是否能够响应，不访问数据库。",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "服务进程状态。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "检查服务就绪状态",
+        "description": "执行一次 `SELECT 1`，确认 Core API 能连接当前数据库。",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "服务与数据库均可用时返回 ready。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Ready Ready Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates": {
+      "post": {
+        "tags": [
+          "candidates"
+        ],
+        "summary": "提交候选经验",
+        "description": "由 Coding Agent 或受信客户端提交经过验证和脱敏确认的候选经验。接口只创建 Candidate，不会直接进入生产召回；同一调用者重复使用相同 idempotency_key 时返回原 Candidate。",
+        "operationId": "submit_api_v1_candidates_post",
+        "parameters": [
+          {
+            "name": "X-Organization-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "调用者所属组织 ID。",
+              "title": "X-Organization-Id"
+            },
+            "description": "调用者所属组织 ID。"
+          },
+          {
+            "name": "X-Actor-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "当前调用者稳定 ID。",
+              "title": "X-Actor-Id"
+            },
+            "description": "当前调用者稳定 ID。"
+          },
+          {
+            "name": "X-Actor-Role",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ActorRole",
+              "description": "开发态角色：developer、reviewer 或 admin。",
+              "default": "developer"
+            },
+            "description": "开发态角色：developer、reviewer 或 admin。"
+          },
+          {
+            "name": "X-Team-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的团队权限边界。",
+              "title": "X-Team-Id"
+            },
+            "description": "可选的团队权限边界。"
+          },
+          {
+            "name": "X-Project-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的项目权限边界。",
+              "title": "X-Project-Id"
+            },
+            "description": "可选的项目权限边界。"
+          },
+          {
+            "name": "X-Personal-Owner-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的个人权限边界。",
+              "title": "X-Personal-Owner-Id"
+            },
+            "description": "可选的个人权限边界。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExperienceSubmitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "新建或幂等命中的候选经验。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates/{candidate_id}/prepare-review": {
+      "post": {
+        "tags": [
+          "candidates"
+        ],
+        "summary": "将候选经验标记为待审核",
+        "description": "仅 reviewer/admin 可调用。当前同步实现依次执行 submitted → processing → ready_for_review；后续接入 Worker 后仍保持相同外部状态契约。",
+        "operationId": "prepare_api_v1_candidates__candidate_id__prepare_review_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "X-Organization-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "调用者所属组织 ID。",
+              "title": "X-Organization-Id"
+            },
+            "description": "调用者所属组织 ID。"
+          },
+          {
+            "name": "X-Actor-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "当前调用者稳定 ID。",
+              "title": "X-Actor-Id"
+            },
+            "description": "当前调用者稳定 ID。"
+          },
+          {
+            "name": "X-Actor-Role",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ActorRole",
+              "description": "开发态角色：developer、reviewer 或 admin。",
+              "default": "developer"
+            },
+            "description": "开发态角色：developer、reviewer 或 admin。"
+          },
+          {
+            "name": "X-Team-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的团队权限边界。",
+              "title": "X-Team-Id"
+            },
+            "description": "可选的团队权限边界。"
+          },
+          {
+            "name": "X-Project-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的项目权限边界。",
+              "title": "X-Project-Id"
+            },
+            "description": "可选的项目权限边界。"
+          },
+          {
+            "name": "X-Personal-Owner-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的个人权限边界。",
+              "title": "X-Personal-Owner-Id"
+            },
+            "description": "可选的个人权限边界。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "进入 ready_for_review 状态的 Candidate。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/candidates/{candidate_id}/publish": {
+      "post": {
+        "tags": [
+          "candidates"
+        ],
+        "summary": "审核并发布候选经验",
+        "description": "仅 reviewer/admin 可调用，且 Candidate 必须处于 ready_for_review。发布操作在同一事务中创建 Experience 与不可变 Version 1；重复发布返回已创建的 Experience。",
+        "operationId": "publish_api_v1_candidates__candidate_id__publish_post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "X-Organization-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "调用者所属组织 ID。",
+              "title": "X-Organization-Id"
+            },
+            "description": "调用者所属组织 ID。"
+          },
+          {
+            "name": "X-Actor-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "当前调用者稳定 ID。",
+              "title": "X-Actor-Id"
+            },
+            "description": "当前调用者稳定 ID。"
+          },
+          {
+            "name": "X-Actor-Role",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ActorRole",
+              "description": "开发态角色：developer、reviewer 或 admin。",
+              "default": "developer"
+            },
+            "description": "开发态角色：developer、reviewer 或 admin。"
+          },
+          {
+            "name": "X-Team-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的团队权限边界。",
+              "title": "X-Team-Id"
+            },
+            "description": "可选的团队权限边界。"
+          },
+          {
+            "name": "X-Project-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的项目权限边界。",
+              "title": "X-Project-Id"
+            },
+            "description": "可选的项目权限边界。"
+          },
+          {
+            "name": "X-Personal-Owner-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的个人权限边界。",
+              "title": "X-Personal-Owner-Id"
+            },
+            "description": "可选的个人权限边界。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "发布后的经验及当前版本。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperienceView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/experiences/{experience_id}": {
+      "get": {
+        "tags": [
+          "experiences"
+        ],
+        "summary": "获取已发布经验详情",
+        "description": "按稳定 Experience ID 返回当前不可变版本。越出调用者 scope 的资源统一返回 404，避免泄露资源是否存在。",
+        "operationId": "get_experience_api_v1_experiences__experience_id__get",
+        "parameters": [
+          {
+            "name": "experience_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Experience Id"
+            }
+          },
+          {
+            "name": "X-Organization-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "调用者所属组织 ID。",
+              "title": "X-Organization-Id"
+            },
+            "description": "调用者所属组织 ID。"
+          },
+          {
+            "name": "X-Actor-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "当前调用者稳定 ID。",
+              "title": "X-Actor-Id"
+            },
+            "description": "当前调用者稳定 ID。"
+          },
+          {
+            "name": "X-Actor-Role",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ActorRole",
+              "description": "开发态角色：developer、reviewer 或 admin。",
+              "default": "developer"
+            },
+            "description": "开发态角色：developer、reviewer 或 admin。"
+          },
+          {
+            "name": "X-Team-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的团队权限边界。",
+              "title": "X-Team-Id"
+            },
+            "description": "可选的团队权限边界。"
+          },
+          {
+            "name": "X-Project-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的项目权限边界。",
+              "title": "X-Project-Id"
+            },
+            "description": "可选的项目权限边界。"
+          },
+          {
+            "name": "X-Personal-Owner-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的个人权限边界。",
+              "title": "X-Personal-Owner-Id"
+            },
+            "description": "可选的个人权限边界。"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "经验聚合信息与当前版本正文。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperienceView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/retrieval/recall": {
+      "post": {
+        "tags": [
+          "retrieval"
+        ],
+        "summary": "召回相关经验",
+        "description": "根据问题、技术栈、阶段和预算召回 Published Corpus。requested_scope 只能收窄身份请求头的权限；没有匹配时返回空 items 与明确 gaps，不生成虚构经验。",
+        "operationId": "recall_experiences_api_v1_retrieval_recall_post",
+        "parameters": [
+          {
+            "name": "X-Organization-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "调用者所属组织 ID。",
+              "title": "X-Organization-Id"
+            },
+            "description": "调用者所属组织 ID。"
+          },
+          {
+            "name": "X-Actor-Id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "当前调用者稳定 ID。",
+              "title": "X-Actor-Id"
+            },
+            "description": "当前调用者稳定 ID。"
+          },
+          {
+            "name": "X-Actor-Role",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ActorRole",
+              "description": "开发态角色：developer、reviewer 或 admin。",
+              "default": "developer"
+            },
+            "description": "开发态角色：developer、reviewer 或 admin。"
+          },
+          {
+            "name": "X-Team-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的团队权限边界。",
+              "title": "X-Team-Id"
+            },
+            "description": "可选的团队权限边界。"
+          },
+          {
+            "name": "X-Project-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的项目权限边界。",
+              "title": "X-Project-Id"
+            },
+            "description": "可选的项目权限边界。"
+          },
+          {
+            "name": "X-Personal-Owner-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可选的个人权限边界。",
+              "title": "X-Personal-Owner-Id"
+            },
+            "description": "可选的个人权限边界。"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "带稳定 ID、版本、适用范围和相关度的 Experience Pack。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperiencePack"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActorRole": {
+        "type": "string",
+        "enum": [
+          "developer",
+          "reviewer",
+          "admin"
+        ],
+        "title": "ActorRole"
+      },
+      "Applicability": {
+        "properties": {
+          "domains": {
+            "items": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1,
+              "description": "不可为空的短文本。"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Domains",
+            "description": "适用业务或技术领域。"
+          },
+          "technologies": {
+            "items": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1,
+              "description": "不可为空的短文本。"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Technologies",
+            "description": "适用技术栈。"
+          },
+          "project_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Project Ids",
+            "description": "明确适用的项目标识。"
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/Phase"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Phases",
+            "description": "适用的研发阶段。"
+          },
+          "triggers": {
+            "items": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1,
+              "description": "不可为空的短文本。"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Triggers",
+            "description": "触发召回的错误或场景关键词。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "Applicability",
+        "description": "经验适用条件，用于召回过滤与相关性判断。"
+      },
+      "CandidateDraft": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 3,
+            "title": "Title",
+            "description": "候选经验标题。"
+          },
+          "problem": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Problem",
+            "description": "要解决的问题。"
+          },
+          "context": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Context",
+            "description": "问题发生的背景与约束。"
+          },
+          "solution": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Solution",
+            "description": "已验证的解决方案。"
+          },
+          "failed_attempts": {
+            "items": {
+              "type": "string",
+              "maxLength": 10000,
+              "minLength": 1,
+              "description": "不可为空的正文文本。"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Failed Attempts",
+            "description": "无效尝试及其失败原因。"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ExperienceValidation",
+            "description": "解决方案的验证证据。"
+          },
+          "applicability": {
+            "$ref": "#/components/schemas/Applicability",
+            "description": "该经验的适用条件。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "problem",
+          "context",
+          "solution",
+          "validation",
+          "applicability"
+        ],
+        "title": "CandidateDraft",
+        "description": "待审核的经验正文草稿。"
+      },
+      "CandidateStatus": {
+        "type": "string",
+        "enum": [
+          "submitted",
+          "processing",
+          "ready_for_review",
+          "rejected",
+          "merged",
+          "published"
+        ],
+        "title": "CandidateStatus"
+      },
+      "CandidateView": {
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "title": "Candidate Id",
+            "description": "候选经验标识。"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "产生候选经验的任务标识。"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CandidateStatus",
+            "description": "候选经验当前审核状态。"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateDraft",
+            "description": "候选经验正文。"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "description": "候选经验可见范围。"
+          },
+          "submitted_by": {
+            "type": "string",
+            "title": "Submitted By",
+            "description": "提交者标识。"
+          },
+          "published_experience_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published Experience Id",
+            "description": "发布后生成的经验标识。"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "提交时间。"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "最后更新时间。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "task_id",
+          "status",
+          "candidate",
+          "scope",
+          "submitted_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CandidateView",
+        "description": "候选经验的完整 API 视图。"
+      },
+      "ExperienceConflict": {
+        "properties": {
+          "experience_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 2,
+            "title": "Experience Ids",
+            "description": "存在冲突的经验标识。"
+          },
+          "explanation": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Explanation",
+            "description": "冲突原因及处理建议。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "experience_ids",
+          "explanation"
+        ],
+        "title": "ExperienceConflict",
+        "description": "召回结果中互相冲突的经验说明。"
+      },
+      "ExperienceFreshness": {
+        "type": "string",
+        "enum": [
+          "current",
+          "review_due",
+          "expired"
+        ],
+        "title": "ExperienceFreshness"
+      },
+      "ExperienceMaturity": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "verified",
+          "proven"
+        ],
+        "title": "ExperienceMaturity"
+      },
+      "ExperiencePack": {
+        "properties": {
+          "retrieval_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Retrieval Id",
+            "description": "本次召回标识。"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExperiencePackItem"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "按相关度排序的经验列表。"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/ExperienceConflict"
+            },
+            "type": "array",
+            "title": "Conflicts",
+            "description": "经验之间的冲突说明。"
+          },
+          "gaps": {
+            "items": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1,
+              "description": "不可为空的短文本。"
+            },
+            "type": "array",
+            "title": "Gaps",
+            "description": "未被经验覆盖的知识缺口。"
+          },
+          "token_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Token Count",
+            "description": "返回内容的估算 Token 数。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "retrieval_id",
+          "items",
+          "token_count"
+        ],
+        "title": "ExperiencePack",
+        "description": "单次召回生成的经验上下文包。"
+      },
+      "ExperiencePackItem": {
+        "properties": {
+          "experience_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Experience Id",
+            "description": "经验标识。"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version",
+            "description": "经验版本号。"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "description": "经验标题。"
+          },
+          "applicability": {
+            "$ref": "#/components/schemas/Applicability",
+            "description": "适用条件。"
+          },
+          "guidance": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Guidance",
+            "description": "建议注入模型上下文的指导内容。"
+          },
+          "source_summary": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Summary",
+            "description": "经验来源摘要。"
+          },
+          "maturity": {
+            "$ref": "#/components/schemas/ExperienceMaturity",
+            "description": "经验成熟度。"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/ExperienceFreshness",
+            "description": "经验新鲜度。"
+          },
+          "relevance_score": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Relevance Score",
+            "description": "与当前查询的相关度，范围为 0 到 1。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "experience_id",
+          "version",
+          "title",
+          "applicability",
+          "guidance",
+          "source_summary",
+          "maturity",
+          "freshness",
+          "relevance_score"
+        ],
+        "title": "ExperiencePackItem",
+        "description": "可直接注入模型上下文的一条经验。"
+      },
+      "ExperienceSource": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/SourceType",
+            "description": "来源类型。"
+          },
+          "task_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ref",
+            "description": "产生经验的任务标识。"
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id",
+            "description": "静态经验文件标识。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "ExperienceSource",
+        "description": "经验来源；任务来源与静态文件来源互斥。"
+      },
+      "ExperienceStatus": {
+        "type": "string",
+        "enum": [
+          "published",
+          "paused",
+          "deprecated"
+        ],
+        "title": "ExperienceStatus"
+      },
+      "ExperienceSubmitRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Task Id",
+            "description": "产生候选经验的任务标识。"
+          },
+          "candidate": {
+            "$ref": "#/components/schemas/CandidateDraft",
+            "description": "候选经验正文。"
+          },
+          "used_experience_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Used Experience Ids",
+            "description": "本任务曾使用的经验标识。"
+          },
+          "redaction_confirmed": {
+            "type": "boolean",
+            "title": "Redaction Confirmed",
+            "description": "是否已确认敏感信息完成脱敏。"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Idempotency Key",
+            "description": "客户端生成的幂等键。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_id",
+          "candidate",
+          "redaction_confirmed",
+          "idempotency_key"
+        ],
+        "title": "ExperienceSubmitRequest",
+        "description": "提交候选经验的请求。"
+      },
+      "ExperienceValidation": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Method",
+            "description": "验证方式或执行步骤。"
+          },
+          "result": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Result",
+            "description": "验证结果与判定依据。"
+          },
+          "verified_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified On",
+            "description": "最近验证日期。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "method",
+          "result"
+        ],
+        "title": "ExperienceValidation",
+        "description": "经验结论的验证证据。"
+      },
+      "ExperienceVersion": {
+        "properties": {
+          "experience_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Experience Id",
+            "description": "所属经验标识。"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version",
+            "description": "从 1 开始递增的版本号。"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "description": "经验标题。"
+          },
+          "problem": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Problem",
+            "description": "要解决的问题。"
+          },
+          "context": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Context",
+            "description": "问题背景与约束。"
+          },
+          "solution": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Solution",
+            "description": "已验证的解决方案。"
+          },
+          "failed_attempts": {
+            "items": {
+              "type": "string",
+              "maxLength": 10000,
+              "minLength": 1,
+              "description": "不可为空的正文文本。"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Failed Attempts",
+            "description": "无效尝试及失败原因。"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/ExperienceValidation",
+            "description": "验证证据。"
+          },
+          "applicability": {
+            "$ref": "#/components/schemas/Applicability",
+            "description": "适用条件。"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ExperienceSource",
+            "description": "经验来源。"
+          },
+          "maturity": {
+            "$ref": "#/components/schemas/ExperienceMaturity",
+            "description": "经验成熟度。"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/ExperienceFreshness",
+            "description": "经验新鲜度。"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until",
+            "description": "经验有效截止日期。"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "版本创建时间。"
+          },
+          "created_by": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Created By",
+            "description": "版本创建者标识。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "experience_id",
+          "version",
+          "title",
+          "problem",
+          "context",
+          "solution",
+          "validation",
+          "applicability",
+          "source",
+          "maturity",
+          "freshness",
+          "created_at",
+          "created_by"
+        ],
+        "title": "ExperienceVersion",
+        "description": "不可变的经验版本快照。"
+      },
+      "ExperienceView": {
+        "properties": {
+          "experience_id": {
+            "type": "string",
+            "title": "Experience Id",
+            "description": "经验标识。"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExperienceStatus",
+            "description": "经验发布状态。"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "description": "经验可见范围。"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id",
+            "description": "经验所有者标识。"
+          },
+          "current": {
+            "$ref": "#/components/schemas/ExperienceVersion",
+            "description": "当前生效版本。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "experience_id",
+          "status",
+          "scope",
+          "owner_id",
+          "current"
+        ],
+        "title": "ExperienceView",
+        "description": "已发布经验及其当前版本的 API 视图。"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Phase": {
+        "type": "string",
+        "enum": [
+          "design",
+          "implement",
+          "troubleshoot",
+          "review",
+          "test",
+          "deploy"
+        ],
+        "title": "Phase"
+      },
+      "RecallBudget": {
+        "properties": {
+          "max_items": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Max Items",
+            "description": "最多返回的经验条数。",
+            "default": 6
+          },
+          "max_tokens": {
+            "type": "integer",
+            "maximum": 12000.0,
+            "minimum": 0.0,
+            "title": "Max Tokens",
+            "description": "经验指导文本的最大估算 Token 数。",
+            "default": 2400
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RecallBudget",
+        "description": "单次召回的数量与文本预算。"
+      },
+      "RecallContext": {
+        "properties": {
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Phase"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "当前研发阶段。"
+          },
+          "technologies": {
+            "items": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1,
+              "description": "不可为空的短文本。"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Technologies",
+            "description": "当前任务使用的技术栈。"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000,
+                "minLength": 1,
+                "description": "不可为空的正文文本。"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "当前错误信息。"
+          },
+          "attempted": {
+            "items": {
+              "type": "string",
+              "maxLength": 10000,
+              "minLength": 1,
+              "description": "不可为空的正文文本。"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Attempted",
+            "description": "已经尝试过的处理方式。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RecallContext",
+        "description": "辅助检索器理解当前任务的上下文。"
+      },
+      "RecallRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Task Id",
+            "description": "发起召回的任务标识。"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 2,
+            "title": "Query",
+            "description": "召回查询文本。"
+          },
+          "requested_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "请求查询的范围；必须受调用者范围约束。"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RecallContext",
+            "description": "任务上下文。"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/RecallBudget",
+            "description": "返回结果预算。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_id",
+          "query"
+        ],
+        "title": "RecallRequest",
+        "description": "按任务语义召回经验的请求。"
+      },
+      "Scope": {
+        "properties": {
+          "organization_id": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "title": "Organization Id",
+            "description": "所属组织标识。"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id",
+            "description": "所属团队标识。"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "所属项目标识。"
+          },
+          "personal_owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "description": "稳定标识符，仅允许字母、数字以及 . _ : -。"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Owner Id",
+            "description": "个人范围所有者标识；不可与团队或项目范围并用。"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "organization_id"
+        ],
+        "title": "Scope",
+        "description": "经验数据的组织、团队、项目或个人可见范围。"
+      },
+      "SourceType": {
+        "type": "string",
+        "enum": [
+          "mcp_task",
+          "static_file"
+        ],
+        "title": "SourceType"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "服务存活与数据库连接状态。"
+    },
+    {
+      "name": "candidates",
+      "description": "候选经验的提交、预处理和人工发布。"
+    },
+    {
+      "name": "experiences",
+      "description": "已发布经验及其不可变版本查询。"
+    },
+    {
+      "name": "retrieval",
+      "description": "在权限和 token 预算内召回已发布经验。"
+    }
+  ]
+}

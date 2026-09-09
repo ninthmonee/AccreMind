@@ -1,0 +1,236 @@
+{
+  "$defs": {
+    "Applicability": {
+      "additionalProperties": false,
+      "description": "经验适用条件，用于召回过滤与相关性判断。",
+      "properties": {
+        "domains": {
+          "description": "适用业务或技术领域。",
+          "items": {
+            "description": "不可为空的短文本。",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Domains",
+          "type": "array"
+        },
+        "technologies": {
+          "description": "适用技术栈。",
+          "items": {
+            "description": "不可为空的短文本。",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Technologies",
+          "type": "array"
+        },
+        "project_ids": {
+          "description": "明确适用的项目标识。",
+          "items": {
+            "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Project Ids",
+          "type": "array"
+        },
+        "phases": {
+          "description": "适用的研发阶段。",
+          "items": {
+            "$ref": "#/$defs/Phase"
+          },
+          "maxItems": 10,
+          "title": "Phases",
+          "type": "array"
+        },
+        "triggers": {
+          "description": "触发召回的错误或场景关键词。",
+          "items": {
+            "description": "不可为空的短文本。",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Triggers",
+          "type": "array"
+        }
+      },
+      "title": "Applicability",
+      "type": "object"
+    },
+    "CandidateDraft": {
+      "additionalProperties": false,
+      "description": "待审核的经验正文草稿。",
+      "properties": {
+        "title": {
+          "description": "候选经验标题。",
+          "maxLength": 200,
+          "minLength": 3,
+          "title": "Title",
+          "type": "string"
+        },
+        "problem": {
+          "description": "要解决的问题。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Problem",
+          "type": "string"
+        },
+        "context": {
+          "description": "问题发生的背景与约束。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Context",
+          "type": "string"
+        },
+        "solution": {
+          "description": "已验证的解决方案。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Solution",
+          "type": "string"
+        },
+        "failed_attempts": {
+          "description": "无效尝试及其失败原因。",
+          "items": {
+            "description": "不可为空的正文文本。",
+            "maxLength": 10000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Failed Attempts",
+          "type": "array"
+        },
+        "validation": {
+          "$ref": "#/$defs/ExperienceValidation",
+          "description": "解决方案的验证证据。"
+        },
+        "applicability": {
+          "$ref": "#/$defs/Applicability",
+          "description": "该经验的适用条件。"
+        }
+      },
+      "required": [
+        "title",
+        "problem",
+        "context",
+        "solution",
+        "validation",
+        "applicability"
+      ],
+      "title": "CandidateDraft",
+      "type": "object"
+    },
+    "ExperienceValidation": {
+      "additionalProperties": false,
+      "description": "经验结论的验证证据。",
+      "properties": {
+        "method": {
+          "description": "验证方式或执行步骤。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Method",
+          "type": "string"
+        },
+        "result": {
+          "description": "验证结果与判定依据。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Result",
+          "type": "string"
+        },
+        "verified_on": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "最近验证日期。",
+          "title": "Verified On"
+        }
+      },
+      "required": [
+        "method",
+        "result"
+      ],
+      "title": "ExperienceValidation",
+      "type": "object"
+    },
+    "Phase": {
+      "enum": [
+        "design",
+        "implement",
+        "troubleshoot",
+        "review",
+        "test",
+        "deploy"
+      ],
+      "title": "Phase",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "提交候选经验的请求。",
+  "properties": {
+    "task_id": {
+      "description": "产生候选经验的任务标识。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "candidate": {
+      "$ref": "#/$defs/CandidateDraft",
+      "description": "候选经验正文。"
+    },
+    "used_experience_ids": {
+      "description": "本任务曾使用的经验标识。",
+      "items": {
+        "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9._:-]+$",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Used Experience Ids",
+      "type": "array"
+    },
+    "redaction_confirmed": {
+      "description": "是否已确认敏感信息完成脱敏。",
+      "title": "Redaction Confirmed",
+      "type": "boolean"
+    },
+    "idempotency_key": {
+      "description": "客户端生成的幂等键。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Idempotency Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "candidate",
+    "redaction_confirmed",
+    "idempotency_key"
+  ],
+  "title": "ExperienceSubmitRequest",
+  "type": "object"
+}

@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "CandidateStatus": {
+      "enum": [
+        "submitted",
+        "processing",
+        "ready_for_review",
+        "rejected",
+        "merged",
+        "published"
+      ],
+      "title": "CandidateStatus",
+      "type": "string"
+    },
+    "DuplicateSuggestion": {
+      "additionalProperties": false,
+      "description": "可能与候选内容重复的已有经验。",
+      "properties": {
+        "experience_id": {
+          "description": "已有经验标识。",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "title": "Experience Id",
+          "type": "string"
+        },
+        "score": {
+          "description": "重复度分数，范围为 0 到 1。",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "experience_id",
+        "score"
+      ],
+      "title": "DuplicateSuggestion",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "候选经验提交结果。",
+  "properties": {
+    "candidate_id": {
+      "description": "新建或幂等命中的候选经验标识。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "review_status": {
+      "$ref": "#/$defs/CandidateStatus",
+      "description": "候选经验当前审核状态。"
+    },
+    "duplicate_suggestions": {
+      "description": "可能重复的已有经验列表。",
+      "items": {
+        "$ref": "#/$defs/DuplicateSuggestion"
+      },
+      "title": "Duplicate Suggestions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "review_status"
+  ],
+  "title": "ExperienceSubmitResult",
+  "type": "object"
+}

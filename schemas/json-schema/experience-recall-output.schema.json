@@ -1,0 +1,258 @@
+{
+  "$defs": {
+    "Applicability": {
+      "additionalProperties": false,
+      "description": "经验适用条件，用于召回过滤与相关性判断。",
+      "properties": {
+        "domains": {
+          "description": "适用业务或技术领域。",
+          "items": {
+            "description": "不可为空的短文本。",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Domains",
+          "type": "array"
+        },
+        "technologies": {
+          "description": "适用技术栈。",
+          "items": {
+            "description": "不可为空的短文本。",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Technologies",
+          "type": "array"
+        },
+        "project_ids": {
+          "description": "明确适用的项目标识。",
+          "items": {
+            "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Project Ids",
+          "type": "array"
+        },
+        "phases": {
+          "description": "适用的研发阶段。",
+          "items": {
+            "$ref": "#/$defs/Phase"
+          },
+          "maxItems": 10,
+          "title": "Phases",
+          "type": "array"
+        },
+        "triggers": {
+          "description": "触发召回的错误或场景关键词。",
+          "items": {
+            "description": "不可为空的短文本。",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Triggers",
+          "type": "array"
+        }
+      },
+      "title": "Applicability",
+      "type": "object"
+    },
+    "ExperienceConflict": {
+      "additionalProperties": false,
+      "description": "召回结果中互相冲突的经验说明。",
+      "properties": {
+        "experience_ids": {
+          "description": "存在冲突的经验标识。",
+          "items": {
+            "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9._:-]+$",
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 2,
+          "title": "Experience Ids",
+          "type": "array"
+        },
+        "explanation": {
+          "description": "冲突原因及处理建议。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Explanation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "experience_ids",
+        "explanation"
+      ],
+      "title": "ExperienceConflict",
+      "type": "object"
+    },
+    "ExperienceFreshness": {
+      "enum": [
+        "current",
+        "review_due",
+        "expired"
+      ],
+      "title": "ExperienceFreshness",
+      "type": "string"
+    },
+    "ExperienceMaturity": {
+      "enum": [
+        "draft",
+        "verified",
+        "proven"
+      ],
+      "title": "ExperienceMaturity",
+      "type": "string"
+    },
+    "ExperiencePackItem": {
+      "additionalProperties": false,
+      "description": "可直接注入模型上下文的一条经验。",
+      "properties": {
+        "experience_id": {
+          "description": "经验标识。",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "title": "Experience Id",
+          "type": "string"
+        },
+        "version": {
+          "description": "经验版本号。",
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "title": {
+          "description": "经验标题。",
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "applicability": {
+          "$ref": "#/$defs/Applicability",
+          "description": "适用条件。"
+        },
+        "guidance": {
+          "description": "建议注入模型上下文的指导内容。",
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Guidance",
+          "type": "string"
+        },
+        "source_summary": {
+          "description": "经验来源摘要。",
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Source Summary",
+          "type": "string"
+        },
+        "maturity": {
+          "$ref": "#/$defs/ExperienceMaturity",
+          "description": "经验成熟度。"
+        },
+        "freshness": {
+          "$ref": "#/$defs/ExperienceFreshness",
+          "description": "经验新鲜度。"
+        },
+        "relevance_score": {
+          "description": "与当前查询的相关度，范围为 0 到 1。",
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Relevance Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "experience_id",
+        "version",
+        "title",
+        "applicability",
+        "guidance",
+        "source_summary",
+        "maturity",
+        "freshness",
+        "relevance_score"
+      ],
+      "title": "ExperiencePackItem",
+      "type": "object"
+    },
+    "Phase": {
+      "enum": [
+        "design",
+        "implement",
+        "troubleshoot",
+        "review",
+        "test",
+        "deploy"
+      ],
+      "title": "Phase",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "单次召回生成的经验上下文包。",
+  "properties": {
+    "retrieval_id": {
+      "description": "本次召回标识。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Retrieval Id",
+      "type": "string"
+    },
+    "items": {
+      "description": "按相关度排序的经验列表。",
+      "items": {
+        "$ref": "#/$defs/ExperiencePackItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "conflicts": {
+      "description": "经验之间的冲突说明。",
+      "items": {
+        "$ref": "#/$defs/ExperienceConflict"
+      },
+      "title": "Conflicts",
+      "type": "array"
+    },
+    "gaps": {
+      "description": "未被经验覆盖的知识缺口。",
+      "items": {
+        "description": "不可为空的短文本。",
+        "maxLength": 500,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "token_count": {
+      "description": "返回内容的估算 Token 数。",
+      "minimum": 0,
+      "title": "Token Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "retrieval_id",
+    "items",
+    "token_count"
+  ],
+  "title": "ExperiencePack",
+  "type": "object"
+}

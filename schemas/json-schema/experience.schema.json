@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "ExperienceStatus": {
+      "enum": [
+        "published",
+        "paused",
+        "deprecated"
+      ],
+      "title": "ExperienceStatus",
+      "type": "string"
+    },
+    "Scope": {
+      "additionalProperties": false,
+      "description": "经验数据的组织、团队、项目或个人可见范围。",
+      "properties": {
+        "organization_id": {
+          "description": "所属组织标识。",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:-]+$",
+          "title": "Organization Id",
+          "type": "string"
+        },
+        "team_id": {
+          "anyOf": [
+            {
+              "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "所属团队标识。",
+          "title": "Team Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "所属项目标识。",
+          "title": "Project Id"
+        },
+        "personal_owner_id": {
+          "anyOf": [
+            {
+              "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "个人范围所有者标识；不可与团队或项目范围并用。",
+          "title": "Personal Owner Id"
+        }
+      },
+      "required": [
+        "organization_id"
+      ],
+      "title": "Scope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "经验聚合根及其当前状态。",
+  "properties": {
+    "id": {
+      "description": "经验标识。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Id",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/Scope",
+      "description": "经验可见范围。"
+    },
+    "status": {
+      "$ref": "#/$defs/ExperienceStatus",
+      "description": "经验发布状态。"
+    },
+    "current_version": {
+      "description": "当前生效版本号。",
+      "minimum": 1,
+      "title": "Current Version",
+      "type": "integer"
+    },
+    "owner_id": {
+      "description": "经验所有者标识。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Owner Id",
+      "type": "string"
+    },
+    "created_at": {
+      "description": "经验创建时间。",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "description": "经验最后更新时间。",
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "scope",
+    "status",
+    "current_version",
+    "owner_id",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "Experience",
+  "type": "object"
+}

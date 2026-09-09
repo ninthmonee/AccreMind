@@ -3,3 +3,7 @@ coverage/
 .DS_Store
 .accremind/
 *.log
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

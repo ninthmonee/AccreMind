@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "FeedbackKind": {
+      "enum": [
+        "injected",
+        "used",
+        "helpful",
+        "not_relevant",
+        "incorrect",
+        "outdated",
+        "conflicting"
+      ],
+      "title": "FeedbackKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "retrieval_id": {
+      "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Retrieval Id",
+      "type": "string"
+    },
+    "experience_id": {
+      "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Experience Id",
+      "type": "string"
+    },
+    "experience_version": {
+      "minimum": 1,
+      "title": "Experience Version",
+      "type": "integer"
+    },
+    "kind": {
+      "$ref": "#/$defs/FeedbackKind"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "description": "不可为空的短文本。",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "idempotency_key": {
+      "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "title": "Idempotency Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "retrieval_id",
+    "experience_id",
+    "experience_version",
+    "kind",
+    "idempotency_key"
+  ],
+  "title": "ExperienceFeedbackRequest",
+  "type": "object"
+}
