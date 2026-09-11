@@ -21,11 +21,20 @@ AccreMind 是面向大模型开发任务的经验闭环平台。
 - [核心架构 v0.2](docs/architecture/AccreMind-Core-Architecture-v0.2.md)
 - [核心技术选型 v0.2](docs/architecture/AccreMind-Technology-Selection-v0.2.md)
 - [Core API 中文接口文档 v0.1](docs/api/AccreMind-Core-API-v0.1.md)
+- [MCP Gateway 与经验闭环 v0.1](docs/api/AccreMind-MCP-Gateway-v0.1.md)
+- [检索与离线评测 v0.1](docs/api/AccreMind-Retrieval-v0.1.md)
+- [静态导入接口与使用流程 v0.1](docs/api/AccreMind-Static-Import-v0.1.md)
 - [Compound Engineering 静态案例参考](docs/examples/Compound-Engineering-Static-Reference.md)
 - [ADR-001：React + Vite 与 Python 后端](docs/adr/ADR-001-react-vite-python-fastapi.md)
 - [ADR-002：前端状态所有权](docs/adr/ADR-002-frontend-state-ownership.md)
+- [开发进度](docs/development-progress.md)
 
-当前仓库已进入后端纵向切片阶段，包含可执行领域契约、Core API、数据库迁移和本地基础设施；MCP Gateway、Worker 和 Studio 尚未实现。
+仓库包含 Core API、MCP Gateway、Worker、Studio 与部署编排。经验正文永远是数据，不是指令；
+Candidate 不进入生产召回；发布动作只属于人工审核者。
+
+静态经验侧已包含 Compound Engineering Markdown 转换器，可将一个领域文件中的多条经验拆分为
+`StaticExperienceDocument`，同时生成稳定文件 ID、内容哈希和逐条诊断。Static Import 已接通
+Markdown 预检、敏感扫描、确认导入、审核发布、版本更新和可逆导出。
 
 ## 可执行领域契约
 
@@ -47,27 +56,75 @@ make lint
 make test
 ```
 
-## 启动 Core API
+前端与端到端检查：
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm lint
+pnpm build
+pnpm test:e2e        # 需要 Core API、Studio dev server 与本地 PostgreSQL
+```
+
+## 启动本地服务
 
 ```bash
 cp .env.example .env
 make install
-make db-up
+make db-up          # postgres + redis
 make migrate
-make api
+make api            # Core API  http://127.0.0.1:8000
+make worker         # Celery worker + beat（校验、embedding、复核、反馈聚合）
+make mcp            # MCP Gateway（stdio；容器内用 streamable-http）
 ```
 
-服务默认监听 `http://127.0.0.1:8000`，开发环境 OpenAPI 页面为 `http://127.0.0.1:8000/docs`。
+`deploy/compose/compose.yaml` 也能以容器方式运行 api、worker 与 mcp_gateway（共用
+`deploy/docker/Dockerfile.backend` 镜像）；迁移仍由 `make migrate` 显式执行。
 
-当前 API 实现了第一条纵向闭环：
+## 经验闭环
+
+召回、注入与沉淀：
 
 ```text
-提交 Candidate
-→ Reviewer 标记 ready_for_review
-→ Reviewer 发布 Experience Version 1
-→ 基础词法召回只返回 Published Experience
+Agent 调用 experience_recall → Core API 按 scope 过滤
+→ FTS + pgvector 召回 → RRF 重排 → Experience Pack 注入上下文
+→ 任务结束时 experience_feedback / task_complete
+→ Candidate 入队 Worker 校验、去重与 embedding
+→ 人工审核发布 Version N → 后续召回可见
 ```
 
-身份认证目前使用显式的开发态请求头：`X-Organization-Id`、`X-Actor-Id`、可选的 team/project scope，以及 `X-Actor-Role`。它用于尽早验证 scope 和 RLS 边界，不是最终 PAT/OIDC 实现。
+静态经验闭环：
 
-本地数据库使用两个角色：`accremind` 只负责迁移，Core API 使用非超级用户 `accremind_app`，保证 PostgreSQL RLS 不会被运行连接绕过。
+```text
+Markdown → preview → 人工确认 commit → Candidate → 审核发布
+         → 导出修改 → preview/commit → 审核发布 Version N+1
+```
+
+治理闭环：
+
+```text
+负面反馈 → experience.review → 达阈值暂停默认召回，否则标记 review_due
+到期经验 → experience.review_due → review_due / expired
+helpful 反馈 → feedback.aggregate → verified 提升为 proven
+```
+
+## 身份与数据库角色
+
+开发态仍使用显式请求头验证 scope 与 RLS 边界：`X-Organization-Id`、`X-Actor-Id`、可选的
+team/project scope，以及 `X-Actor-Role`。PAT 已可用（`experience_*` 与 `task_complete` 工具权限），
+OIDC 仍未接入。
+
+本地数据库使用三个角色：
+
+- `accremind`：只负责迁移；
+- `accremind_app`：Core API、Worker 业务写入，受 PostgreSQL RLS 约束；
+- `accremind_maintenance`：仅供周期治理任务跨租户扫描（BYPASSRLS），不用于请求处理。
+
+## 验证脚本
+
+```bash
+make smoke           # 核心闭环
+make smoke-static    # 静态导入、并发幂等、不可变版本与 RLS
+make eval            # 离线召回评测（结果写入 evaluation_runs）
+make check           # schemas + lint + test，并校验 schema 快照无漂移
+```

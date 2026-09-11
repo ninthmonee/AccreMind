@@ -5,7 +5,13 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..api_models import CandidateView, ExperienceView
-from ..application import prepare_candidate, publish_candidate, submit_candidate
+from ..application import (
+    candidate_view,
+    load_candidate,
+    prepare_candidate,
+    publish_candidate,
+    submit_candidate,
+)
 from ..auth import AuthContext, get_auth_context
 from ..database import get_session
 
@@ -58,7 +64,8 @@ async def prepare(candidate_id: str, session: Session, auth: Auth) -> CandidateV
     summary="审核并发布候选经验",
     description=(
         "仅 reviewer/admin 可调用，且 Candidate 必须处于 ready_for_review。发布操作在"
-        "同一事务中创建 Experience 与不可变 Version 1；重复发布返回已创建的 Experience。"
+        "同一事务中创建 Experience 与不可变 Version 1；静态更新创建 version + 1，"
+        "并检查导入基线版本；重复发布返回对应 Experience 的当前版本。"
     ),
     response_description="发布后的经验及当前版本。",
 )
@@ -66,3 +73,8 @@ async def publish(candidate_id: str, session: Session, auth: Auth) -> Experience
     """把审核通过的 Candidate 发布为可召回 Experience。"""
 
     return await publish_candidate(session, candidate_id, auth)
+
+
+@router.get("/{candidate_id}", response_model=CandidateView, summary="读取待审核候选及静态正文")
+async def get_candidate(candidate_id: str, session: Session, auth: Auth) -> CandidateView:
+    return candidate_view(await load_candidate(session, candidate_id, auth))

@@ -61,8 +61,9 @@
 
 ### `POST /api/v1/candidates/{candidate_id}/publish`
 
-发布待审核 Candidate，在同一事务内创建 Experience 和不可变的 Version 1。只有
-`reviewer` 或 `admin` 可调用；重复发布返回第一次创建的 Experience。
+发布待审核 Candidate，在同一事务内创建 Experience 和不可变的 Version 1；静态修订创建同一个
+Experience 的下一版本，并校验导入基线版本。只有 `reviewer` 或 `admin` 可调用；重复发布返回
+对应 Experience 的当前版本。
 
 成功响应包含经验范围、所有者、状态及当前版本正文。状态不允许发布时返回 `409`。
 
@@ -80,6 +81,16 @@
 
 当前召回实现是可解释的中英文词法匹配，尚未启用向量检索、重排和冲突检测；这些字段已经通过
 契约预留。
+
+### 静态经验与候选详情
+
+- `GET /api/v1/candidates/{candidate_id}`：读取候选正文、静态来源与补充 Markdown，供审核使用。
+- `POST /api/v1/static-import/preview`：不写入的逐文件预检。
+- `POST /api/v1/static-import/commit`：确认预检并幂等、原子地创建 Candidate。
+- `GET /api/v1/static-import/export/{experience_id}`：导出当前版本 Markdown。
+
+详细请求、冲突语义和限制见 [静态导入接口](AccreMind-Static-Import-v0.1.md)。
+召回 SQL 同时排除 expired 和 valid_until 已到期的版本。
 
 ## 端到端状态流
 

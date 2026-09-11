@@ -6,8 +6,14 @@ requires-python = ">=3.12"
 [tool.uv.workspace]
 members = [
   "backend/apps/api",
+  "backend/apps/cli",
+  "backend/apps/worker",
+  "backend/apps/mcp_gateway",
+  "backend/packages/retriever_agent",
+  "backend/packages/model_providers",
   "backend/packages/contracts",
   "backend/packages/experience_domain",
+  "backend/packages/static_experience",
 ]
 
 [dependency-groups]

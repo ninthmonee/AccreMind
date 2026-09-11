@@ -26,5 +26,53 @@ services:
       timeout: 3s
       retries: 10
 
+  # Core API、Worker 与 MCP Gateway 共用同一镜像；迁移仍由 make migrate 显式执行。
+  api:
+    image: accremind-backend:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.backend
+    environment:
+      ACCREMIND_DATABASE_URL: postgresql+psycopg://accremind_app:accremind_app@postgres:5432/accremind
+      ACCREMIND_MAINTENANCE_DATABASE_URL: postgresql+psycopg://accremind_maintenance:accremind_maintenance@postgres:5432/accremind
+      ACCREMIND_REDIS_URL: redis://redis:6379/0
+    command: uv run uvicorn accremind_api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: accremind-backend:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.backend
+    environment:
+      ACCREMIND_DATABASE_URL: postgresql+psycopg://accremind_app:accremind_app@postgres:5432/accremind
+      ACCREMIND_MAINTENANCE_DATABASE_URL: postgresql+psycopg://accremind_maintenance:accremind_maintenance@postgres:5432/accremind
+      ACCREMIND_REDIS_URL: redis://redis:6379/0
+    command: uv run celery -A accremind_worker.tasks.app worker --beat --loglevel=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mcp_gateway:
+    image: accremind-backend:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.backend
+    environment:
+      ACCREMIND_API_URL: http://api:8000
+    command: uv run accremind-mcp --transport streamable-http --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    depends_on:
+      - api
+
 volumes:
   accremind-postgres:

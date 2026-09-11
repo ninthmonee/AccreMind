@@ -6,6 +6,7 @@ from accremind_contracts import (
     ExperienceStatus,
     ExperienceVersion,
     Scope,
+    StaticExperienceDocument,
 )
 from accremind_contracts.common import ContractModel
 from pydantic import Field
@@ -19,6 +20,13 @@ class CandidateView(ContractModel):
     status: CandidateStatus = Field(description="候选经验当前审核状态。")
     candidate: CandidateDraft = Field(description="候选经验正文。")
     scope: Scope = Field(description="候选经验可见范围。")
+    duplicate_suggestions: list[str] = Field(default_factory=list)
+    static_document: StaticExperienceDocument | None = Field(
+        default=None, description="静态来源与导入元数据。"
+    )
+    markdown_body: str | None = Field(
+        default=None, description="需要一并审核的补充 Markdown 正文。"
+    )
     submitted_by: str = Field(description="提交者标识。")
     published_experience_id: str | None = Field(default=None, description="发布后生成的经验标识。")
     created_at: datetime = Field(description="提交时间。")

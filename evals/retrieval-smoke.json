@@ -1,0 +1,10 @@
+{
+  "dataset_kind": "synthetic_engineering_smoke",
+  "cases": [
+    {"id":"react-race", "title":"React request race", "problem":"Old responses overwrite current filters", "solution":"Cancel stale requests with AbortController and check sequence numbers.", "queries":["React request race","AbortController stale requests"]},
+    {"id":"vue-reactivity", "title":"Vue reactivity refs", "problem":"Destructured reactive state stops updating", "solution":"Use toRefs to retain reactive bindings when destructuring Vue state.", "queries":["Vue reactive state","toRefs destructuring"]},
+    {"id":"sql-nplusone", "title":"SQLAlchemy N+1 queries", "problem":"Loading related records issues many queries", "solution":"Use selectinload for related collections and verify query counts.", "queries":["SQLAlchemy N+1","selectinload query counts"]},
+    {"id":"python-timezone", "title":"Python timezone aware dates", "problem":"Naive timestamps cannot compare with UTC timestamps", "solution":"Store timezone aware datetime values with UTC.", "queries":["Python UTC timestamps","timezone aware datetime"]},
+    {"id":"分页竞态", "title":"列表分页请求竞态", "problem":"快速切换分页后旧结果覆盖新结果", "solution":"通过递增请求序号忽略过期响应，确保仅更新最新分页结果。", "queries":["分页请求竞态","忽略过期响应"]}
+  ]
+}

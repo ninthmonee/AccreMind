@@ -28,9 +28,13 @@
 | 原文件路径与标题 | `source.file_id` 的可追溯依据 |
 
 两种格式并不完全相同：Compound Engineering 采用带 `meta`/`tags` 的 Markdown 条目，AccreMind
-静态导入契约使用 YAML Front Matter。因此这里把它作为设计与测试案例，而不是可直接导入的生产
-经验。若后续需要批量导入，应新增显式转换器、逐条脱敏确认与契约校验，不能把参考目录直接写入
-生产 Corpus。
+静态导入契约使用 YAML Front Matter。因此这里仍把原目录作为设计与测试案例，而不是可直接导入的
+生产经验。
+
+`accremind_static_experience.convert_compound_engineering_markdown` 提供第一版显式转换：按带
+`meta` 的标题拆分条目，映射到 `StaticExperienceDocument`，生成稳定 `file_id` 和逐条
+`content_hash`，并把格式或契约问题作为逐条诊断返回。转换结果仍必须经过脱敏检查、dry-run、人工确认
+与审核发布，不能绕过 Candidate/Published 隔离直接写入生产 Corpus。
 
 ## 首批参考案例
 

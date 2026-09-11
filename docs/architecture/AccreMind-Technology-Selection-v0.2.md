@@ -243,8 +243,10 @@ Python Protocol 定义三个窄接口：
 class EmbeddingProvider(Protocol):
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
+
 class QueryRewriter(Protocol):
     async def rewrite(self, request: RecallRequest) -> list[str]: ...
+
 
 class RerankerProvider(Protocol):
     async def rerank(self, query: str, items: list[CandidateHit]) -> list[float]: ...

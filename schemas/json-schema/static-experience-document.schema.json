@@ -280,6 +280,20 @@
       "default": null,
       "title": "Experience Id"
     },
+    "base_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "导出时的版本，用于更新冲突检测。",
+      "title": "Base Version"
+    },
     "owner_id": {
       "description": "稳定标识符，仅允许字母、数字以及 . _ : -。",
       "maxLength": 128,

@@ -1,5 +1,6 @@
+import hashlib
 import re
-from datetime import UTC
+from datetime import UTC, date
 from uuid import uuid4
 
 from accremind_contracts import (
@@ -8,13 +9,13 @@ from accremind_contracts import (
     ExperienceFreshness,
     ExperienceMaturity,
     ExperiencePack,
-    ExperiencePackItem,
     ExperienceStatus,
     ExperienceSubmitRequest,
     ExperienceVersion,
     RecallRequest,
     Scope,
     SourceType,
+    StaticExperienceDocument,
 )
 from accremind_contracts.common import ExperienceSource
 from accremind_experience_domain import (
@@ -25,7 +26,7 @@ from accremind_experience_domain import (
     transition_candidate,
 )
 from fastapi import HTTPException, status
-from sqlalchemy import Select, and_, select, text
+from sqlalchemy import Select, and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .api_models import CandidateView, ExperienceView
@@ -35,6 +36,7 @@ from .models import (
     CandidateRecord,
     ExperienceRecord,
     ExperienceVersionRecord,
+    JobRecord,
 )
 
 
@@ -89,6 +91,9 @@ def candidate_view(record: CandidateRecord) -> CandidateView:
         candidate=CandidateDraft.model_validate(record.payload),
         scope=record_scope(record),
         submitted_by=record.actor_id,
+        static_document=record.static_document,
+        duplicate_suggestions=record.duplicate_suggestions,
+        markdown_body=record.markdown_body,
         published_experience_id=record.published_experience_id,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -137,7 +142,18 @@ async def submit_candidate(
 ) -> CandidateView:
     """提交候选经验，并在相同调用者与幂等键下返回同一结果。"""
 
+    from accremind_static_experience.markdown import scan_sensitive
+
+    if scan_sensitive(request.candidate.model_dump_json()):
+        raise HTTPException(422, "candidate contains sensitive data")
     await apply_database_scope(session, auth)
+    if session.get_bind().dialect.name == "postgresql":
+        key = hashlib.sha256(
+            f"{auth.scope.organization_id}:{auth.actor_id}:{request.idempotency_key}".encode()
+        ).hexdigest()
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(key[:15], 16)}
+        )
     existing = await session.scalar(
         select(CandidateRecord).where(
             CandidateRecord.organization_id == auth.scope.organization_id,
@@ -146,6 +162,12 @@ async def submit_candidate(
         )
     )
     if existing is not None:
+        assert_can_access(auth, record_scope(existing))
+        if (
+            existing.payload != request.candidate.model_dump(mode="json")
+            or existing.task_id != request.task_id
+        ):
+            raise HTTPException(409, "idempotency key reused with different content")
         return candidate_view(existing)
 
     record = CandidateRecord(
@@ -173,17 +195,28 @@ async def submit_candidate(
             metadata_json={"task_id": request.task_id},
         )
     )
+    session.add(
+        JobRecord(
+            id="process:" + record.id,
+            kind="candidate.process",
+            entity_id=record.id,
+            scope=auth.scope.model_dump(mode="json"),
+        )
+    )
     await session.flush()
     return candidate_view(record)
 
 
 async def load_candidate(
-    session: AsyncSession, candidate_id: str, auth: AuthContext
+    session: AsyncSession, candidate_id: str, auth: AuthContext, *, for_update: bool = False
 ) -> CandidateRecord:
     """在数据库 RLS 与领域范围双重约束下读取候选经验。"""
 
     await apply_database_scope(session, auth)
-    record = await session.get(CandidateRecord, candidate_id)
+    query = select(CandidateRecord).where(CandidateRecord.id == candidate_id)
+    if for_update:
+        query = query.with_for_update()
+    record = await session.scalar(query.execution_options(populate_existing=True))
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="candidate not found")
     assert_can_access(auth, record_scope(record))
@@ -196,7 +229,7 @@ async def prepare_candidate(
     """由审核者将候选经验推进至待审核状态。"""
 
     require_reviewer(auth)
-    record = await load_candidate(session, candidate_id, auth)
+    record = await load_candidate(session, candidate_id, auth, for_update=True)
     current = CandidateStatus(record.status)
     if current == CandidateStatus.READY_FOR_REVIEW:
         return candidate_view(record)
@@ -223,10 +256,10 @@ async def prepare_candidate(
 async def publish_candidate(
     session: AsyncSession, candidate_id: str, auth: AuthContext
 ) -> ExperienceView:
-    """发布候选经验，并创建不可变的第一个经验版本。"""
+    """发布候选经验，并创建不可变的新经验版本。"""
 
     require_reviewer(auth)
-    candidate = await load_candidate(session, candidate_id, auth)
+    candidate = await load_candidate(session, candidate_id, auth, for_update=True)
     if candidate.published_experience_id is not None:
         return await load_experience(session, candidate.published_experience_id, auth)
     try:
@@ -236,27 +269,55 @@ async def publish_candidate(
     except InvalidTransition as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
-    experience = ExperienceRecord(
-        id=new_id("EXP"),
-        status=ExperienceStatus.PUBLISHED,
-        current_version=1,
-        owner_id=candidate.actor_id,
-        organization_id=candidate.organization_id,
-        team_id=candidate.team_id,
-        project_id=candidate.project_id,
-        personal_owner_id=candidate.personal_owner_id,
+    document = (
+        StaticExperienceDocument.model_validate(candidate.static_document)
+        if candidate.static_document
+        else None
     )
+    if candidate.target_experience_id:
+        experience = await session.scalar(
+            select(ExperienceRecord)
+            .where(ExperienceRecord.id == candidate.target_experience_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if experience is None:
+            raise HTTPException(404, "experience not found")
+        assert_can_access(auth, record_scope(experience))
+        if (
+            experience.current_version != candidate.base_version
+            or experience.status != ExperienceStatus.PUBLISHED
+        ):
+            raise HTTPException(409, "experience changed since import; review a fresh export")
+        experience.current_version += 1
+    else:
+        experience = ExperienceRecord(
+            id=new_id("EXP"),
+            status=ExperienceStatus.PUBLISHED,
+            current_version=1,
+            owner_id=document.owner_id if document else candidate.actor_id,
+            organization_id=candidate.organization_id,
+            team_id=candidate.team_id,
+            project_id=candidate.project_id,
+            personal_owner_id=candidate.personal_owner_id,
+        )
+        session.add(experience)
     version = ExperienceVersionRecord(
         experience_id=experience.id,
-        version=1,
+        version=experience.current_version,
         payload=candidate.payload,
-        source_type=SourceType.MCP_TASK,
-        source_ref=candidate.task_id,
+        source_type=SourceType.STATIC_FILE if document else SourceType.MCP_TASK,
+        source_ref=document.file_id if document else candidate.task_id,
         maturity=ExperienceMaturity.VERIFIED,
         freshness=ExperienceFreshness.CURRENT,
+        valid_until=document.valid_until if document else None,
+        markdown_body=candidate.markdown_body,
         created_by=auth.actor_id,
     )
-    session.add_all([experience, version])
+    from .retriever import index_fts
+
+    await index_fts(session, version)
+    session.add(version)
     # 先持久化外键目标再关联 Candidate；这里没有 ORM relationship，若不显式
     # flush，SQLAlchemy 可能先执行 Candidate UPDATE，导致外键约束失败。
     await session.flush()
@@ -269,7 +330,15 @@ async def publish_candidate(
             action="experience.published",
             entity_type="experience",
             entity_id=experience.id,
-            metadata_json={"candidate_id": candidate.id, "version": 1},
+            metadata_json={"candidate_id": candidate.id, "version": version.version},
+        )
+    )
+    session.add(
+        JobRecord(
+            id=f"embed:{experience.id}:{version.version}",
+            kind="experience.embed",
+            entity_id=str(version.id),
+            scope=record_scope(experience).model_dump(mode="json"),
         )
     )
     await session.flush()
@@ -326,7 +395,14 @@ def scoped_experience_query(
                 ExperienceVersionRecord.version == ExperienceRecord.current_version,
             ),
         )
-        .where(*conditions)
+        .where(
+            *conditions,
+            ExperienceVersionRecord.freshness != ExperienceFreshness.EXPIRED,
+            or_(
+                ExperienceVersionRecord.valid_until.is_(None),
+                ExperienceVersionRecord.valid_until >= date.today(),
+            ),
+        )
     )
 
 
@@ -366,48 +442,6 @@ def lexical_score(query: str, candidate: CandidateDraft) -> float:
 async def recall(
     session: AsyncSession, request: RecallRequest, auth: AuthContext
 ) -> ExperiencePack:
-    """在调用者允许的范围和预算内召回已发布经验。"""
+    from .retriever import retrieve
 
-    await apply_database_scope(session, auth)
-    try:
-        scope = constrain_scope(auth.scope, request.requested_scope)
-    except ScopeViolation as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
-
-    rows = (await session.execute(scoped_experience_query(scope))).all()
-    ranked: list[tuple[float, ExperienceRecord, ExperienceVersionRecord, CandidateDraft]] = []
-    for experience, version in rows:
-        payload = CandidateDraft.model_validate(version.payload)
-        score = lexical_score(request.query, payload)
-        if score > 0:
-            ranked.append((score, experience, version, payload))
-    ranked.sort(key=lambda item: (item[0], item[2].created_at), reverse=True)
-
-    items: list[ExperiencePackItem] = []
-    token_count = 0
-    for score, experience, version, payload in ranked[: request.budget.max_items]:
-        estimated_tokens = max(1, len(payload.solution) // 3)
-        if token_count + estimated_tokens > request.budget.max_tokens:
-            continue
-        token_count += estimated_tokens
-        items.append(
-            ExperiencePackItem(
-                experience_id=experience.id,
-                version=version.version,
-                title=payload.title,
-                applicability=payload.applicability,
-                guidance=payload.solution,
-                source_summary=f"{version.source_type}:{version.source_ref or 'unknown'}",
-                maturity=ExperienceMaturity(version.maturity),
-                freshness=ExperienceFreshness(version.freshness),
-                relevance_score=score,
-            )
-        )
-
-    return ExperiencePack(
-        retrieval_id=new_id("RET"),
-        items=items,
-        conflicts=[],
-        gaps=[] if items else ["no_matching_published_experience"],
-        token_count=token_count,
-    )
+    return await retrieve(session, request, auth)

@@ -1,9 +1,17 @@
+import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated
 
 from accremind_contracts import Scope
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .database import get_session
+from .models import TokenRecord
+from .settings import get_settings
 
 
 class ActorRole(StrEnum):
@@ -20,29 +28,45 @@ class AuthContext:
 
 
 async def get_auth_context(
-    organization_id: Annotated[
-        str, Header(alias="X-Organization-Id", description="调用者所属组织 ID。")
-    ],
-    actor_id: Annotated[str, Header(alias="X-Actor-Id", description="当前调用者稳定 ID。")],
-    actor_role: Annotated[
-        ActorRole,
-        Header(alias="X-Actor-Role", description="开发态角色：developer、reviewer 或 admin。"),
-    ] = ActorRole.DEVELOPER,
-    team_id: Annotated[
-        str | None, Header(alias="X-Team-Id", description="可选的团队权限边界。")
-    ] = None,
-    project_id: Annotated[
-        str | None, Header(alias="X-Project-Id", description="可选的项目权限边界。")
-    ] = None,
-    personal_owner_id: Annotated[
-        str | None, Header(alias="X-Personal-Owner-Id", description="可选的个人权限边界。")
-    ] = None,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    authorization: Annotated[str | None, Header()] = None,
+    organization_id: Annotated[str | None, Header(alias="X-Organization-Id")] = None,
+    actor_id: Annotated[str | None, Header(alias="X-Actor-Id")] = None,
+    actor_role: Annotated[ActorRole, Header(alias="X-Actor-Role")] = ActorRole.DEVELOPER,
+    team_id: Annotated[str | None, Header(alias="X-Team-Id")] = None,
+    project_id: Annotated[str | None, Header(alias="X-Project-Id")] = None,
+    personal_owner_id: Annotated[str | None, Header(alias="X-Personal-Owner-Id")] = None,
 ) -> AuthContext:
-    """将开发态身份请求头收敛为可信 AuthContext。
-
-    请求体中的 scope 只能进一步收窄这里得到的权限，不能扩大权限。
-    """
-
+    if authorization is not None:
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(401, "Bearer token required")
+        token_hash = hashlib.sha256(authorization[7:].encode()).hexdigest()
+        token = await session.scalar(
+            select(TokenRecord).where(TokenRecord.token_hash == token_hash)
+        )
+        if (
+            token is None
+            or token.revoked
+            or token.expires_at.replace(tzinfo=UTC) <= datetime.now(UTC)
+        ):
+            raise HTTPException(401, "invalid or expired token")
+        auth = AuthContext(
+            token.actor_id,
+            ActorRole(token.role),
+            Scope(
+                organization_id=token.organization_id,
+                team_id=token.team_id,
+                project_id=token.project_id,
+                personal_owner_id=token.personal_owner_id,
+            ),
+        )
+        permission = endpoint_permission(request.url.path, request.method)
+        if permission not in token.tools and "studio" not in token.tools:
+            raise HTTPException(403, "token does not allow this operation")
+        return auth
+    if get_settings().environment == "production" or not organization_id or not actor_id:
+        raise HTTPException(401, "Bearer token required")
     try:
         scope = Scope(
             organization_id=organization_id,
@@ -51,8 +75,22 @@ async def get_auth_context(
             personal_owner_id=personal_owner_id,
         )
     except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+        raise HTTPException(400, "invalid scope") from error
     return AuthContext(actor_id=actor_id, role=actor_role, scope=scope)
+
+
+def endpoint_permission(path: str, method: str) -> str:
+    if path.endswith("/retrieval/recall"):
+        return "experience_recall"
+    if path.endswith("/tasks/complete"):
+        return "task_complete"
+    if path.endswith("/feedback"):
+        return "experience_feedback"
+    if path.endswith("/candidates") and method == "POST":
+        return "experience_submit"
+    if "/experiences/" in path and method == "GET":
+        return "experience_get"
+    return "studio"
 
 
 def require_reviewer(auth: AuthContext) -> None:

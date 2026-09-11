@@ -11,6 +11,9 @@ class StaticExperienceDocument(ContractModel):
 
     file_id: Identifier
     experience_id: Identifier | None = None
+    base_version: int | None = Field(
+        default=None, ge=1, description="导出时的版本，用于更新冲突检测。"
+    )
     owner_id: Identifier
     scope: Scope
     valid_until: date | None = None

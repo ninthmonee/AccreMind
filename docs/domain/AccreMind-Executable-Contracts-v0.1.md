@@ -31,7 +31,8 @@ Domain rules
 - `task_id` 是调用方关联一次开发任务的稳定标识，不是权限依据。
 - 正式 `experience_id` 由服务端生成。
 - 静态文件使用作者维护的稳定 `file_id`；首次导入时 `experience_id` 可以省略，提交后导出的文件必须包含服务端分配的 `experience_id`。
-- `content_hash` 是规范化 Front Matter 与 Markdown 正文的 SHA-256，小写十六进制字符串。
+- `content_hash` 是规范化 Front Matter 与 Markdown 正文的 SHA-256，小写十六进制字符串；导入时重算，排除哈希自身和服务端引用字段。
+- 静态导出包含 `base_version`；更新必须匹配当前版本，不能用旧文件覆盖新版本。
 
 数据库实现必须对“认证主体 + 操作类型 + idempotency_key”建立唯一约束。
 
