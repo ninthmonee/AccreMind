@@ -1,15 +1,8 @@
-import pg from 'pg';
 import { createShutdown, loadDevelopmentConfig } from '@accremind/domain';
 import { createApp } from './app.js';
+import { createDatabasePool } from './database.js';
 const config = loadDevelopmentConfig(process.env);
-const pool = config.databaseUrl
-  ? new pg.Pool({
-      connectionString: config.databaseUrl,
-      max: 10,
-      connectionTimeoutMillis: 2000,
-      statement_timeout: 2000,
-    })
-  : undefined;
+const pool = config.databaseUrl ? createDatabasePool(config.databaseUrl) : undefined;
 const app = createApp(config, {
   checkDatabase: async () => {
     if (!pool) return false;
