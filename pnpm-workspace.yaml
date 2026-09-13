@@ -1,3 +1,10 @@
 packages:
-  - frontend/apps/*
-  - frontend/packages/*
+  - apps/*
+  - packages/*
+overrides:
+  '@modelcontextprotocol/sdk>ajv': 8.18.0
+saveExact: true
+strictPeerDependencies: true
+autoInstallPeers: false
+onlyBuiltDependencies:
+  - esbuild

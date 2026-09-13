@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+docs
+packages/contracts/src/generated
+pnpm-lock.yaml
+tests/contracts

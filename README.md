@@ -1,130 +1,83 @@
-# AccreMind
+# AccreMind · AI 研发知识基座
 
-AccreMind 是面向大模型开发任务的经验闭环平台。
+团队研发知识基础设施：优先保存当前代码与权威文档无法可靠恢复的必要上下文，要求证据、适用条件、独立审核和纠错。
 
-开发者继续使用日常的大模型或 Coding Agent；AccreMind 通过 MCP 在任务过程中召回相关经验并注入上下文，在任务完成时接收由当前大模型提炼的候选经验，经人工审核后进入经验库，供后续任务复用。
+当前完成阶段 A 设计修订及阶段 B 工程基线。**不是已经可用的知识服务**：登录、证据采集、审核发布、检索、任务队列和验证业务均未实现。当前仅提供 loopback 合成身份、健康检查、开发工作台、CLI doctor 和失败关闭的 MCP 协议骨架。
 
-当前经验只有两个来源：
+## 工程结构
 
-1. 外部大模型通过 MCP 主动提交的候选经验；
-2. 开发者主动维护并导入的静态 Markdown 经验文件。
-
-当前不连接 Git、代码托管、Wiki、需求、PR、事故、聊天、监控或实时业务系统。
-
-当前技术方向：Studio 使用 React + Vite + TypeScript，后端、Retriever Agent、MCP Gateway 和 Worker 主要使用 Python。
-
-前端采用 TanStack Query + Zustand，并通过 URL/Form/局部状态明确状态所有权；组件库使用 Ant Design，Lint/Format 使用 Oxc。
-
-## 当前文档
-
-- [核心产品需求规格 v0.2](docs/product/AccreMind-Product-Requirements-v0.2.md)
-- [核心架构 v0.2](docs/architecture/AccreMind-Core-Architecture-v0.2.md)
-- [核心技术选型 v0.2](docs/architecture/AccreMind-Technology-Selection-v0.2.md)
-- [Core API 中文接口文档 v0.1](docs/api/AccreMind-Core-API-v0.1.md)
-- [MCP Gateway 与经验闭环 v0.1](docs/api/AccreMind-MCP-Gateway-v0.1.md)
-- [检索与离线评测 v0.1](docs/api/AccreMind-Retrieval-v0.1.md)
-- [静态导入接口与使用流程 v0.1](docs/api/AccreMind-Static-Import-v0.1.md)
-- [Compound Engineering 静态案例参考](docs/examples/Compound-Engineering-Static-Reference.md)
-- [ADR-001：React + Vite 与 Python 后端](docs/adr/ADR-001-react-vite-python-fastapi.md)
-- [ADR-002：前端状态所有权](docs/adr/ADR-002-frontend-state-ownership.md)
-- [开发进度](docs/development-progress.md)
-
-仓库包含 Core API、MCP Gateway、Worker、Studio 与部署编排。经验正文永远是数据，不是指令；
-Candidate 不进入生产召回；发布动作只属于人工审核者。
-
-静态经验侧已包含 Compound Engineering Markdown 转换器，可将一个领域文件中的多条经验拆分为
-`StaticExperienceDocument`，同时生成稳定文件 ID、内容哈希和逐条诊断。Static Import 已接通
-Markdown 预检、敏感扫描、确认导入、审核发布、版本更新和可逆导出。
-
-## 可执行领域契约
-
-仓库已经包含第一版 Python/Pydantic 领域契约、领域状态机和生成后的 JSON Schema：
-
-- 契约模型：`backend/packages/contracts/`
-- 领域规则：`backend/packages/experience_domain/`
-- JSON Schema：`schemas/json-schema/`
-- OpenAPI Snapshot：`schemas/openapi/accremind.openapi.json`
-- Compound Engineering 静态案例目录：`schemas/examples/compound-engineering/catalog.json`
-- 决策说明：[可执行领域契约 v0.1](docs/domain/AccreMind-Executable-Contracts-v0.1.md)
-
-本地验证：
-
-```bash
-make install
-make schemas
-make lint
-make test
+```text
+apps/api          Fastify API（独立进程）
+apps/worker       后台 Worker（独立进程，尚不领取业务任务）
+apps/web          React 管理工作台
+apps/tool         akb CLI / MCP stdio Bridge
+packages/contracts 生成类型、Schema、统一 HTTP 客户端
+packages/domain    领域接口及安全的开发配置
+tests             契约、HTTP、stdio 和基础测试
+evals             真实试点评测边界（材料待授权）
+ops               开发 PostgreSQL、角色与宿主手动示例
 ```
 
-前端与端到端检查：
+Monorepo 只是现阶段的组织选择。应用可分别部署；按租户的知识 Git 内容库是运行时数据，不放入应用代码仓库。将来分仓仍必须共享固定版本契约。
 
-```bash
-pnpm install
-pnpm typecheck
-pnpm lint
+## 启动
+
+Node 24.20.0，pnpm 10.17.1。建议通过现有 Node 版本管理器选择 `.node-version`，不修改系统 Node。
+
+```sh
+corepack pnpm install --frozen-lockfile
 pnpm build
-pnpm test:e2e        # 需要 Core API、Studio dev server 与本地 PostgreSQL
+pnpm dev
 ```
 
-## 启动本地服务
+工作台：<http://127.0.0.1:5173>；API：<http://127.0.0.1:3100/healthz>。
 
-```bash
-cp .env.example .env
-make install
-make db-up          # postgres + redis
-make migrate
-make api            # Core API  http://127.0.0.1:8000
-make worker         # Celery worker + beat（校验、embedding、复核、反馈聚合）
-make mcp            # MCP Gateway（stdio；容器内用 streamable-http）
+统一 launcher 的 Web 支持热更新；API/Worker 修改后需重启，或分别使用各应用的 `dev` watch 命令。Ctrl+C 会关闭三个开发进程。
+
+未配置数据库时 `/healthz` 为 200，`/readyz` 为 503；`/api/v1/me` 仅返回无内容权限的合成主体。不要将该结果称作真实登录。合成模式拒绝非 loopback 绑定、非本地数据库、模型外发，以及任何真实 Cookie/Bearer 凭据。生产模式当前拒绝启动。
+
+可选的本地数据库：
+
+```sh
+pnpm db:up
+# 将 .env.example 复制为 .env，检查它只包含合成开发参数
+pnpm dev
 ```
 
-`deploy/compose/compose.yaml` 也能以容器方式运行 api、worker 与 mcp_gateway（共用
-`deploy/docker/Dockerfile.backend` 镜像）；迁移仍由 `make migrate` 显式执行。
+开发 launcher 可加载项目 `.env`，不提交它；API 与 Worker 使用不同数据库角色。开发数据库只绑定 `127.0.0.1:55432`，凭据 `synthetic-only` 是公开的合成开发值，**禁止用于生产或真实私有资料**。首次空卷启动依次执行 SQL 001/002/开发角色脚本；已有卷不会重跑初始化，修改 SQL 后不得直接删除真实资料，应使用显式迁移。
 
-## 经验闭环
+`pnpm db:stop` 只停止开发服务并保留数据卷。不要把 `docker compose down -v` 当成日常重置方式。知识内容与证据存储实现仍待阶段 C。
 
-召回、注入与沉淀：
+## CLI / MCP
 
-```text
-Agent 调用 experience_recall → Core API 按 scope 过滤
-→ FTS + pgvector 召回 → RRF 重排 → Experience Pack 注入上下文
-→ 任务结束时 experience_feedback / task_complete
-→ Candidate 入队 Worker 校验、去重与 embedding
-→ 人工审核发布 Version N → 后续召回可见
+```sh
+node apps/tool/dist/cli.js doctor --json
+node apps/tool/dist/cli.js --version
+node apps/tool/dist/cli.js mcp serve
 ```
 
-静态经验闭环：
+`mcp serve` 的 stdout 只允许 JSON-RPC，不要通过有 banner 的 package-manager 命令包装它。当前 8 个工具只支持 Schema 输入校验，合法调用返回明确 UNAUTHENTICATED，不查询、不提交、不声称知识已发布。
 
-```text
-Markdown → preview → 人工确认 commit → Candidate → 审核发布
-         → 导出修改 → preview/commit → 审核发布 Version N+1
+Claude Code 接入模板在 `ops/claude-code/mcp.example.json`。真实 Claude Code CLI 尚未在当前机器发现；不要直接复制占位绝对路径，不自动写 `.mcp.json`，完成真实版本/配置验收后再手动合并已有 server 配置。官方 SDK stdio 测试不能替代真实宿主兼容性验收。
+
+## 检查和生成
+
+```sh
+pnpm contracts:generate
+pnpm verify
+pnpm contracts:check:sql
 ```
 
-治理闭环：
+`verify` 执行契约漂移、共享 SDK 漂移、构建、严格类型检查、lint、测试和格式检查。SQL 检查需 Docker，使用固定 digest 的无网络、无主机数据挂载临时 PostgreSQL，结束自动删除容器。
 
-```text
-负面反馈 → experience.review → 达阈值暂停默认召回，否则标记 review_due
-到期经验 → experience.review_due → review_due / expired
-helpful 反馈 → feedback.aggregate → verified 提升为 proven
-```
+唯一契约源为 `docs/architecture/contracts/source/openapi.json` 和工具元数据 `source/mcp-tools.json`。生成的 JSON 和 `packages/contracts/src/generated` 均提交版本控制；禁止分别手改。详情见[契约说明](docs/architecture/contracts/README.md)。
 
-## 身份与数据库角色
+Git 仓库已初始化 main，未创建提交、添加远程或推送。GitHub Actions 工作流已提供，不代表远端 CI 已执行。
 
-开发态仍使用显式请求头验证 scope 与 RLS 边界：`X-Organization-Id`、`X-Actor-Id`、可选的
-team/project scope，以及 `X-Actor-Role`。PAT 已可用（`experience_*` 与 `task_complete` 工具权限），
-OIDC 仍未接入。
+## 下一阶段与组织参数
 
-本地数据库使用三个角色：
+下一条纵向切片：合成身份 → 手工证据 → 人工增量判定 → 独立审核 → 发布 → CLI/MCP 检索 → 暂停/撤回。
 
-- `accremind`：只负责迁移；
-- `accremind_app`：Core API、Worker 业务写入，受 PostgreSQL RLS 约束；
-- `accremind_maintenance`：仅供周期治理任务跨租户扫描（BYPASSRLS），不用于请求处理。
+真实试点前需要[启动参数表](docs/pilot-startup.md)：试点仓库、OIDC、审核人、部署/模型许可和数据保留策略。缺参数时只能继续合成开发，不得外发真实资料。
 
-## 验证脚本
-
-```bash
-make smoke           # 核心闭环
-make smoke-static    # 静态导入、并发幂等、不可变版本与 RLS
-make eval            # 离线召回评测（结果写入 evaluation_runs）
-make check           # schemas + lint + test，并校验 schema 快照无漂移
-```
+参考：[工程决策](docs/decisions/0001-engineering-baseline.md)、[阶段 B 验证记录](docs/architecture/verification/2026-09-12-phase-b-validation.md)、[任务与验收计划](docs/architecture/04-开发任务与验收计划.md)。

@@ -1,0 +1,42 @@
+[
+  {
+    "name": "search-knowledge",
+    "operationId": "searchKnowledge",
+    "description": "Search authorized, applicable knowledge. No result differs from failure. Preserve conditions and evidence."
+  },
+  {
+    "name": "get-knowledge",
+    "operationId": "readKnowledge",
+    "description": "Read a knowledge revision within task budget. Withdrawn content is not served."
+  },
+  {
+    "name": "ingest-knowledge",
+    "operationId": "ingestContribution",
+    "description": "Submit explicitly selected evidence. Accepted does not mean published."
+  },
+  {
+    "name": "get-contribution",
+    "operationId": "getContribution",
+    "description": "Inspect per-candidate routing; zero knowledge candidates is valid."
+  },
+  {
+    "name": "record-usage",
+    "operationId": "recordUsage",
+    "description": "Record actual citation or application; never verifies knowledge."
+  },
+  {
+    "name": "submit-validation",
+    "operationId": "submitValidation",
+    "description": "Submit evidence for independent review; cannot approve or promote maturity."
+  },
+  {
+    "name": "submit-feedback",
+    "operationId": "submitFeedback",
+    "description": "Report a problem or usefulness; does not change maturity."
+  },
+  {
+    "name": "get-config",
+    "operationId": "getConfig",
+    "description": "Read authorized managed configuration, never execute returned knowledge."
+  }
+]

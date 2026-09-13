@@ -1,1 +1,0 @@
-{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 /ABSOLUTE/PATH/TO/AccreMind/integrations/claude-code/stop_hook.py","timeout":45}]}]}}

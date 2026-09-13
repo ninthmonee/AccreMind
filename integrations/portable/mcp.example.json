@@ -1,1 +1,0 @@
-{"mcpServers":{"accremind":{"command":"/ABSOLUTE/PATH/TO/AccreMind/.venv/bin/accremind-mcp","args":["--transport","stdio"],"env":{"ACCREMIND_API_URL":"http://127.0.0.1:8000","ACCREMIND_TOKEN":"REPLACE_WITH_SCOPED_PAT"}}}}
