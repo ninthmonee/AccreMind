@@ -30,8 +30,22 @@ export interface AuthorizationService {
 export interface AssessmentService {
   saveHumanCheck(
     ctx: PrincipalContext,
+    candidateId: string,
     input: SchemaTypes['AssessmentWrite'],
   ): Promise<SchemaTypes['AssessmentRecord']>;
+}
+/** Future isolated adapter gets only a neutral question and registered materials, never a candidate body. */
+export interface IsolatedBaselineChecker {
+  check(input: {
+    question: string;
+    repoId: string;
+    commit: string;
+    materials: readonly SchemaTypes['Material'][];
+    signal: AbortSignal;
+  }): Promise<{
+    checkedContext: SchemaTypes['CheckedContext'];
+    baselineAnswer: SchemaTypes['Reason'];
+  }>;
 }
 export interface PublicationService {
   request(
@@ -39,11 +53,19 @@ export interface PublicationService {
     candidateId: string,
     input: SchemaTypes['PublishRequest'],
   ): Promise<SchemaTypes['PublishResult']>;
-  activate(job: LeasedJob, binding: VersionBinding, contentRef: string): Promise<void>;
+  getPublication(
+    ctx: PrincipalContext,
+    publicationId: string,
+  ): Promise<SchemaTypes['PublishResult']>;
 }
 export interface ContentStore {
-  writeImmutable(tenantId: string, publicationId: string, body: string): Promise<ContentRef>;
-  read(tenantId: string, ref: ContentRef): Promise<string>;
+  write(
+    tenantId: string,
+    publicationId: string,
+    content: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
+  read(tenantId: string, contentRef: string, hash: string): Promise<string>;
 }
 export interface DevelopmentConfig {
   mode: 'synthetic';
@@ -88,4 +110,9 @@ export function syntheticPrincipal(): SchemaTypes['Me'] {
 export function createShutdown(cleanup: () => Promise<void>): () => Promise<void> {
   let pending: Promise<void> | undefined;
   return () => (pending ??= Promise.resolve().then(cleanup));
+}
+
+export interface TokenCounter {
+  readonly version: string;
+  count(text: string): number;
 }

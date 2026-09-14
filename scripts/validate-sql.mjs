@@ -44,7 +44,17 @@ try {
   for (const file of [
     'docs/architecture/data/001_initial_schema.sql',
     'docs/architecture/data/002_identity_schema.sql',
+    'docs/architecture/data/003_contribution_context.sql',
+    'docs/architecture/data/004_human_assessment.sql',
+    'docs/architecture/data/005_review_publication.sql',
+    'docs/architecture/data/006_retrieval.sql',
+    'docs/architecture/data/007_validation.sql',
+    'docs/architecture/data/008_configuration.sql',
     'ops/db/003_runtime_roles.sql',
+    'ops/db/006_governance_grants.sql',
+    'ops/db/007_retrieval_grants.sql',
+    'ops/db/008_validation_grants.sql',
+    'ops/db/009_configuration_grants.sql',
     'tests/contracts/phase-a-schema.sql',
     'tests/integration/runtime-roles.sql',
   ]) {

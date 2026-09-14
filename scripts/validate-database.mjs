@@ -84,12 +84,23 @@ try {
     MIGRATION_DATABASE_URL: ownerUrl,
   });
   docker(psql, readFileSync(new URL('ops/db/003_runtime_roles.sql', root), 'utf8'));
-  node(['--import', 'tsx', '--test', 'tests/integration/database.test.ts'], {
-    ...process.env,
-    ACCREMIND_TEST_DATABASE_URL: apiUrl,
-    ACCREMIND_TEST_OWNER_URL: ownerUrl,
-    ACCREMIND_TEST_GUARD: guard,
-  });
+  node(
+    [
+      '--import',
+      'tsx',
+      '--test',
+      'tests/integration/database.test.ts',
+      'tests/integration/contributions.test.ts',
+      'tests/integration/assessments.test.ts',
+      'tests/integration/governance.test.ts',
+    ],
+    {
+      ...process.env,
+      ACCREMIND_TEST_DATABASE_URL: apiUrl,
+      ACCREMIND_TEST_OWNER_URL: ownerUrl,
+      ACCREMIND_TEST_GUARD: guard,
+    },
+  );
 } finally {
   if (started) {
     docker(['stop', '--timeout', '5', name]);

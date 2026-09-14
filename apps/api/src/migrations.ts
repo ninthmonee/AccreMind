@@ -2,9 +2,18 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { TransactionPool } from './database.js';
 
-const migrationFiles = ['001_initial_schema.sql', '002_identity_schema.sql'] as const;
+const migrationFiles = [
+  '001_initial_schema.sql',
+  '002_identity_schema.sql',
+  '003_contribution_context.sql',
+  '004_human_assessment.sql',
+  '005_review_publication.sql',
+  '006_retrieval.sql',
+  '007_validation.sql',
+  '008_configuration.sql',
+] as const;
 
-/** Explicit operator action, never called by API startup. Initial migrations only.
+/** Explicit operator action, never called by API startup. Additive migrations in file order.
  * Existing untracked schemas are NOT silently adopted; they fail safely.
  * Runtime role provisioning is separate from schema migrations.
  */

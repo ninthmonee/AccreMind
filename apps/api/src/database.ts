@@ -68,3 +68,30 @@ export async function withPrincipalTransaction<T>(
     client.release(discard);
   }
 }
+
+export async function tenantTransaction<T>(
+  pool: TransactionPool,
+  tenant: string,
+  run: (client: TransactionClient) => Promise<T>,
+) {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(tenant))
+    throw new AccessDeniedError();
+  const client = await pool.connect();
+  let discard = false;
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('akb.tenant_id',$1,true)", [tenant]);
+    const result = await run(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      discard = true;
+    }
+    throw error;
+  } finally {
+    client.release(discard);
+  }
+}

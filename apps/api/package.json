@@ -18,5 +18,19 @@
   },
   "devDependencies": {
     "@types/pg": "8.15.5"
+  },
+  "exports": {
+    "./publication-worker": {
+      "types": "./dist/publication-worker.d.ts",
+      "import": "./dist/publication-worker.js"
+    },
+    "./search-index": {
+      "types": "./dist/search-index.d.ts",
+      "import": "./dist/search-index.js"
+    },
+    "./stores": {
+      "types": "./dist/stores.d.ts",
+      "import": "./dist/stores.js"
+    }
   }
 }

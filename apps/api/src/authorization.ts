@@ -8,7 +8,7 @@ import type { TransactionClient, TransactionPool } from './database.js';
  * The principal check is repeated in the SQL statement to avoid stale ACL caches.
  * Scope filtering happens in PostgreSQL before any protected data is returned.
  */
-const allowedScopesSql = `
+export const allowedScopesSql = `
   SELECT DISTINCT target.id
   FROM akb.scopes target
   LEFT JOIN akb.repos repo

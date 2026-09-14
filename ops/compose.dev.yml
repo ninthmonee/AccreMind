@@ -12,6 +12,12 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ../docs/architecture/data/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
       - ../docs/architecture/data/002_identity_schema.sql:/docker-entrypoint-initdb.d/002_identity_schema.sql:ro
+      - ../docs/architecture/data/003_contribution_context.sql:/docker-entrypoint-initdb.d/002b_contribution_context.sql:ro
+      - ../docs/architecture/data/004_human_assessment.sql:/docker-entrypoint-initdb.d/002c_human_assessment.sql:ro
+      - ../docs/architecture/data/005_review_publication.sql:/docker-entrypoint-initdb.d/002d_review_publication.sql:ro
+      - ../docs/architecture/data/006_retrieval.sql:/docker-entrypoint-initdb.d/002e_retrieval.sql:ro
+      - ../docs/architecture/data/007_validation.sql:/docker-entrypoint-initdb.d/002f_validation.sql:ro
+      - ../docs/architecture/data/008_configuration.sql:/docker-entrypoint-initdb.d/002g_configuration.sql:ro
       - ./db/003_runtime_roles.sql:/docker-entrypoint-initdb.d/003_runtime_roles.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U akb_migration -d accremind_dev']

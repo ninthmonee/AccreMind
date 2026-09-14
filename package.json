@@ -20,9 +20,15 @@
     "test": "node --import tsx --test tests/unit/*.test.ts tests/integration/*.test.ts tests/e2e/*.test.ts",
     "test:database": "node scripts/validate-database.mjs",
     "verify": "pnpm contracts:check && pnpm build && pnpm typecheck && pnpm lint && pnpm test && pnpm format:check",
-    "dev": "pnpm --filter @accremind/contracts build && pnpm --filter @accremind/domain build && node scripts/dev.mjs",
+    "dev": "pnpm --filter @accremind/contracts build && pnpm --filter @accremind/domain build && pnpm --filter @accremind/api build && node scripts/dev.mjs",
     "db:up": "docker compose -f ops/compose.dev.yml up -d --wait",
-    "db:stop": "docker compose -f ops/compose.dev.yml stop"
+    "db:stop": "docker compose -f ops/compose.dev.yml stop",
+    "synthetic:seed": "node --env-file-if-exists=.env --import tsx apps/api/src/seed-synthetic.ts",
+    "synthetic:demo": "node --env-file-if-exists=.env scripts/demo-contribution.mjs",
+    "synthetic:reindex": "node --env-file-if-exists=.env --import tsx apps/api/src/reindex-synthetic.ts",
+    "synthetic:config:revoke": "node --env-file-if-exists=.env --import tsx apps/api/src/revoke-synthetic-config.ts",
+    "synthetic:assessment": "node --env-file-if-exists=.env --import tsx scripts/demo-assessment.mjs",
+    "synthetic:knowledge": "node --env-file-if-exists=.env --import tsx scripts/demo-knowledge.ts"
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "12.0.0",

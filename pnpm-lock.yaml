@@ -121,6 +121,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@accremind/api':
+        specifier: workspace:*
+        version: link:../api
       '@accremind/domain':
         specifier: workspace:*
         version: link:../../packages/domain
