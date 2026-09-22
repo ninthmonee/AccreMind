@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "accremind": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/AccreMind-v2/apps/tool/dist/cli.js", "mcp", "serve"]
-    }
-  }
-}
