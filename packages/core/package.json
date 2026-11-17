@@ -1,0 +1,12 @@
+{
+  "name": "@accremind/core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Zero-dependency local engineering knowledge delta engine (Markdown SoT + node:sqlite FTS5)",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

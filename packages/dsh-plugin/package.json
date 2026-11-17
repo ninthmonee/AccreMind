@@ -1,0 +1,20 @@
+{
+  "name": "@accremind/dsh-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DeepSeek Harness (Cordis) native plugin for AccreMind local engineering experience engine",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@accremind/core": "workspace:*"
+  }
+}

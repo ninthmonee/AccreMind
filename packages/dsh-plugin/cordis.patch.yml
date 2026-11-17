@@ -1,0 +1,16 @@
+plugins:
+  - id: accremind
+    name: '@accremind/dsh-plugin'
+    config:
+      globalDir: '~/.dsh/accremind'
+      projectDirName: '.accremind'
+      writeGate: 'probation'
+      maxProbationExposures: 3
+      assessmentMode: 'single_pass'
+      budgets:
+        residentRulesTokens: 500
+        turnRadarTokens: 300
+        toolGuardTokens: 240
+        toolReadMaxTokens: 1500
+      autoCapture:
+        enabled: true

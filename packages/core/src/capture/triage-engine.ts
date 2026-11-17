@@ -1,0 +1,277 @@
+import { randomUUID } from 'node:crypto';
+import type {
+  CaptureAssessment,
+  Disposition,
+  KnowledgeEntry,
+  NavigationItem,
+  StorageZone,
+} from '../contracts/types.ts';
+import { enforceHardPublishGate, validateCaptureAssessment } from '../contracts/validator.ts';
+import type { KnowledgeStoreProvider } from '../store/provider.ts';
+import { isSensitiveFilePath, redactSensitiveText } from './secret-redactor.ts';
+
+export interface TriageCandidateInput {
+  assessment: CaptureAssessment;
+  candidateEntry?: KnowledgeEntry | null;
+  navigationTarget?: {
+    title: string;
+    locator: string;
+    summary: string;
+  };
+}
+
+export interface SingleTriageOutcome {
+  assessmentId: string;
+  duplicate: boolean;
+  finalDisposition: Disposition;
+  persistedEntry: KnowledgeEntry | null;
+  persistedZone: StorageZone | null;
+  navigationItem: NavigationItem | null;
+  downgradedReason?: string;
+}
+
+export interface BatchTriageReport {
+  outcomes: SingleTriageOutcome[];
+  dispositionCounts: Record<Disposition, number>;
+  persistedExperienceEntries: KnowledgeEntry[];
+}
+
+export class TriageEngine {
+  private readonly store: KnowledgeStoreProvider;
+  private readonly writeGate: 'probation' | 'review' | 'off';
+
+  constructor(store: KnowledgeStoreProvider, writeGate: 'probation' | 'review' | 'off') {
+    this.store = store;
+    this.writeGate = writeGate;
+  }
+
+  processCandidate(input: TriageCandidateInput): SingleTriageOutcome {
+    // 1. Idempotency check by source_fingerprint (PRD §3.4 / §6.6)
+    const existing = this.store.findAssessmentByFingerprint(input.assessment.source_fingerprint);
+    if (existing) {
+      return {
+        assessmentId: existing.id,
+        duplicate: true,
+        finalDisposition: existing.disposition,
+        persistedEntry: null,
+        persistedZone: null,
+        navigationItem: null,
+      };
+    }
+
+    // 2. Scrub any accidental secrets inside assessment text fields
+    const sanitizedAssessment: CaptureAssessment = {
+      ...input.assessment,
+      question: redactSensitiveText(input.assessment.question).redactedText,
+      baseline_answer: redactSensitiveText(input.assessment.baseline_answer).redactedText,
+      knowledge_delta: redactSensitiveText(input.assessment.knowledge_delta).redactedText,
+      omission_consequence: redactSensitiveText(input.assessment.omission_consequence).redactedText,
+      checked_context: {
+        ...input.assessment.checked_context,
+        checked_files: input.assessment.checked_context.checked_files.filter(
+          (f) => !isSensitiveFilePath(f),
+        ),
+      },
+    };
+
+    // 3. Auto-downgrade invalid `knowledge_candidate` attempts (e.g. P0 without evidence,
+    //    unverified guesses, inconclusive baseline check, or empty delta -> `needs_confirmation` / `index_only`)
+    let effectiveAssessment = sanitizedAssessment;
+    let downgradedReason: string | undefined;
+
+    const assessmentIssues = validateCaptureAssessment(effectiveAssessment);
+    if (assessmentIssues.length > 0) {
+      if (effectiveAssessment.discoverability === 'code_recoverable') {
+        effectiveAssessment = { ...effectiveAssessment, disposition: 'index_only' };
+        downgradedReason = assessmentIssues.map((i) => i.message).join('; ');
+      } else if (effectiveAssessment.discoverability === 'authoritative_source') {
+        effectiveAssessment = { ...effectiveAssessment, disposition: 'link_existing' };
+        downgradedReason = assessmentIssues.map((i) => i.message).join('; ');
+      } else {
+        effectiveAssessment = {
+          ...effectiveAssessment,
+          discoverability:
+            effectiveAssessment.discoverability === 'missing_context'
+              ? 'missing_context'
+              : 'inconclusive',
+          disposition: 'needs_confirmation',
+        };
+        downgradedReason = assessmentIssues.map((i) => i.message).join('; ');
+      }
+    }
+
+    // 4. Execute Five-Way Disposition Routing
+    switch (effectiveAssessment.disposition) {
+      case 'index_only':
+      case 'link_existing': {
+        this.store.recordAssessment(effectiveAssessment, null);
+        const navLocator =
+          input.navigationTarget?.locator ??
+          effectiveAssessment.checked_context.checked_files[0] ??
+          effectiveAssessment.checked_context.checked_docs[0] ??
+          'README.md';
+        const navItem: NavigationItem = {
+          id: `NAV-${randomUUID().slice(0, 8)}`,
+          kind:
+            effectiveAssessment.disposition === 'index_only' ? 'code_index' : 'authoritative_link',
+          title: input.navigationTarget?.title ?? effectiveAssessment.question,
+          locator: navLocator,
+          summary:
+            input.navigationTarget?.summary ??
+            (effectiveAssessment.baseline_answer || '当前代码或权威文档已包含完整依据'),
+          assessment_id: effectiveAssessment.id,
+          created_at: new Date().toISOString(),
+        };
+        this.store.appendNavigationItem(navItem);
+        return {
+          assessmentId: effectiveAssessment.id,
+          duplicate: false,
+          finalDisposition: effectiveAssessment.disposition,
+          persistedEntry: null,
+          persistedZone: null,
+          navigationItem: navItem,
+          downgradedReason,
+        };
+      }
+
+      case 'needs_confirmation':
+      case 'discard': {
+        this.store.recordAssessment(effectiveAssessment, input.candidateEntry ?? null);
+        return {
+          assessmentId: effectiveAssessment.id,
+          duplicate: false,
+          finalDisposition: effectiveAssessment.disposition,
+          persistedEntry: null,
+          persistedZone: null,
+          navigationItem: null,
+          downgradedReason,
+        };
+      }
+
+      case 'knowledge_candidate': {
+        if (!input.candidateEntry) {
+          const fallback: CaptureAssessment = {
+            ...effectiveAssessment,
+            disposition: 'needs_confirmation',
+          };
+          this.store.recordAssessment(fallback, null);
+          return {
+            assessmentId: fallback.id,
+            duplicate: false,
+            finalDisposition: 'needs_confirmation',
+            persistedEntry: null,
+            persistedZone: null,
+            navigationItem: null,
+            downgradedReason: '缺少候选条目结构 candidateEntry',
+          };
+        }
+
+        const sanitizedEntry: KnowledgeEntry = {
+          ...input.candidateEntry,
+          capture_assessment_id: effectiveAssessment.id,
+          claim: redactSensitiveText(input.candidateEntry.claim).redactedText,
+          knowledge_delta: redactSensitiveText(input.candidateEntry.knowledge_delta).redactedText,
+          rationale: redactSensitiveText(input.candidateEntry.rationale).redactedText,
+        };
+
+        const gate = enforceHardPublishGate(sanitizedEntry, effectiveAssessment);
+        if (!gate.ok) {
+          const downgraded: CaptureAssessment = {
+            ...effectiveAssessment,
+            disposition: 'needs_confirmation',
+          };
+          this.store.recordAssessment(downgraded, sanitizedEntry);
+          return {
+            assessmentId: downgraded.id,
+            duplicate: false,
+            finalDisposition: 'needs_confirmation',
+            persistedEntry: null,
+            persistedZone: null,
+            navigationItem: null,
+            downgradedReason: gate.missingFields.join('; '),
+          };
+        }
+
+        if (this.writeGate === 'review') {
+          const candidateOnly: KnowledgeEntry = { ...sanitizedEntry, status: 'candidate' };
+          this.store.recordAssessment(effectiveAssessment, candidateOnly);
+          return {
+            assessmentId: effectiveAssessment.id,
+            duplicate: false,
+            finalDisposition: 'knowledge_candidate',
+            persistedEntry: null,
+            persistedZone: null,
+            navigationItem: null,
+          };
+        }
+
+        // Default V3.1 `probation` mode: enters ~/.dsh/accremind/probation/ for zero-friction trial
+        if (this.writeGate === 'probation') {
+          const probationEntry: KnowledgeEntry = {
+            ...sanitizedEntry,
+            status: 'probation',
+            maturity: 'draft',
+          };
+          const saved = this.store.upsertEntry(probationEntry, 'probation', effectiveAssessment);
+          return {
+            assessmentId: effectiveAssessment.id,
+            duplicate: false,
+            finalDisposition: 'knowledge_candidate',
+            persistedEntry: saved,
+            persistedZone: 'probation',
+            navigationItem: null,
+          };
+        }
+
+        // `off` mode: writes directly to target active zone (still strictly gated by S03 above!)
+        const targetZone: StorageZone =
+          sanitizedEntry.layer === 'shared_tech'
+            ? 'shared_tech'
+            : sanitizedEntry.layer === 'personal'
+              ? 'personal'
+              : 'project';
+        const activeEntry: KnowledgeEntry = { ...sanitizedEntry, status: 'active' };
+        const saved = this.store.upsertEntry(activeEntry, targetZone, effectiveAssessment);
+        return {
+          assessmentId: effectiveAssessment.id,
+          duplicate: false,
+          finalDisposition: 'knowledge_candidate',
+          persistedEntry: saved,
+          persistedZone: targetZone,
+          navigationItem: null,
+        };
+      }
+    }
+  }
+
+  /**
+   * Processes a batch of candidates; explicitly allows returning 0 experience entries
+   * when none qualify (PRD §1.4 & §6.8.5 Rule 7).
+   */
+  processBatch(inputs: TriageCandidateInput[]): BatchTriageReport {
+    const counts: Record<Disposition, number> = {
+      index_only: 0,
+      link_existing: 0,
+      knowledge_candidate: 0,
+      needs_confirmation: 0,
+      discard: 0,
+    };
+    const outcomes: SingleTriageOutcome[] = [];
+    const persistedExperienceEntries: KnowledgeEntry[] = [];
+
+    for (const item of inputs) {
+      const out = this.processCandidate(item);
+      outcomes.push(out);
+      counts[out.finalDisposition] += 1;
+      if (out.persistedEntry && out.persistedEntry.knowledge_role === 'experience') {
+        persistedExperienceEntries.push(out.persistedEntry);
+      }
+    }
+
+    return {
+      outcomes,
+      dispositionCounts: counts,
+      persistedExperienceEntries,
+    };
+  }
+}

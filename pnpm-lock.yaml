@@ -1,0 +1,24 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      '@accremind/core':
+        specifier: workspace:*
+        version: link:packages/core
+      '@accremind/dsh-plugin':
+        specifier: workspace:*
+        version: link:packages/dsh-plugin
+
+  packages/core: {}
+
+  packages/dsh-plugin:
+    dependencies:
+      '@accremind/core':
+        specifier: workspace:*
+        version: link:../core
