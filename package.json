@@ -8,10 +8,13 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "build": "node scripts/build.ts",
+    "pretest": "node scripts/build.ts",
     "test": "node --test tests/*.test.ts",
-    "verify": "node --test tests/*.test.ts",
-    "bootstrap": "node packages/core/src/cli.ts bootstrap",
-    "accremind": "node packages/core/src/cli.ts"
+    "verify": "node scripts/build.ts && node --test tests/*.test.ts",
+    "ui": "node packages/dsh-plugin/src/cli.ts ui",
+    "bootstrap": "node packages/dsh-plugin/src/cli.ts bootstrap",
+    "accremind": "node packages/dsh-plugin/src/cli.ts"
   },
   "devDependencies": {
     "@accremind/core": "workspace:*",

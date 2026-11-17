@@ -1089,6 +1089,260 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       .all(this.workspaceId, GLOBAL_WORKSPACE_ID) as unknown as CorruptedFileRecord[];
   }
 
+  listEntriesForAdmin(filter: {
+    status?: KnowledgeEntry['status'];
+    freshness?: KnowledgeEntry['freshness'];
+    serving?: KnowledgeEntry['serving'];
+    layer?: KnowledgeEntry['layer'];
+    type?: KnowledgeEntry['type'];
+    query?: string;
+  } = {}): Array<{ entry: KnowledgeEntry; storageZone: StorageZone; probationExposures: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM entries
+         WHERE workspace_id IN (?, ?)
+         ORDER BY updated_at DESC, id ASC`,
+      )
+      .all(this.workspaceId, GLOBAL_WORKSPACE_ID) as unknown as EntryRow[];
+
+    const q = filter.query?.trim().toLowerCase() ?? '';
+    const out: Array<{
+      entry: KnowledgeEntry;
+      storageZone: StorageZone;
+      probationExposures: number;
+    }> = [];
+
+    for (const row of rows) {
+      const entry = rowToEntry(row);
+      if (filter.status && entry.status !== filter.status) continue;
+      if (filter.freshness && entry.freshness !== filter.freshness) continue;
+      if (filter.serving && entry.serving !== filter.serving) continue;
+      if (filter.layer && entry.layer !== filter.layer) continue;
+      if (filter.type && entry.type !== filter.type) continue;
+      if (q) {
+        const hay = [
+          entry.id,
+          entry.title,
+          entry.claim,
+          entry.knowledge_delta,
+          entry.search_aliases.join(' '),
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      out.push({
+        entry,
+        storageZone: row.storage_zone,
+        probationExposures: row.probation_exposures,
+      });
+    }
+
+    return out;
+  }
+
+  listAssessments(options: {
+    reviewState?: 'pending' | 'decided' | 'all';
+    limit?: number;
+  } = {}): Array<{
+    assessment: CaptureAssessment;
+    reviewState: string;
+    candidateDraft: KnowledgeEntry | null;
+  }> {
+    const state = options.reviewState ?? 'all';
+    const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
+
+    const rows =
+      state === 'all'
+        ? (this.db
+            .prepare(
+              `SELECT * FROM capture_assessments
+               WHERE workspace_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?`,
+            )
+            .all(this.workspaceId, limit) as Array<Record<string, unknown>>)
+        : (this.db
+            .prepare(
+              `SELECT * FROM capture_assessments
+               WHERE workspace_id = ? AND review_state = ?
+               ORDER BY created_at DESC
+               LIMIT ?`,
+            )
+            .all(this.workspaceId, state, limit) as Array<Record<string, unknown>>);
+
+    return rows.map((row) => ({
+      assessment: this.mapAssessmentRow(row),
+      reviewState: String(row.review_state ?? 'pending'),
+      candidateDraft: row.candidate_entry_json
+        ? (JSON.parse(String(row.candidate_entry_json)) as KnowledgeEntry)
+        : null,
+    }));
+  }
+
+  decideAssessment(input: {
+    assessmentId: string;
+    decision: 'approve_active' | 'approve_probation' | 'index_only' | 'link_existing' | 'discard';
+    editedEntry?: KnowledgeEntry;
+  }): {
+    ok: boolean;
+    missingFields?: string[];
+    persistedEntry?: KnowledgeEntry;
+  } {
+    const rawRow = this.db
+      .prepare('SELECT * FROM capture_assessments WHERE id = ?')
+      .get(input.assessmentId) as Record<string, unknown> | undefined;
+    if (!rawRow) {
+      throw new Error(`未找到判定记录: ${input.assessmentId}`);
+    }
+
+    const assessment = this.mapAssessmentRow(rawRow);
+    const storedDraft = rawRow.candidate_entry_json
+      ? (JSON.parse(String(rawRow.candidate_entry_json)) as KnowledgeEntry)
+      : null;
+    const now = new Date().toISOString();
+
+    if (input.decision === 'discard') {
+      this.db
+        .prepare(
+          `UPDATE capture_assessments
+           SET disposition = 'discard', review_state = 'decided', decided_at = ?
+           WHERE id = ?`,
+        )
+        .run(now, assessment.id);
+      return { ok: true };
+    }
+
+    if (input.decision === 'index_only' || input.decision === 'link_existing') {
+      const locator =
+        assessment.checked_context.checked_files[0] ??
+        assessment.checked_context.checked_docs[0] ??
+        'README.md';
+      this.appendNavigationItem({
+        id: `NAV-${randomUUID().slice(0, 8)}`,
+        kind: input.decision === 'index_only' ? 'code_index' : 'authoritative_link',
+        title: storedDraft?.title ?? assessment.question,
+        locator,
+        summary: assessment.baseline_answer || assessment.question,
+        assessment_id: assessment.id,
+        created_at: now,
+      });
+      this.db
+        .prepare(
+          `UPDATE capture_assessments
+           SET disposition = ?, review_state = 'decided', decided_at = ?
+           WHERE id = ?`,
+        )
+        .run(input.decision, now, assessment.id);
+      return { ok: true };
+    }
+
+    const draft = input.editedEntry ?? storedDraft;
+    if (!draft) {
+      return { ok: false, missingFields: ['candidateEntry: 缺少候选卡片数据'] };
+    }
+
+    const targetStatus: KnowledgeEntry['status'] =
+      input.decision === 'approve_active' ? 'active' : 'probation';
+    const targetZone: StorageZone =
+      input.decision === 'approve_probation'
+        ? 'probation'
+        : draft.layer === 'shared_tech'
+          ? 'shared_tech'
+          : draft.layer === 'personal'
+            ? 'personal'
+            : 'project';
+
+    const approvedAssessment: CaptureAssessment = {
+      ...assessment,
+      discoverability: 'missing_context',
+      disposition: 'knowledge_candidate',
+    };
+    const finalEntry: KnowledgeEntry = {
+      ...draft,
+      capture_assessment_id: approvedAssessment.id,
+      status: targetStatus,
+      updated_at: now,
+    };
+
+    const gate = enforceHardPublishGate(finalEntry, approvedAssessment);
+    if (!gate.ok) {
+      return { ok: false, missingFields: gate.missingFields };
+    }
+
+    const saved = this.upsertEntry(finalEntry, targetZone, approvedAssessment);
+    this.db
+      .prepare(`UPDATE capture_assessments SET review_state = 'decided', decided_at = ? WHERE id = ?`)
+      .run(now, approvedAssessment.id);
+
+    return { ok: true, persistedEntry: saved };
+  }
+
+  /**
+   * Saves a new revision of an existing entry (PRD §5.2 & §5.3):
+   * - `substantive` edits increment `revision` and reset `maturity` to `'draft'`!
+   * - `editorial` edits increment `revision` while preserving `maturity`.
+   */
+  saveRevision(input: {
+    id: string;
+    patch: Partial<KnowledgeEntry>;
+    revisionImpact: 'substantive' | 'editorial';
+  }): { ok: true; entry: KnowledgeEntry } | { ok: false; missingFields: string[] } {
+    const row = this.findRawEntryRow(input.id);
+    if (!row) {
+      throw new Error(`未找到待编辑条目: ${input.id}`);
+    }
+    const existing = rowToEntry(row);
+    const now = new Date().toISOString();
+    const reviewDue = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
+
+    const nextEntry: KnowledgeEntry = {
+      ...existing,
+      ...input.patch,
+      id: existing.id,
+      revision: existing.revision + 1,
+      maturity: input.revisionImpact === 'substantive' ? 'draft' : existing.maturity,
+      freshness: 'current',
+      updated_at: now,
+      review_due_at: input.patch.review_due_at ?? reviewDue,
+    };
+
+    const assessment = nextEntry.capture_assessment_id
+      ? this.getAssessment(nextEntry.capture_assessment_id)
+      : null;
+
+    if (nextEntry.status === 'active' || nextEntry.status === 'probation') {
+      const gate = enforceHardPublishGate(nextEntry, assessment);
+      if (!gate.ok) {
+        return { ok: false, missingFields: gate.missingFields };
+      }
+    }
+
+    return { ok: true, entry: this.updateExistingEntryDirect(nextEntry) };
+  }
+
+  listValidations(entryId: string): ValidationRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM validation_records
+         WHERE entry_id = ? AND workspace_id IN (?, ?)
+         ORDER BY created_at DESC`,
+      )
+      .all(entryId, this.workspaceId, GLOBAL_WORKSPACE_ID) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      id: String(r.id),
+      workspace_id: String(r.workspace_id),
+      entry_id: String(r.entry_id),
+      revision: Number(r.revision),
+      session_id: String(r.session_id),
+      task_fingerprint: String(r.task_fingerprint),
+      outcome: r.outcome as ValidationRecord['outcome'],
+      evidence_note: String(r.evidence_note),
+      created_at: String(r.created_at),
+    }));
+  }
+
   close(): void {
     this.db.close();
   }
