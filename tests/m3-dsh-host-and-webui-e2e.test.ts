@@ -238,17 +238,21 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
     for (const fn of cleanups) fn();
   });
 
-  it('validates WebUI client bundle syntax/security invariants and runs full WebUI RPC lifecycle (revision, S03 gate, S01 withdraw)', async () => {
-    // 1. Programmatic WebUI HTML + Embedded Script Syntax & Security Audit
+  it('validates Observatory WebUI bundle invariants and runs full WebUI RPC lifecycle (Demo Seed, 3-Lane Compiler Reactor, Delta Prism, S03/S01)', async () => {
+    // 1. Programmatic Observatory WebUI HTML + Embedded Script Syntax & Security Audit
     const html = renderAccreMindWebuiHtml({ embedded: false });
-    assert.match(html, /#1677ff/, 'Must use Ant Design 6 primary Seed Token #1677ff');
+    assert.match(html, /\[data-theme="dark"\]/, 'Must include Obsidian dark theme tokens');
+    assert.match(html, /\[data-theme="light"\]/, 'Must include Alabaster light theme tokens');
+    assert.match(html, /cmdk-mask/, 'Must include Command Palette (Cmd+K) modal');
     assert.equal(html.includes('node:sqlite'), false, 'WebUI client must never reference node:sqlite');
     assert.equal(html.includes('node:fs'), false, 'WebUI client must never reference node:fs');
 
     const scriptMatch = /<script>([\s\S]*?)<\/script>/.exec(html);
-    assert.ok(scriptMatch?.[1], 'Should contain inline WebUI controller script');
+    assert.ok(scriptMatch?.[1], 'Should contain inline Observatory controller script');
+    const clientCode = scriptMatch[1]!;
+    assert.equal(/\b(?:prompt|alert)\s*\(/.test(clientCode), false, 'Must use custom modals, ZERO native prompt()/alert()');
     // Compile client JS with Function constructor as a deterministic syntax gate!
-    assert.doesNotThrow(() => new Function(scriptMatch[1]!));
+    assert.doesNotThrow(() => new Function(clientCode));
 
     // 2. Full WebUI RPC End-to-End Lifecycle
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'accremind-m3-rpc-'));
@@ -263,6 +267,48 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
       globalDir,
       writeGate: 'probation',
     });
+
+    // Test Demo Playground Seeding -> Live 3-Lane Compiler Reactor -> Delta Prism Review -> Clean Clear!
+    await runtime.rpcHandlers['accremind.demo.seed']!({});
+    const seededOv = (await runtime.rpcHandlers['accremind.dashboard.overview']!({})) as {
+      hasDemoSeeded: boolean;
+      counts: { rulesCount: number; pendingReviewCount: number };
+    };
+    assert.equal(seededOv.hasDemoSeeded, true);
+    assert.equal(seededOv.counts.rulesCount, 1);
+    assert.equal(seededOv.counts.pendingReviewCount, 1);
+
+    // Live 3-Lane Compiler Reactor (`accremind.sim.compile`): vague prompt + mid-turn `src/payment/webhook.ts`
+    const reactorOut = (await runtime.rpcHandlers['accremind.sim.compile']!({
+      userPrompt: '帮我重构一下账务结算模块代码结构',
+      midTurnToolFile: 'src/payment/webhook.ts',
+    })) as {
+      residentPrefix: string;
+      residentSha256: string;
+      guardBlock: string;
+      guardSurfacedIds: string[];
+    };
+    assert.match(reactorOut.residentPrefix, /R-0901@r1/);
+    assert.notEqual(reactorOut.residentSha256, 'empty');
+    assert.match(reactorOut.guardBlock, /<accremind-guard/);
+    assert.ok(reactorOut.guardSurfacedIds.includes('K-0901'));
+
+    // Approve pending Delta Prism candidate (`CA-DEMO-04`) into active project store
+    const prismDecide = (await runtime.rpcHandlers['accremind.review.decide']!({
+      assessmentId: 'CA-DEMO-04',
+      decision: 'approve_active',
+    })) as { ok: boolean; persistedEntry?: KnowledgeEntry };
+    assert.equal(prismDecide.ok, true);
+    assert.equal(prismDecide.persistedEntry?.id, 'K-0904');
+
+    // Clear demo samples back to pristine state
+    await runtime.rpcHandlers['accremind.demo.clear']!({});
+    const clearedOv = (await runtime.rpcHandlers['accremind.dashboard.overview']!({})) as {
+      hasDemoSeeded: boolean;
+      counts: { totalEntries: number };
+    };
+    assert.equal(clearedOv.hasDemoSeeded, false);
+    assert.equal(clearedOv.counts.totalEntries, 0);
 
     // Capture via tool -> enters `probation`
     const capTool = runtime.tools.find((t) => t.name === 'accremind_capture')!;

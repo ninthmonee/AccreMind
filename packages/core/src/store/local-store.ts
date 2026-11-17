@@ -465,7 +465,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     this.db.exec('BEGIN');
     try {
       if (resolvedAssessment) {
-        this.recordAssessmentInTx(resolvedAssessment, entry);
+        this.recordAssessmentInTx(resolvedAssessment, entry, 'decided');
       }
       this.indexEntryRow(
         wsId,
@@ -768,6 +768,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   private recordAssessmentInTx(
     assessment: CaptureAssessment,
     candidateDraft?: KnowledgeEntry | null,
+    reviewStateOverride?: 'pending' | 'decided',
   ): void {
     const issues = validateCaptureAssessment(assessment);
     if (issues.length > 0) {
@@ -775,6 +776,10 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
         `CaptureAssessment 校验失败: ${issues.map((i) => `${i.field}:${i.message}`).join('; ')}`,
       );
     }
+
+    const reviewState =
+      reviewStateOverride ??
+      (assessment.disposition === 'knowledge_candidate' ? 'pending' : 'decided');
 
     this.db
       .prepare(
@@ -799,7 +804,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
         assessment.priority,
         assessment.disposition,
         candidateDraft ? JSON.stringify(candidateDraft) : null,
-        assessment.disposition === 'knowledge_candidate' ? 'pending' : 'decided',
+        reviewState,
         assessment.created_at,
       );
   }

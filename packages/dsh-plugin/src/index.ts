@@ -143,6 +143,8 @@ export function createAccreMindRuntime(
   });
   const rpcHandlers = createWebuiRpcHandlers({
     store,
+    viewCompiler,
+    budgets: config.budgets,
     stalenessScanner,
     triageEngine,
     autoCapture,
