@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+  KNOWLEDGE_LAYERS,
+  REPOSITORY_KNOWLEDGE_LAYERS,
+  isRepositoryKnowledgeLayer,
   exportEntryToDshSkill,
   extractSymbolAnchor,
   sha256Hex,
@@ -54,7 +57,7 @@ export function createAccreMindTools(deps: {
         },
         layer: {
           type: 'string',
-          enum: ['personal', 'team_rule', 'shared_tech', 'project'],
+          enum: [...KNOWLEDGE_LAYERS],
         },
         file_path: { type: 'string', description: '仓库相对文件路径' },
         limit: { type: 'number', description: '最大返回条数（默认 5）' },
@@ -88,6 +91,7 @@ export function createAccreMindTools(deps: {
         id: h.entry.id,
         revision: h.entry.revision,
         type: h.entry.type,
+        layer: h.entry.layer,
         title: h.entry.title,
         status: h.entry.status,
         maturity: h.entry.maturity,
@@ -153,6 +157,7 @@ export function createAccreMindTools(deps: {
     baseline_answer: string;
     knowledge_delta: string;
     title?: string;
+    layer?: (typeof REPOSITORY_KNOWLEDGE_LAYERS)[number];
     type?: KnowledgeType;
     polarity?: 'recommend' | 'avoid';
     priority?: Priority;
@@ -172,6 +177,7 @@ export function createAccreMindTools(deps: {
     parameters: {
       type: 'object',
       properties: {
+        layer: {type:'string', enum:[...REPOSITORY_KNOWLEDGE_LAYERS], description:'本仓库内的知识范围。领域业务约束选 domain，仓库实现选 project；未指定时归项目知识。'},
         question: { type: 'string', description: '不含答案暗示的中立场景问题' },
         discoverability: {
           type: 'string',
@@ -200,6 +206,9 @@ export function createAccreMindTools(deps: {
       required: ['question', 'discoverability', 'disposition', 'baseline_answer', 'knowledge_delta'],
     },
     execute(args) {
+      if (args.layer !== undefined && !isRepositoryKnowledgeLayer(args.layer)) {
+        return errText('请选择业务领域知识（domain）或项目知识（project）');
+      }
       const now = new Date().toISOString();
       const reviewDue = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
       const assessmentId = `CA-${randomUUID().slice(0, 8)}`;
@@ -259,7 +268,7 @@ export function createAccreMindTools(deps: {
           type: args.type ?? 'pitfall',
           ...(args.polarity ? { polarity: args.polarity } : {}),
           knowledge_role: 'experience',
-          layer: 'project',
+          layer: args.layer ?? 'project',
           title: args.title,
           search_aliases: args.search_aliases ?? [],
           claim: args.claim,

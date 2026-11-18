@@ -22,6 +22,73 @@ afterEach(() => {
 });
 
 describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjection`, `tools/post-execute`) & WebUI RPC E2E', () => {
+  it('keeps incomplete assessments pending and promotes the same card after human evidence is supplied', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'accremind-review-'));
+    tempDirs.push(base);
+    const repo = path.join(base, 'repo');
+    fs.mkdirSync(repo);
+    const runtime = createAccreMindRuntime({projectRoot:repo, globalDir:path.join(base,'global')});
+    try {
+      const delta = '支付渠道重复交付回调时需保存去重凭据';
+      const assessment: CaptureAssessment = {
+        id:'CA-human', workspace_id:runtime.store.workspaceId, source_fingerprint:'fp-human',
+        question:'支付渠道重复交付回调时如何处理？', baseline_answer:'可定位回调入口。',
+        knowledge_delta:delta, checked_context:{head_commit:'HEAD', checked_files:[], checked_docs:[],
+          method:'single_pass_check', token_used:40, duration_ms:10},
+        discoverability:'inconclusive', disposition:'needs_confirmation',
+        claim_evidence_map:[{assertion:delta, evidence_locator:null, verified_fact:false}],
+        omission_consequence:'重复记账', priority:'P1', created_at:new Date().toISOString(),
+      };
+      runtime.store.recordAssessment(assessment);
+      assert.equal(runtime.store.getReviewItem(assessment.id)?.reviewState, 'pending');
+      const decide = (params:Record<string, unknown>) =>
+        runtime.rpcHandlers['accremind.review.decide']!({assessmentId:assessment.id, ...params});
+      const blocked = await decide({decision:'approve_probation'}) as {ok:boolean};
+      assert.equal(blocked.ok,false);
+      const wrongScope = await decide({decision:'supplement', editedEntry:{layer:'shared_tech'}}) as {ok:boolean};
+      assert.equal(wrongScope.ok,false);
+      await decide({decision:'supplement', editedEntry:{layer:'domain'}, knowledgeDelta:delta, evidenceLocator:'tests/pay.ts#L13',
+        evidenceNote:'重复回调回归用例中出现两笔扣款'});
+      const draftId = runtime.store.getReviewItem(assessment.id)?.candidateDraft?.id;
+      assert.equal(runtime.store.getReviewItem(assessment.id)?.candidateDraft?.layer,'domain');
+      const approved = await decide({decision:'approve_probation', editedEntry:{
+        title:'渠道回调必须在入口处去重', claim:delta, rationale:'支付渠道会重试超时的回调。',
+        preconditions:['支付回调入口'], invalidation_triggers:['重试协议变更'],
+        verification_method:'运行支付回调并发用例',
+      }}) as {ok:boolean; persistedEntry?:KnowledgeEntry};
+      assert.equal(approved.ok,true);
+      assert.equal(approved.persistedEntry?.id,draftId);
+      assert.equal(approved.persistedEntry?.layer,'domain');
+      assert.equal(approved.persistedEntry?.evidence[0]?.locator, 'tests/pay.ts#L13');
+      assert.equal(runtime.store.getReviewItem(assessment.id)?.reviewState,'decided');
+      assert.throws(() => decide({decision:'discard'}), /已由其他操作处理/);
+      for (let i = 0; i < 55; i++) {
+        runtime.store.recordAssessment({...assessment, id:'CA-page-' + i, source_fingerprint:'page-' + i});
+      }
+      const list = (offset:number) => runtime.rpcHandlers['accremind.review.listQueue']!({reviewState:'pending', offset}) as {items:{assessment:CaptureAssessment}[]; total:number; hasMore:boolean};
+      const first = list(0), second = list(50);
+      assert.equal(first.total,55);
+      assert.equal(first.hasMore,true);
+      assert.equal(second.items.length,5);
+      assert.equal(second.hasMore,false);
+      assert.equal(new Set([...first.items,...second.items].map(i => i.assessment.id)).size,55);
+      const otherRepo = path.join(base,'other');
+      fs.mkdirSync(otherRepo);
+      const other = createAccreMindRuntime({projectRoot:otherRepo,globalDir:path.join(base,'global')});
+      try {
+        assert.equal(other.store.getReviewItem(assessment.id),null);
+        assert.equal(other.store.findAssessmentByFingerprint(assessment.source_fingerprint),null);
+        other.store.recordAssessment({...assessment,id:'CA-other',workspace_id:other.store.workspaceId});
+        assert.equal(other.store.countAssessments('pending'),1);
+        assert.equal(runtime.store.findAssessmentByFingerprint(assessment.source_fingerprint)?.id,assessment.id);
+      } finally {
+        other.dispose();
+      }
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it('wires native `@deepseek-ai/dsh` systemPrompt section, non-mutating message projection, and `tools/post-execute` waterfall', async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'accremind-m3-dsh-'));
     tempDirs.push(base);
@@ -269,8 +336,10 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
     });
 
     // Test Demo Playground Seeding -> Live 3-Lane Compiler Reactor -> Delta Prism Review -> Clean Clear!
-    await runtime.rpcHandlers['accremind.demo.seed']!({});
-    const seededOv = (await runtime.rpcHandlers['accremind.dashboard.overview']!({})) as {
+    assert.throws(() => runtime.rpcHandlers['accremind.demo.seed']!({}));
+    const { token } = await runtime.rpcHandlers['accremind.demo.open']!({}) as { token: string };
+    const demo = (method: string, params = {}) => runtime.rpcHandlers['accremind.demo.call']!({ token, method, params });
+    const seededOv = (await demo('accremind.dashboard.overview')) as {
       hasDemoSeeded: boolean;
       counts: { rulesCount: number; pendingReviewCount: number };
     };
@@ -279,7 +348,7 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
     assert.equal(seededOv.counts.pendingReviewCount, 1);
 
     // Live 3-Lane Compiler Reactor (`accremind.sim.compile`): vague prompt + mid-turn `src/payment/webhook.ts`
-    const reactorOut = (await runtime.rpcHandlers['accremind.sim.compile']!({
+    const reactorOut = (await demo('accremind.sim.compile', {
       userPrompt: '帮我重构一下账务结算模块代码结构',
       midTurnToolFile: 'src/payment/webhook.ts',
     })) as {
@@ -294,7 +363,7 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
     assert.ok(reactorOut.guardSurfacedIds.includes('K-0901'));
 
     // Approve pending Delta Prism candidate (`CA-DEMO-04`) into active project store
-    const prismDecide = (await runtime.rpcHandlers['accremind.review.decide']!({
+    const prismDecide = (await demo('accremind.review.decide', {
       assessmentId: 'CA-DEMO-04',
       decision: 'approve_active',
     })) as { ok: boolean; persistedEntry?: KnowledgeEntry };
@@ -302,7 +371,7 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
     assert.equal(prismDecide.persistedEntry?.id, 'K-0904');
 
     // Clear demo samples back to pristine state
-    await runtime.rpcHandlers['accremind.demo.clear']!({});
+    await runtime.rpcHandlers['accremind.demo.close']!({token});
     const clearedOv = (await runtime.rpcHandlers['accremind.dashboard.overview']!({})) as {
       hasDemoSeeded: boolean;
       counts: { totalEntries: number };
@@ -348,6 +417,8 @@ describe('M1-B & M3: Native DSH Seams (`systemPrompt`, `registerMessageProjectio
     await runtime.rpcHandlers['accremind.feedback.submit']!({
       id: entryId,
       kind: 'verified_effective',
+      taskFingerprint: 'csv-load-test',
+      revision: 1,
       detail: '压测 100MB CSV 内存稳定在 110MB',
     });
 

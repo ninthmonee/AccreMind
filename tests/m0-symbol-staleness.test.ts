@@ -207,6 +207,18 @@ describe('M0 Optimization #3: Symbol-Level Fingerprint Anchoring & Low-Noise Git
     const staleOut = store.getEntry('K-0100', { recordUsage: false });
     assert.ok(staleOut.found && staleOut.servable);
     assert.equal(staleOut.entry.freshness, 'review_due');
+    // The actual patch and detection reason survive a second scan and a pause.
+    scanner.scanWorkspace();
+    const review = scanner.reviewDetails(staleOut.entry);
+    assert.match(review.reason, /OrderService.createOrder/);
+    assert.match(review.diff, /-.*this.tx.afterCommit/);
+    assert.match(review.diff, /\+.*this.outbox.enqueue/);
+    const paused = store.updateExistingEntryDirect({...staleOut.entry, serving:'suspended'});
+    const confirmed = scanner.confirmFresh(paused);
+    assert.equal(confirmed.serving, 'suspended');
+    assert.equal(confirmed.freshness, 'current');
+    assert.notEqual(confirmed.symbol_anchors[0]?.normalized_sha256, anchor.normalized_sha256);
+    assert.equal(scanner.scanWorkspace().markedReviewDue.length, 0);
 
     store.close();
   });

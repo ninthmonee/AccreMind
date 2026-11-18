@@ -312,16 +312,22 @@ export async function runArchaeologyBootstrap(options: {
   mode?: 'single_pass' | 'isolated_p0';
   maxCommitsToScan?: number;
   topK?: number;
+  commitShas?: string[];
 }): Promise<{
   minedCommits: ArchaeologyCommitCandidate[];
   triageReport: BatchTriageReport;
 }> {
-  const minedCommits = scanGitHistorySignals({
+  const scanned = scanGitHistorySignals({
     repoRoot: options.store.paths.projectRoot,
     maxCommitsToScan: options.maxCommitsToScan ?? 200,
     topK: options.topK ?? 10,
   });
 
+  const selected = options.commitShas && new Set(options.commitShas);
+  const minedCommits = selected ? scanned.filter((commit) => selected.has(commit.commitSha)) : scanned;
+  if (selected && (selected.size === 0 || selected.size !== minedCommits.length)) {
+    throw new Error('所选提交已不在当前扫描结果中，请重新扫描后选择');
+  }
   const assessor = new DeltaAssessor({
     llm: options.llm,
     workspaceId: options.store.workspaceId,

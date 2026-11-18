@@ -4,6 +4,12 @@ PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 3000;
 
+CREATE TABLE IF NOT EXISTS freshness_reviews (
+  workspace_id TEXT NOT NULL, entry_id TEXT NOT NULL, reason TEXT NOT NULL,
+  previous_head TEXT, affected_paths TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, entry_id)
+);
+
 CREATE TABLE IF NOT EXISTS entries (
   id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
@@ -113,6 +119,26 @@ CREATE TABLE IF NOT EXISTS usage_events (
   event_type TEXT NOT NULL,
   detail TEXT,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS turn_receipts (
+  workspace_id TEXT NOT NULL, session_id TEXT NOT NULL, turn_id TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, session_id, turn_id)
+);
+CREATE TABLE IF NOT EXISTS turn_hits (
+  workspace_id TEXT NOT NULL, session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+  entry_id TEXT NOT NULL, revision INTEGER NOT NULL, title TEXT NOT NULL,
+  status TEXT NOT NULL, source TEXT NOT NULL, file_path TEXT,
+  PRIMARY KEY (workspace_id, session_id, turn_id, entry_id, revision, source)
+);
+CREATE TABLE IF NOT EXISTS probation_grace (
+  workspace_id TEXT NOT NULL, entry_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  session_id TEXT NOT NULL, turn_id TEXT NOT NULL, turn_completed INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (workspace_id, entry_id)
+);
+CREATE TABLE IF NOT EXISTS governance_decisions (
+  workspace_id TEXT NOT NULL, entry_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  action TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workspace_checkpoints (

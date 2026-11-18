@@ -38,11 +38,11 @@ export interface BatchTriageReport {
 
 export class TriageEngine {
   private readonly store: KnowledgeStoreProvider;
-  private readonly writeGate: 'probation' | 'review' | 'off';
+  private readonly readGate: () => 'probation' | 'review' | 'off';
 
-  constructor(store: KnowledgeStoreProvider, writeGate: 'probation' | 'review' | 'off') {
+  constructor(store: KnowledgeStoreProvider, writeGate: 'probation' | 'review' | 'off' | (() => 'probation' | 'review' | 'off')) {
     this.store = store;
-    this.writeGate = writeGate;
+    this.readGate = typeof writeGate === 'function' ? writeGate : () => writeGate;
   }
 
   processCandidate(input: TriageCandidateInput): SingleTriageOutcome {
@@ -192,7 +192,8 @@ export class TriageEngine {
           };
         }
 
-        if (this.writeGate === 'review') {
+        const writeGate = this.readGate();
+        if (writeGate === 'review') {
           const candidateOnly: KnowledgeEntry = { ...sanitizedEntry, status: 'candidate' };
           this.store.recordAssessment(effectiveAssessment, candidateOnly);
           return {
@@ -206,7 +207,7 @@ export class TriageEngine {
         }
 
         // Default V3.1 `probation` mode: enters ~/.dsh/accremind/probation/ for zero-friction trial
-        if (this.writeGate === 'probation') {
+        if (writeGate === 'probation') {
           const probationEntry: KnowledgeEntry = {
             ...sanitizedEntry,
             status: 'probation',

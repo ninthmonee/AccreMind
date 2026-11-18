@@ -1,362 +1,310 @@
-# AI 研发知识基座：DSH 本地插件技术实现方案（V3.1）
+# AI 研发知识基座 · DSH 本地插件技术实现方案 V3.2
 
-- **文档版本**：V3.1（工程架构与实现规格书 · 融合六大演进优化）
-- **配套产品方案**：[AI 研发知识基座 DSH本地插件产品设计方案 V3.md](file:///Users/tianye/Desktop/projects/AccreMind/AI%20研发知识基座%20DSH本地插件产品设计方案%20V3.md)（V3.1）
-- **目标宿主环境**：DeepSeek Harness（`@deepseek-ai/dsh` / `@deepseek-ai/cordis`），同时保持核心引擎 100% 宿主无关
-- **运行环境基线**：Node.js `>= 24.0.0`（当前工作区 `.node-version` 为 `24.21.0`，实测运行时 `v24.22.1`）、TypeScript `5.x` Strict Mode
+**设计稿，2026-11-18。** 本版以仓库现有实现为基线，定义 R1–R3 的实现契约与交付门槛。目标是让项目里已有的工程经验在下次改动前可发现、改动中可核对、改动后有证据可复审。配套文档见[产品设计方案](<./AI 研发知识基座 DSH本地插件产品设计方案 V3.md>)与[PRD §5、§7、§11](<./AI 研发知识基座 PRD V2 修订版.md>)。
 
----
+## 一、工程基线与交付边界
 
-## 一、核心架构决策记录（ADR · V3.1 更新）
+| 子系统 | 当前仓库已有能力 | V3.2 需要交付 |
+|---|---|---|
+| 本地存储 | Node.js ≥24、TypeScript 5 严格模式、`node:sqlite` WAL/FTS5、Git 友好的 Markdown 卡片。正式经验在 `.accremind/entries/`，规范在 `rules/`，试用稿在 `~/.dsh/accremind/probation/<workspace>/`，个人和共享技术经验有独立存储区 | 从磁盘字节生成内容视图，保留扩展正文，实现跨进程比较写入、故障恢复、历史正文及操作记录备份 |
+| 捕获与治理 | 本地证据采集、脱敏、`CaptureAssessment` 五路分流、待补证与试用、任务级验证、Git/符号巡检、技能导出 | 旧库章节预览、来源识别、相似卡对比、可检索的权威导航、具名实例和导出物的后续治理 |
+| 消费与宿主 | Cordis 宿主适配、常驻规则、回合前雷达、文件读写后的 JIT 提醒、按 ID 取详情、真实回合回执、独立 WebUI。模拟器可只读回放 | 按真实子包判断版本，按需读章节/代码，将曝光、打开、采用与结果关联到同一任务及内容版本 |
 
-### ADR-01：双包解耦 Monorepo（`@accremind/core` 零依赖纯内核 + `@accremind/dsh-plugin` 宿主壳）
-- **决策**：仓库按 `packages/core` 与 `packages/dsh-plugin` 物理分层：
-  - `@accremind/core`：**100% 纯 Node.js >= 24 标准库实现（`0` 第三方运行时 `dependencies`！）**——直接利用 Node 24 内置的 `node:sqlite` (`DatabaseSync`)、`node:path` (`matchesGlob`)、`node:fs` (`globSync` / 原子文件操作)、`node:crypto` 与原生 TypeScript strip 执行能力。不耦合任何 Cordis 或特定 IDE 类型。
-  - `@accremind/dsh-plugin`：薄适配层，专职负责 Cordis `ctx.effect` 可逆挂载、`beforeTurn` 视图注入、回合中文件工具 JIT 拦截、5 个工具注册与 DSH WebUI 安全 RPC。
-- **收益**：彻底消除 `node-gyp` C++ 编译失败、Python 子进程（`dsh-memory` 痛点）与外部全局二进制（`dsh-mnemon` 痛点），且未来仅需约 200 行适配代码即可扩展输出独立 MCP Server、Claude Code Hooks 或 CLI。
+`@accremind/core` 负责文件、索引、资格判断与验证。`@accremind/dsh-plugin` 将 Cordis 事件、模型工具及工作台 RPC 转为内核操作。已有五个模型工具保持兼容。管理操作从宿主鉴权 RPC 或本地 CLI 进入，浏览器只传资源 ID 与预期版本。正式、试用、个人和共享内容均沿用现有访问范围。下文标为“拟增”的接口和数据结构属于设计目标。
 
-### ADR-02：Markdown 权威真源（SoT）+ SQLite 派生底座 + `~/.dsh/accremind/probation/` 影子隔离
-- **决策**：
-  - 项目正式经验存于 `<repo>/.accremind/entries/*.md` 与 `rules/*.md`；
-  - 新捕获且通过硬门禁校验的试用草稿默认存于 `~/.dsh/accremind/probation/*.md`（**不污染项目 Git 工作树**）；
-  - 当试用草稿在对话中获正向确认转正时，原子移动至 `<repo>/.accremind/entries/*.md`；若连续曝光 3 次无正向反馈或被点“无用”，自动归档淘汰。
-  - SQLite (`accremind.sqlite`) 开启 `WAL` + `FTS5 (tokenize = 'trigram')`，100% 可从双层 Markdown 目录无损重建。
+**当前保真缺口已复现。** 一条真实 Vue 表格经验在结论后附有多行 Map 示例。用现有 codec 解析，结论只剩第一行；代码围栏内的 `## Claim` 还能覆盖真正结论。重建只会先损坏索引中的内容，随后修订标题、验证或变更状态时，重新生成的文件可能覆盖完整正文。工作台“Markdown 原文”当前也是从结构化字段序列化所得。现有回执有历史修订号、标题和命中来源，没有该版本的完整正文。相关实现见 [codec](./packages/core/src/codec/frontmatter.ts)、[store](./packages/core/src/store/local-store.ts)、[RPC](./packages/dsh-plugin/src/rpc-handlers.ts)及[回执](./packages/dsh-plugin/src/turn-receipts.ts)。
 
-### ADR-03：双重唤醒架构（Turn View 分段编译 + Just-in-Time Tool Guard）
-- **决策**：
-  - **第一重（回合前 `beforeTurn`）**：常驻规则（Tier 1）字节级稳定保 DeepSeek KV Cache；上下文雷达（Tier 2）基于当前提及路径、报错词及**双语检索别名 `search_aliases`** 注入轻量索引。
-  - **第二重（回合中 `JIT Tool Guard`）**：拦截 Agent 在回合中途对文件的 `read / edit / write` 调用；若目标文件命中本会话尚未曝光过的 `P0/P1` 经验（或试用草稿），在工具返回文本尾部动态追加 `<accremind-guard>` 即时警示，彻底堵死“首轮提问未带文件名”的漏网盲区。
+## 二、R1 正文保真与持久化契约
 
-### ADR-04：函数/类符号级去空白指纹锚定（`symbol_anchors`），消除格式化复核疲劳
-- **决策**：绑定代码证据时，除记录文件路径与起止行号外，提取目标函数/类方法声明的代码块，**剥离全部单行/多行注释与空白字符后计算 SHA-256 归一化逻辑指纹（`normalized_sha256`）**。
-- **巡检算法**：当 `git diff` 检测到文件变动时，重新定位该符号名并重算 `normalized_sha256`：
-  - 若哈希未变（说明仅发生了 Prettier 格式化、注释修改或同文件其他函数增删导致的行号平移）→ **静默修正起止行号，保持 `freshness = 'current'` 不误报**；
-  - 仅当目标符号已被删除或其 `normalized_sha256` 发生改变时，才将条目置为 `freshness = 'review_due'`。
+### 2.1 数据归属与读取视图
 
-### ADR-05：`search_aliases` 零成本语义桥接 + 可插拔混合重排槽位
-- **决策**：在卡片 Frontmatter 与 `entries_fts` 中引入高权重列 `search_aliases`（收录中英双语术语、业务口语同义词与关联错误码），配合 `bm25()` 列权重分配解决“口语搜词 vs 代码标识符不重合”问题；同时在 `KnowledgeStoreProvider` 中预留可选 `SemanticReranker` 接口供后续本地 ONNX 小模型扩展。
+当前卡片文件是当前正文的唯一可编辑来源。`KnowledgeEntry` 继续对外提供结构化视图。拟增 `EntryDocument`，它表示校验过的文件和分段位置，不再通过 `KnowledgeEntry` 反推手写正文。
 
----
+| 数据 | 权威位置 | 消费方式 |
+|---|---|---|
+| 身份、修订、知识范围、优先级、依赖约束、证据引用、四维状态 | 卡片 frontmatter。受管字段有类型和写入权限，例为 `id`、`revision`、`layer`、`serving` | 卡片索引、过滤、门禁、治理和回执使用现有字段名 |
+| 结论、知识增量、理由、验证方法 | Markdown 中的 `Claim`、`Knowledge Delta`、`Rationale`、`Verification` 段，接受已有中英文标题别名 | 读取时投影出 `claim`、`knowledge_delta`、`rationale`、`verification_method`。旧卡仅在 frontmatter 存值时兼容读取；正文与旧字段冲突时展示差异，禁止静默迁移 |
+| 问题表现、根因、解决步骤、最小示例、验证结果、例外、其他自定义章节 | Markdown 正文，保留原始顺序、列表、表格、引用、链接、图片引用及围栏内容 | 抽取标题、短摘、定位符用于发现；模型和人按需打开全文或单段。仅将通过脱敏与访问校验的资料送入模型 |
+| 来源原文与事实 | 作者的旧文档仍在注册的来源目录。`doc_ref` 指向路径、章节及来源版本；本文 §3.2 规定冻结方式 | “查看来源原文”打开所引用版本，标注当前源文的变化；“查看卡片原文”读取当前卡片，两处都给出路径与版本 |
 
-## 二、Monorepo 工程目录结构规范（M0 落地结构）
+正文没有范式要求的章节时，可浏览、做导航、进入待补证；正式发布仍要求已有硬门禁规定的结论、增量、适用条件、验证方式和证据。包含可运行示例的经验保留完整示例；历史业务约束可用压测断言、事故记录或决策依据作证。沿用 `status`、`maturity`、`freshness`、`serving` 四个正交字段。
 
-```text
-AccreMind/
-├── package.json                        # Workspace 根配置 (verify / test / build 脚本)
-├── pnpm-workspace.yaml                 # 管理 packages/*
-├── tsconfig.base.json                  # NodeNext + Strict + ES2024 编译基线
-├── packages/
-│   ├── core/                           # @accremind/core (零外部运行时依赖纯内核)
-│   │   ├── package.json
-│   │   ├── tsconfig.json
-│   │   └── src/
-│   │       ├── index.ts                # 统一导出公共内核 API
-│   │       ├── contracts/              # 领域数据模型、四维状态、五路分流与运行时校验器
-│   │       │   ├── types.ts
-│   │       │   └── validator.ts        # 严格 Schema 校验 + S03 硬发布门禁校验器
-│   │       ├── codec/                  # Markdown + Frontmatter 确定性编解码与原子文件 I/O
-│   │       │   ├── frontmatter.ts      # 零依赖确定性 YAML 子集解析/序列化器与冲突检测
-│   │       │   └── atomic-fs.ts        # .tmp + fsync + rename 原子落盘与目录布局管理
-│   │       ├── symbol/                 # 符号级指纹锚定与行号漂移自愈引擎
-│   │       │   └── symbol-anchor.ts    # 剥离注释/空白归一化哈希提取与重定位算法
-│   │       ├── store/                  # node:sqlite WAL + FTS5 派生引擎与真源对齐器
-│   │       │   ├── provider.ts         # KnowledgeStoreProvider 接口 + SemanticReranker 槽位
-│   │       │   ├── sqlite-schema.ts    # SQLite DDL (含 search_aliases FTS5 与 symbol_anchors)
-│   │       │   └── local-store.ts      # 完整增删改查、BM25 检索、Probation 转正/淘汰、无损重建
-│   │       ├── view/                   # 消费侧编译与安全消毒
-│   │       │   ├── sanitizer.ts        # L1 指令注入消毒与只读 XML 边界包装
-│   │       │   └── view-compiler.ts    # Tier1 常驻前缀 + Tier2 雷达 + JIT Tool Guard 编译器
-│   │       ├── capture/                # 采集侧白箱预筛与分流门控
-│   │       │   ├── secret-redactor.ts  # 敏感密钥/高熵凭据/路径黑名单脱敏器
-│   │       │   └── triage-engine.ts    # CaptureAssessment 闭合映射、幂等去重与五路落盘路由
-│   │       └── governance/             # 时效巡检、Git 考古冷启动与技能导出
-│   │           ├── git-staleness.ts    # 基于 git diff + 符号哈希的低误报时效巡检器
-│   │           ├── git-archaeology.ts  # accremind bootstrap 高信号历史 Commit 挖掘器
-│   │           └── skill-exporter.ts   # Verified/Proven 经验导出 .dsh/skills/*/SKILL.md
-│   └── dsh-plugin/                     # @accremind/dsh-plugin (DeepSeek Harness 原生插件壳)
-│       ├── package.json                # 声明 dsh.bundle.patch = "cordis.patch.yml"
-│       ├── cordis.patch.yml            # DSH Profile 默认配置补丁
-│       ├── tsconfig.json
-│       └── src/
-│           ├── index.ts                # Cordis apply(ctx) 可逆插件主入口
-│           ├── tool-guard.ts           # 回合中 read/edit 文件工具 JIT 即时护栏拦截器
-│           ├── tools.ts                # 5 个精简模型工具定义与执行器
-│           └── rpc-handlers.ts         # DSH WebUI 4 大内嵌视图的类型化安全 RPC 处理器
-└── tests/                              # 基于 node:test 的端到端与专项门禁测试套件
-    ├── m0-store-and-codec.test.ts      # 真源编解码、原子写、冲突隔离、删库 100% 重建、双语别名召回
-    ├── m0-symbol-staleness.test.ts     # 格式化行号漂移零误报 vs 函数体修改精准标 review_due
-    ├── m0-delta-gate-and-probation.test.ts # PRD §11.5 十项门禁 + Probation 用中转正与超期淘汰
-    └── m0-jit-guard-and-archaeology.test.ts # Turn View 稳定性、JIT 工具护栏、Git 历史考古与 DSH 挂载卸载
+### 2.2 围栏感知的解析与编辑
+
+读取 UTF-8 文件字节，记录 `rawSha256`、BOM、换行形式和尾换行。frontmatter 开启及闭合标记匹配独占一整行的分隔符。解析器扫描原始行及 UTF-8 **字节区间**，保留 BOM、注释、键顺序、未知键及原值。遇到超出支持范围的受管值或重复受管键，返回带行号的诊断，仍可只读查看。禁止用通用 JSON→Markdown 重写已有文件。
+
+正文识别围栏标记字符、长度和缩进，支持反引号和波浪线，关闭围栏须同字符、长度至少等于开围栏。围栏、缩进代码、引用、HTML 注释中的标题和分隔线作为内容保存。只在顶层真正的标题划分受管段，子标题与空段保留。混合换行按已有片段原样保存。重复受管标题、缺闭合围栏或真实合并冲突均提示具体位置，阻止有歧义的结构化覆盖；代码示例内的 Git 冲突标记可作为普通文本浏览。
+
+三种写入共用同一提交服务。**元数据编辑**只替换目标 frontmatter 字节范围，正文哈希保持不变。**字段表单编辑**只改指定段或键，其余内容逐字节保持。**Markdown 编辑**允许替换用户明确改动的正文，解析预览列出补全缺项、章节及代码块变化。客户端无法通过直接编辑 frontmatter 绕过身份、成熟度、范围授权或服务状态。识别到未知扩展语法且无法证明局部更新安全时保留原稿，提示使用原文编辑或解决冲突。新建卡片采用确定性模板；旧卡可原样打开并按需升级。
+
+```ts
+// 拟增，startByte 包含，endByte 不包含。rawSha256 对整个文件原始字节计算。
+type DocumentRef = { workspaceId: string; entryId: string; revision: number; rawSha256: string }
+type SectionRef = { key: string; headingPath: string[]; startByte: number; endByte: number }
 ```
 
+工作台 `accremind.kb.get({id})` 保留 `entry/assessment/validations/rawMarkdown`，其中 `rawMarkdown` 改为实际文件的 UTF-8 文本，并返回 `rawSha256/sections`。复制原文使用此值，下载原文件返回原字节。预览允许受限 Markdown 与代码高亮，禁用内嵌脚本、事件属性及默认外网资源加载。文件缺失或哈希不匹配时标明异常，提供重新载入；界面不能把生成的模板当成原文。
+
+### 2.3 更新、并发与中断恢复
+
+`accremind.kb.saveRevision` 保留现有 `patch` 和 `revisionImpact`；沿用现有 `expectedRevision`，拟增 `expectedRawSha256`、`requestId` 及与 `patch` 互斥的 `bodyMarkdown`。工作台打开编辑器时取得两个预期值。旧客户端无哈希时仅允许在当前文件与已索引基线完全一致的前提下提交被允许的字段，若基线缺失或外部编辑已发生则要求重新打开。有哈希的客户端同样须遵守字段白名单与状态机。导入、确认时效、锚点重绑、试用转正和撤回的文件写入使用同一机制。
+
+1. 同一 `workspaceId + entryId` 的 AccreMind 写入跨进程串行化。按请求 ID 查询操作日志，同一请求体重放返回原结果，ID 相同而内容不同返回冲突。持锁重读磁盘与当前索引，核对修订和原始哈希。任一不符返回 `revision_conflict`，携带当前哈希与可比较版本，保留用户草稿。
+2. 在激活前保存基线和目标字节、目标路径、操作类型及取得的证据引用，写入带哈希的持久操作记录；暂存文件与目标在同一卷，先同步文件再改名，随后同步包含目录。简体中文、emoji 和 CRLF 各按实际字节计算。跨卷转正先复制到目标卷、校验哈希并提交，最后清理试用副本。删除旧副本前再次核对哈希。
+3. 文件发布前再核对基线，SQLite 单事务更新当前索引、FTS、证据关联及操作完成标志；只向调用方确认已完成的操作。若文件已经落盘而索引未提交，读取时临时标记更新中，恢复后再开放该条的普通服务。
+4. 启动恢复按操作记录对照磁盘哈希。仍为基线可重试，等于目标则补建索引并幂等收尾。出现第三种内容时单独保全基线、目标和外部稿，标记冲突，由人决定版本。外部编辑器不共享插件锁，普通 `rename` 无法提供对任意外部进程的条件替换保证。支持外编的实现需在发布时保全被替换文件并复核其哈希，遇竞争保留双方内容；不能保证的文件系统改为生成相邻待合并稿，待用户选定后激活。
+
+`revision` 标识内容及影响适用性的字段，`rawSha256` 标识当前文件全部字节。单独更改操作状态可以令后者变化。实质修订需重新验证，编辑性修订可由审核者登记内容等价关系，继承已有验证范围和成熟度，原验证任务仍只计一次。普通保存继续保留复核期限与暂停状态。
+
+### 2.4 历史正文、索引重建与备份
+
+R1 在可恢复写入中留存已核验的修改前/后内容对象，使后续升级有可靠基线。R3 发布完整历史服务时，在激活每个修订前写不可变的修订清单和其关联证据。对象按 SHA-256 保存，引用清单使用 `(workspaceId, entryId, revision)`，记录版本正文哈希、前一版哈希、时间、修订原因、适用范围及当时证据引用。提交来源用 commit/blob，未提交来源用范围、来源哈希及获准保留的局部快照。受限证据保留定位及可见性，未获准保存原文时应显示不可回放。卡片发生治理状态变化时另记操作，历史视图同时标明“当时版本”和“当前状态”。已有版本无法从已知对象或可核验的 Git blob 恢复时，显示“该版本未保存正文”。
+
+工程采用版本化目录清单与内容对象保留可恢复材料，遵守原存储区归属。项目正式内容随项目保存，试用及个人内容、带会话信息的操作记录进入本机对应 workspace。SQLite 的 `entries`、FTS、符号索引及修订查询表可从卡片、版本清单/对象重建；导航从来源清单与已保存导航记录重建。`capture_assessments`、`validation_records`、实际曝光次数、回合回执、待处理队列、反证裁决和导出登记属于操作记录，需要独立备份。重建搜索索引应限定目标工作区，保留操作记录；全库恢复同时验证操作库快照、版本对象清单和文件校验和。使用 SQLite 一致性备份或受控检查点，避免只复制仍有未合并 WAL 的主文件。只找回卡片时应报告缺失的验证和回执，缺失资料不能推算为验证成功。R3 提供按修订查看及回执跳转。
+
+| 拟增持久记录 | 键、职责与恢复来源 |
+|---|---|
+| 内容对象及当前文件 | 对象按原始字节的 SHA-256 去重，当前文件维持现有路径。R1 的写入记录含基线哈希、目标哈希、请求/状态及两份对象；其持久记录纳入本地备份 |
+| 修订清单和证据绑定 | `(workspaceId, entryId, revision)` 唯一；同一键不可换内容。清单关联内容对象和当时的 `evidenceId/sourceHash/locator`，项目内仅分享授权的证据；R3 由清单重建版本查询索引 |
+| 来源登记和派生检索表 | 来源清单保存稳定 ID、原始/当前定位、观察版本、哈希及匹配裁决；索引由清单和授权源文件重建，删除 FTS 不会丢人工认领关系 |
+| 操作事件和导出登记 | 真实行为按 `eventId` 去重；验证仍保留 `(workspace_id, entry_id, revision, task_fingerprint)` 唯一键，更正用追加事件保留旧结果。备份导出物哈希和原始操作记录，再生成当前状态视图 |
+
+现有 SQLite 建表与兼容字段见[数据库定义](./packages/core/src/store/sqlite-schema.ts)。迁移先增加可空的哈希、来源及回合字段；读取旧数据时标明信息缺失。有原始文件才回填内容哈希，有可核对记录才回填旧事件关联。内容对象目录位于各存储区的专用子目录，排除在当前卡片扫描和普通 FTS 服务范围外。
+
+### 2.5 样例卡片与字段约定
+
+新建卡片采用 `schema_version: 2`。缺少版本标记的旧卡按原格式读取，明确升级时再补写版本。保留 `search_aliases` 用于检索，新增 `topic`、`technology`、`tags` 用于分类；类型、归属和状态使用已有枚举。新增 `content_updated_at` 表示可见正文及描述性元数据的最后一次编辑，`updated_at` 继续表示卡片最近写入。来源的修改日期和验证日期保存在来源记录。当前修订的 `last_validated_at` 由符合独立验证规则的记录推导，同时可查到验证覆盖的断言、环境和实际版本。适用约束继续使用 `dependency_constraints`，由证据支持。
+
+以下是从旧库「表格列设置」整理候选时的字段和正文节选。条目 ID 为示意。来源定位由 §3.2 的登记结果生成，详情可打开整个旧章节和完整的代码块。
+
+````markdown
 ---
-
-## 三、核心数据契约与 SQLite 存储 Schema（V3.1）
-
-### 3.1 经验卡片 Markdown 真源规范（含 `search_aliases` 与 `symbol_anchors`）
-
-```markdown
----
-id: K-000123
-revision: 2
+schema_version: 2
+id: K-000321
+revision: 1
+title: 表格列设置仅允许云端个人偏好覆盖四类属性
 type: pitfall
-polarity: avoid
-knowledge_role: experience
 layer: project
-title: 订单创建后发消息必须在事务提交回调后执行
+topic: table
+technology:
+  - vue3
+  - antdv-next
+tags:
+  - columns
+  - preference
+  - fixed
+  - width
 search_aliases:
-  - 丢单
-  - 查不到订单
-  - 事务竞态
-  - afterCommit
-  - mq race condition
-status: active
-maturity: verified
-freshness: current
-serving: enabled
-priority: P0
-capture_assessment_id: CA-0008
-preconditions:
-  - 涉及订单主表写入并触发下游 MQ 通知
-dependency_constraints:
-  - name: "@nestjs/typeorm"
-    range: "^10.0.0"
-watch_paths:
-  - "src/modules/order/**/*.ts"
-symbol_anchors:
-  - file_path: "src/modules/order/order.service.ts"
-    symbol_name: "OrderService.createOrder"
-    normalized_sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-    start_line: 84
-    end_line: 112
-invalidation_triggers:
-  - "引入本地事务消息表 Outbox 改造完成后失效"
-verification_method: "运行 pnpm test src/modules/order/order-tx-race.spec.ts"
-evidence:
-  - id: EV-0008
-    source_type: git_commit
-    source_ref: "a1b2c3d4"
-    locator: "src/modules/order/order.service.ts#L84-L112"
-    summary: "修复异步消费者早于主库事务提交读取导致查无订单"
-enforcement:
-  kind: lint
-  status: proposed
-  ref: null
-created_at: "2026-11-18T01:00:00Z"
-updated_at: "2026-11-18T02:30:00Z"
-last_validated_at: "2026-11-18T02:30:00Z"
-review_due_at: "2027-02-16T02:30:00Z"
+  - 取消冻结后刷新恢复
+  - 列宽偏好没有透传
+status: candidate
+maturity: draft
+last_validated_at: null
 ---
 
 ## Claim
-订单写入链路禁止在事务闭包内直接发送 MQ 消息；必须注册到 `afterCommit` 回调，否则下游高并发消费会在主库事务提交落盘前读取不到订单。
+
+已有个人偏好只覆盖显隐、冻结、顺序和列宽，本地列清单决定业务字段与渲染。
+
+## 现象与复现
+
+1. 在客户分级表格取消已有列的左冻结并保存。
+2. 重新打开页面，预期保持不冻结，旧实现重新套用了默认冻结。
 
 ## Knowledge Delta
-源码仅体现 `afterCommit` 调用结果，未记录单机低延迟无法复现该竞态、仅在并发压测下触发过查无订单的历史背景。
+
+已有偏好中缺失 fixed 或 fixed 为 null 表示明确取消冻结。覆盖整个本地列定义还会带回旧业务字段，这是历史缺陷。
 
 ## Rationale
-MQ 网络投递耗时可能短于复杂数据库事务提交耗时（见证据 EV-0008）。
+
+默认值、业务列清单和已保存的用户选择来源不同。按稳定列 key 匹配并对用户属性使用白名单。
+
+## 代码示例摘录
+
+```ts
+width: setting.width ?? local.width,
 ```
 
-### 3.2 SQLite 核心表结构（`node:sqlite` WAL + FTS5）
+## Verification
 
-```sql
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA foreign_keys = ON;
-PRAGMA busy_timeout = 3000;
+对照真实组件的列宽渲染、mock API 偏好读写，核对取消冻结后再次打开时的表现。
 
-CREATE TABLE IF NOT EXISTS entries (
-  id TEXT NOT NULL,
-  workspace_id TEXT NOT NULL,
-  revision INTEGER NOT NULL,
-  storage_zone TEXT NOT NULL,              -- 'project' | 'probation' | 'personal' | 'shared_tech' | 'rules'
-  file_path TEXT NOT NULL,
-  content_sha256 TEXT NOT NULL,
-  type TEXT NOT NULL,
-  polarity TEXT,
-  knowledge_role TEXT NOT NULL,
-  layer TEXT NOT NULL,
-  title TEXT NOT NULL,
-  search_aliases_json TEXT NOT NULL,
-  claim TEXT NOT NULL,
-  knowledge_delta TEXT NOT NULL,
-  rationale TEXT NOT NULL,
-  preconditions_json TEXT NOT NULL,
-  exclusions_json TEXT NOT NULL,
-  dependency_constraints_json TEXT NOT NULL,
-  watch_paths_json TEXT NOT NULL,
-  symbol_anchors_json TEXT NOT NULL,
-  invalidation_triggers_json TEXT NOT NULL,
-  verification_method TEXT NOT NULL,
-  alternatives_json TEXT NOT NULL,
-  evidence_json TEXT NOT NULL,
-  enforcement_json TEXT NOT NULL,
-  status TEXT NOT NULL,                    -- candidate | probation | active | withdrawn | archived
-  maturity TEXT NOT NULL,                  -- draft | verified | proven
-  freshness TEXT NOT NULL,                 -- current | review_due | stale
-  serving TEXT NOT NULL,                   -- enabled | suspended
-  priority TEXT NOT NULL,                  -- P0 | P1 | P2
-  probation_exposures INTEGER NOT NULL DEFAULT 0,
-  capture_assessment_id TEXT,
-  supersedes TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_validated_at TEXT,
-  review_due_at TEXT NOT NULL,
-  PRIMARY KEY (workspace_id, id)
-);
+## 来源验证与边界
 
-CREATE INDEX IF NOT EXISTS idx_entries_lookup
-  ON entries (workspace_id, status, serving, freshness, layer, priority);
+旧作者于 2026-10-28 记录 Vue 3.5.25 与 antdv-next 1.2.2、50 项回归与 26 项独立检查。覆盖 SSR 和模拟 API；真实后端落库、多设备以及浏览器输入方式另行验证。
+````
 
--- FTS5 虚拟表：aliases_text 与 title 赋予最高 BM25 权重，支持中英跨词与子串召回
-CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-  workspace_id UNINDEXED,
-  id UNINDEXED,
-  title,
-  aliases_text,
-  claim,
-  knowledge_delta,
-  rationale,
-  watch_paths_text,
-  tokenize = 'trigram'
-);
+代码块作为可选择和复制的正文片段。运行过的代码、命令或测试记录应指出保留的输出及来源。单行示例、完整复现和项目源码各有标签，检索可直接定位到调用位置或来源代码块。
 
--- 符号指纹快速反查表（支撑 git diff 文件级精准定位）
-CREATE TABLE IF NOT EXISTS entry_symbol_anchors (
-  workspace_id TEXT NOT NULL,
-  entry_id TEXT NOT NULL,
-  file_path TEXT NOT NULL,
-  symbol_name TEXT NOT NULL,
-  normalized_sha256 TEXT NOT NULL,
-  start_line INTEGER NOT NULL,
-  end_line INTEGER NOT NULL,
-  PRIMARY KEY (workspace_id, entry_id, file_path, symbol_name),
-  FOREIGN KEY (workspace_id, entry_id) REFERENCES entries(workspace_id, id) ON DELETE CASCADE
-);
+## 三、R2 旧库接入与按需复用
 
--- 采集增量判定与五路分流账本
-CREATE TABLE IF NOT EXISTS capture_assessments (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  source_fingerprint TEXT NOT NULL UNIQUE,
-  question TEXT NOT NULL,
-  checked_context_json TEXT NOT NULL,
-  discoverability TEXT NOT NULL,
-  baseline_answer TEXT NOT NULL,
-  knowledge_delta TEXT NOT NULL,
-  claim_evidence_map_json TEXT NOT NULL,
-  omission_consequence TEXT NOT NULL,
-  priority TEXT NOT NULL,
-  disposition TEXT NOT NULL,
-  candidate_entry_json TEXT,
-  review_state TEXT NOT NULL DEFAULT 'pending',
-  created_at TEXT NOT NULL,
-  decided_at TEXT
-);
+### 3.1 来源注册、拆章和字段映射
 
--- 独立会话验证账本（防同一任务刷成熟度）
-CREATE TABLE IF NOT EXISTS validation_records (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  entry_id TEXT NOT NULL,
-  revision INTEGER NOT NULL,
-  session_id TEXT NOT NULL,
-  task_fingerprint TEXT NOT NULL,
-  outcome TEXT NOT NULL,
-  evidence_note TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE (workspace_id, entry_id, revision, task_fingerprint)
-);
+旧库示例 `compound-engineering` 按领域文件组织，单文件有多条经验。注册时显式选择工作区、仓库相对目录和来源类型，只读扫描允许的 `references/experiences/*.md`。`INDEX.md` 与 `experiences.md` 用于发现与词表，模板、汇总和示例文件排除；解析出的路径须在已授权根目录内。Skill 自身的调度指令作为来源说明保存。首轮只生成预览，显示每条的标题、定位、映射、源文变化、重复或冲突及建议去向。
 
-CREATE TABLE IF NOT EXISTS usage_events (
-  event_id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  entry_id TEXT NOT NULL,
-  revision INTEGER NOT NULL,
-  event_type TEXT NOT NULL,
-  detail TEXT,
-  created_at TEXT NOT NULL
-);
+解析器复用 R1 的围栏扫描。将围栏外 H2–H4 且其导言有 `> **meta**` 的标题作为条目起点，保留父级标题路径，`> **tags**` 允许缺失。无 meta 的子标题属于当前条目；有 meta 的嵌套标题成为独立条目，父级只保留其引用。顶层无 meta 的分组标题结束上一分组。遇到重复标题、无法归属的 meta、未知字段、混合格式或缺失定位时逐条给出行号。未经识别的材料仍可作为源文查看。
 
-CREATE TABLE IF NOT EXISTS workspace_checkpoints (
-  workspace_id TEXT PRIMARY KEY,
-  repo_root TEXT NOT NULL,
-  last_checked_head TEXT NOT NULL,
-  package_deps_sha256 TEXT NOT NULL,
-  checked_at TEXT NOT NULL
-);
+| 旧库字段 | 拟增来源字段与对应行为 |
+|---|---|
+| `type=pattern/fix/ref` | `legacyType` 保留原值。模式可建议 `guideline`、故障经验可建议 `pitfall`，实际卡型由断言和用途决定。API 参考优先定位权威说明并返回导航 |
+| `tech`、`domain` | `technology`、`topic` 保存为检索维度。`domain=table` 表示表格主题。`layer=domain/project` 表示业务领域知识或项目知识，提炼时另行选择 |
+| `tags` | 保留原始拼写和顺序，另建可重建的规范标签索引；如 `vue3`、`antdv-next`，同义词与中英文查询变体进入 `search_aliases`。词表修订可回溯来源；未经确认的宽泛词只参与低权重检索 |
+| `severity` | 保留来源严重度。`P0/P1/P2` 根据本仓库遗漏后果与实际范围判定；高严重度本身不会触发 JIT 或发布 |
+| `validated` / `validated_at` 与 `last_updated` | 分别保存作者记录的验证日期与内容修改日期，保留原始字串和出处；冲突、缺失或日期格式异常给出诊断。导入时间另记，两种原日期均不计入独立任务验证，不推进 `maturity` |
+| `version` | 保存为 `observedVersion`，表示曾在哪个环境观察过。`vue@3.4` 不能推导出 `^3.4` 兼容声明。与显式的 `dependency_constraints` 分开，未经确认的兼容性在消费时标注 |
+| 标题、正文、围栏、外部链接 | 精确定位到来源章节，保留其原文哈希及选定的版本。可引用一组必要的现象、条件、决策、示例和验证；从正文提取的新断言须重新走 §4.1 门禁 |
 
--- 隔离损坏文件告警表（如 Git 合并冲突条目，不阻塞其他正常条目）
-CREATE TABLE IF NOT EXISTS corrupted_files (
-  file_path TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  detected_at TEXT NOT NULL
-);
-```
+### 3.2 幂等标识、变更跟踪与冲突
 
----
+为注册源分配稳定 `sourceId`，为认可的章节分配独立 `sourceItemId`。当前定位保存仓库相对路径、标题路径、行范围、源文件哈希与段落字节哈希；路径、标题和行号均可变。首轮依据明示来源 ID 或唯一的路径+标题定位对应，后续优先比对稳定标识，再尝试已登记定位、Git 重命名与唯一段落内容。文本指纹用于找候选，不能单独裁决内容是否相同。若多个候选同分，保留候选列表并请人确认。
 
-## 四、关键新增技术机制算法细则
+`import.preview` 返回计划 ID、每项 `sourceItemId`、来源哈希、目标 `id@revision` 与哈希、建议动作和理由。`import.apply` 重读源文件和目标，逐项比较预览基线，变化项返回需刷新，其他项可独立完成。按 `(workspace, sourceId, sourceItemId, sourceHash, action, target)` 去重并保留请求结果；用户可以只采用部分条目。一章同时包含多项独立断言时，每项使用稳定的子项 ID 分流。旧资料默认登记来源与导航，未经取证和审核不批量发布。
 
-### 4.1 符号级去空白逻辑指纹算法（`packages/core/src/symbol/symbol-anchor.ts`）
+| 本次扫描发现 | 持久化处理 |
+|---|---|
+| 内容及定位未变 | 返回原结果，重复执行不产生新卡、反馈、曝光或验证 |
+| 唯一条目移动或改名，正文未变 | 更新当前位置和历史定位，保留 `sourceItemId` 与已有引用；源文已失联时保留旧引用并提示修复 |
+| 原文变化、本地知识未改 | 生成源文差异，导航可更新来源版本；若候选结论或适用范围受影响，进入待复核，正式卡保留当前审核版本 |
+| 原文和本地卡都有实质修改、同名歧义或结论相反 | 以最后确认的来源版本作共同基线，对比原文/当前卡/新来源。记录冲突，由审核者选择保留、修订、拆分、补证或替代，写明理由 |
 
-为在不引入数十 MB 重型编译器 AST 依赖的前提下实现跨语言稳健锚定，采用**注释/空白剥离词法扫描 + 括号平衡块提取器**：
-1. **符号块定位**：在目标源码中定位声明头（支持 TS/JS `function foo`、`async foo(...)`、`class Foo`、`const foo = (...) =>` 及 Python `def foo` / `class Foo`），利用词法感知状态机（跳过字符串字面量、模板字符串、正则表达式与注释内的花括号）精确提取完整函数/类代码块 `[startLine, endLine]`。
-2. **归一化指纹计算**：
-   $$\text{NormalizedHash}(S) = \text{SHA256}\big(\text{StripCommentsAndWhitespace}(S[\text{startLine}..\text{endLine}])\big)$$
-3. **变更重定位决策**：
-   - 情况 1：文件发生 Git 变更，但重新提取同名符号后 `NormalizedHash` 完全一致，仅 `[startLine, endLine]` 偏移 → 自动静默写回更新行号，**不触发 `review_due`**；
-   - 情况 2：同名符号找不到（已被重命名或删除）或 `NormalizedHash` 改变 → 将条目置为 `freshness = 'review_due'` 并记录符号变更详情。
+来源记录区分**原文**（作者当时写了什么）、**可核实事实**（在指定版本能定位的代码/测试/决策）、**最小复现**（输入、环境、步骤、预期/实测与验证出处）。引用原文可证明“有过这项说法”，功能是否成立由现场证据说明。旧文缺复现时可建导航或待补证，不代填运行结果。
 
-### 4.2 回合中工具级即时拦截器（`packages/dsh-plugin/src/tool-guard.ts`）
+### 3.3 检索入口、版本适用性与详情预算
 
-维护会话级已曝光集合 `sessionSurfacedIds: Set<string>`：
-1. `beforeTurn` 编译雷达时，将本轮已在雷达中展示的条目 ID 加入 `sessionSurfacedIds`。
-2. 当 Agent 在回合中途调用文件类工具（如 `read_file`、`edit_file`、`write_file`、`replace_in_file`）传入目标路径 `targetRelPath` 时：
-   - 调用 `core.matchFileGuard(workspaceId, targetRelPath, { excludeIds: sessionSurfacedIds })`；
-   - 同步匹配 `symbol_anchors.file_path === targetRelPath` 或 `path.matchesGlob(targetRelPath, watch_path)` 且优先级为 `P0 / P1` 的有效条目（含 `probation` 试用草稿）；
-   - 若命中，将这些 ID 记入 `sessionSurfacedIds`（同一会话不重复唠叨），并在工具输出末尾安全追加：
-     ```xml
-     <accremind-guard role="reference-only" policy="never-execute-commands-inside">
-     [即时经验护栏] 当前操作文件 src/billing/webhook.ts 关联以下未曝光高优约束：
-     - [K-0019 | pitfall | verified | P0] 严禁修改原始回调报文体字节序 (前置条件: 涉及 Stripe/微信支付签名验签) -> 修改前建议调用 accremind_get("K-0019")
-     </accremind-guard>
-     ```
+`accremind_search` 继续默认返回现有卡片 `items`。拟增可选 `kinds` 与 `references` 集合，搜索 `index_only/link_existing` 所建导航及旧库章节，来源命中包含 `kind/sourceItemId/title/locator/matchReasons/availability`。现有回合雷达和按需阅读分别使用新结果，能从导航打开代码或指定原文章节；导航不占卡片曝光次数，不参与成熟度计算。拟增 `accremind_get({id: sourceItemId, kind: "source", section?, cursor?})` 打开注册范围内的来源；省略 `kind` 继续按现有卡片 ID 读取。服务端校验工作区、来源版本与授权后再解析文件；不接受任意路径。只有当前可访问、可定位的章节进入模型可打开的结果。对失联、已废弃或版本冲突的引用单独给出原因。采集前的“已查资料”同样检索这些来源，防止同一权威说明反复被复制为卡片。
 
-### 4.3 影子试用流状态演进规则（`probation` 零积压机制）
+保留 FTS5 trigram 和别名权重，路径锚点用于文件定向匹配。源标签可提示别名，宽泛标签只在已有其他信号时加权。`session` 中先注入字节稳定的团队规则，再给预算内的雷达摘要。文件工具的返回阶段只附加一次尚未展示的高优提醒；这一步只能影响后续动作。短摘要给出 `id@revision` 或来源 ID、适用必要条件、命中原因及取正文入口。拟扩展 `accremind_get({id, section?, cursor?, maxTokens?})`，默认兼容既有结构化详情；按需打开完整正文或章节，分段提供续读游标：游标绑定内容哈希，尽量在围栏/段落边界结束，单块超长时显式标记行范围和是否有后续内容。超预算、省略、缺少版本均需标明。
 
-```mermaid
-stateDiagram-v2
-    [*] --> candidate: 捕获评估产出
-    candidate --> probation: 通过硬门禁 & writeGate='probation' (落盘 ~/.dsh/accremind/probation/)
-    candidate --> active: 审核台人工直接批准 (落盘 <repo>/.accremind/entries/)
-    probation --> active: 回执条点击"有效转正" 或 提交正向验证 (迁入项目 entries/)
-    probation --> archived: 连续曝光 >= 3 次无正向反馈 或 点击"无用淘汰"
-    active --> withdrawn: 发现结论错误撤回
-    active --> archived: 模块下线归档
-```
+版本解析从实际目标文件向上定位负责它的 workspace 子包，读取该子包的 manifest、`pnpm-workspace.yaml` 的 catalog/命名 catalog，以及锁文件对应 importer 的实际解析版本。区分声明范围、观测版本和可核对的安装/锁定版本，结果随子包、manifest、catalog 与锁文件哈希失效。模型检索、回合雷达、JIT、采集和巡检共用解析结果。已知版本与显式约束冲突时排除直接建议；多子包适用性不同则分别返回。仅有来源观察版本、依赖名不明确或无目标子包时，显示“版本待核”并允许按需读原文。以 `vue@3.4` 的旧示例对照 catalog 声明 `^3.5.25`，没有额外测试时不能宣称示例已在 3.5 上验证。
 
-### 4.4 Git 历史考古冷启动器（`packages/core/src/governance/git-archaeology.ts`）
+### 3.4 改前检索与改后候选
 
-通过 `execFileSync('git', ['log', ...])`（无 Shell 拼接防命令注入）扫描本地提交图谱：
-1. **信号评分公式**：
-   - 标题/正文匹配 `revert|hotfix|race|deadlock|workaround|坑|回滚|幂等|时序|兼容`：`+3 分`；
-   - 同一业务源码路径在 48 小时窗口内被 `fix` 提交修改 ≥ 2 次（快速返工簇）：`+3 分`；
-   - 同时包含业务源码修改与测试文件（`*.test.*` / `*.spec.*`）新增断言（具备天然验证证据！）：`+2 分`；
-   - 排除纯锁文件更新、纯大面积重命名或 > 30 个文件的格式化提交。
-2. 按得分降序取 Top-N 提交，自动组装包含 `commit SHA`、改动文件符号与提交上下文的候选证据包，直接输入 `triageEngine` 执行五路增量分流。
+回合开始时用任务关键词、已知目标、错误文本与实际依赖条件构建查询。旧 Skill 的技术词进入别名，与路径及主题共同匹配。已知高风险文件可在改动前给出提醒。宿主提供可核验的写前钩子时，将首次写入尚未检查的目标接入同一匹配器。当前宿主使用工具执行后钩子，直接写文件时按实际记录为“编辑后命中”。
 
----
+回合结束后，从真实工具结果、测试或用户说明收集观察，按断言记录通过、失败、部分验证和未知项。后台捕获沿用工作区策略；用户跳过后按捕获事件标识保留本地处置结果，排队任务在提交前复查该选择。候选草稿已经建立时，关闭本回合的待沉淀项；若已经进入试用或发布，界面显示当前状态并给出相应治理操作。用户可把新候选指向已有条目，审核后按 §4.1 决定去向。
 
-## 五、分阶段工程实施与测试验收矩阵
+## 四、R3 版本化治理与验证
 
-| 里程碑 | 核心模块范围 | 确定性测试门禁（`pnpm verify` / `node --test`） |
-| :--- | :--- | :--- |
-| **M0（当前立即交付）** | Monorepo 骨架 + `@accremind/core` 全套核心引擎（契约/S03门禁、原子Codec、符号指纹锚定、`node:sqlite` FTS5 + 双语别名、三层雷达 + JIT Guard、脱敏 + 五路分流 + Probation 流转、Git 时效巡检 + Git 历史考古 + Skill 导出）+ `@accremind/dsh-plugin` 适配壳 | 1. 删 `.sqlite` 从双层目录 100% 无损重建与 Git 冲突文件隔离；<br>2. 双语 `search_aliases` 口语搜代码术语精准命中；<br>3. 格式化/同文件加函数不误报 `review_due`，改目标函数体立即标 `review_due`；<br>4. PRD §11.5 全部 10 项增量分流与硬门禁拦截用例通过；<br>5. Probation 曝光 3 次自动淘汰与一键转正迁入项目目录通过；<br>6. JIT Tool Guard 回合中拦截、L1 指令消毒、真实临时 Git 仓考古挖掘与 Cordis 插件可逆卸载全绿。 |
-| **M1** | 接入真实 DSH Profile 联调钩子与命令行交互入口（`accremind init / bootstrap / status`） | 在本地 DSH 实例中挂载并通过真实多轮对话压测（Turn 编译 P95 ≤ 15ms）。 |
-| **M2** | 接入在线 LLM 推理适配器（驱动单通与隔离双检 `DeltaAssessor` 自动文本提炼） | 针对 20 条标注历史样本评测增量提取准确率与密钥零外发门禁。 |
-| **M3** | 构建 DSH WebUI 四个内嵌前端插槽（迁移现有 AntD 6 原型组件） | 浏览器端到端探针测试通过，WebUI 零文件/数据库直连验证通过。 |
+### 4.1 五路分流、补证与去重在服务端执行
+
+手工捕获、旧文提炼、会话采集与 `bootstrap` 共用 `CaptureAssessment → TriageEngine → hard publish gate`。保留 `source_fingerprint` 的重试去重；额外比较主题、问题现象、根因、解法、文件/组件及预防策略，以候选差异帮助人判断。相似度只用于推荐比较对象。Git 考古优先回滚、返工簇、带断言改动的提交；提交说明仅产生调查线索。自动提炼保留脱敏、材料范围、基线回答、token/耗时及不泄露候选答案的隔离检查。
+
+| 判定 | 服务端落地与下次消费 |
+|---|---|
+| `index_only` | 当前代码/断言已足以答题。保存文件/符号/测试定位、简短说明及评估 ID；可从搜索打开，不创建知识卡 |
+| `link_existing` | 已有权威规范、ADR 或已核实的旧章节覆盖问题。保存规范出处、覆盖范围与可用状态；搜索或雷达按需给链接 |
+| `knowledge_candidate` | 单独列出检查过的代码或权威材料、它们能给出的答案、尚缺的增量、遗漏后果、每一条增量断言对应的证据。满足门禁后按工作区 `writeGate` 进入试用或人工审阅 |
+| `needs_confirmation` | 原因推测、证据断开、复现有歧义、同一症状有两种相反根因。保存候选正文、待补事实和具体证据请求；按相同候选 ID 补交材料并重新评估，用户可回到原草稿 |
+| `discard` | 无新增信息且无导航价值、误触或纯重复。记录去向、理由和已有目标 ID（如有），不参与雷达 |
+
+前端确认“任务解决”只记录本次结果和证据线索；选择“未解决”进入排查，选择“跳过沉淀”终止本次写入。三种选择分别记录，不能以跳过推断失败。来源引用、`validated` 日期、成功退出的 typecheck 都不能自动证明新的业务断言。若以测试作为事实证据，应保存测试目标、命令、版本/提交、结果及能对应断言的定位；用户报告、工单、复现和 Git 也可提供相应背景证据。
+
+断言与证据的绑定须经过服务端核对。提交接口区分待核对、来源已定位和证据已支持三个状态，并保存解析失败、定位已变化、证据仅覆盖其他断言等缺口。只填路径、旧库只有验证日期或模型自行标注“已验证”时归为待核对。审核人可核对摘录与对应断言后确认支持范围；新增正向验证仍须满足 §4.2 的独立任务规则。
+
+候选可引用既有结论、给同一条件下的结论补证、在原卡新增独立场景、增加例外、修订或建立替代关系，也可转入冲突裁决。拟增 `instanceId` 绑定具体场景、复现输入、适用条件、观测结果和证据 ID，定位到卡内 Markdown 子段。服务端比较旧卡修订与来源哈希。追加证据事件可引用当前修订；改动条件、结论或示例行为时创建新修订。只修改某实例时保留其他实例的未编辑内容及稳定标识，记录受影响的断言和证据。新修订的独立成功数由绑定到该修订的验证记录计算，历史记录仍可回查。可复现反例触发暂停，指出受影响的实例和导出物；收窄前提、拆卡、修订或带证据裁决后明确恢复。
+
+### 4.2 四类消费事件与独立验证
+
+拟将事件对齐 `workspaceId + sessionId + turnId + resourceKind + resourceId + revision/sourceHash`。普通读取按权限和当前服务状态取正文，历史阅读从工作台授权入口取明确修订并标注当前状态。`eventId` 去重，模拟回放不写事件。工具调用重试复用稳定调用标识。一轮同一版本多路曝光只扣一次试用额度。
+
+| 类别 | 触发点与记录 | 对成熟度的作用 |
+|---|---|---|
+| 已提示 | 规则/雷达/JIT 实际提交给宿主，记录 `rule/radar/jit`、匹配缘由及路径。旧的 `radar_shown/guard_shown` 继续兼容 | 只计曝光；同一试用草稿最后一次曝光仍可反馈 |
+| 已打开 | 用户或模型实际成功取得正文或来源章节。将现有 `retrieved` 关联到当时回合，记录是谁打开、哪个来源版本 | 只计读取；主动 `search → get` 的条目也能出现在本轮回执 |
+| 已引用或采用 | 使用者明确指向条目版本及采用位置/说明；自然语言中偶然同名、仅点击或无反馈均不能推定采用。显式“不适用”单独记原因 | 只记用途，供排查推荐质量 |
+| 已验证或存在反证 | 通过验证服务提交 `taskFingerprint + outcome + evidenceNote`，关联 `entryId@revision`、实际任务与证据。导航的验证关联目标事实/卡片 | `success/failure/inconclusive` 按规则分别处理；回执上可从证据追查当时版本 |
+
+正向验证针对具体修订，任务指纹在工作区内应稳定；同次任务重试、跨回合继续、重复点击或同测试的副本只算一次。真实会话沿用以会话作保守任务标识的现状，识别到同工单/同运行时归并；手工登记须有可区分的工单或测试运行标识。不能以产生原经验的同次任务自证。沿用默认三次真实有效曝光后的试用归档规则：保留第三次命中的反馈窗口，当前回合结束后遇下一任务才归档；模拟、同回合重复展示和并行会话的未结束展示不提前触发。一次合格独立成功可由试用转正并到 `verified`；同修订第二个独立成功且满足无反证门禁才可到 `proven`。不确定的记录保留原因与待补材料。遇反证即时暂停普通召回与技能导出，允许本任务补充反证，保留原正向结果和更正顺序；同一请求重发不能制造第二条裁决。旧回执引用版本已变化时，仅开放历史查看。
+
+到期复核、标记失效、处理反证、恢复检索是独立操作。复核读取实际文件/符号差异、依赖解析结果及核实的基准。签认“仍适用”更新基准与复核期限；悬而未决的反证继续暂停检索。成功重绑符号后生成相应修订，记录前后定位和证据。`expectedRevision + expectedRawSha256` 校验失败时要求复核最新材料。待复核卡带提示，已知版本冲突、过时、暂停、撤回或归档的卡不作为直接建议。
+
+### 4.3 导出、修订查询及旧数据升级
+
+沿用 `accremind_export_skill` 与 `.dsh/skills/<slug>/SKILL.md`。仅当前有效、可服务且 `verified/proven` 的正式修订具备导出资格。生成前回显目标路径、来源 `id@revision`、将要发布的章节、示例、例外及引用；对会话私有或来源不许可的片段仅保留可公开的说明或定位。导出版本登记 `artifactId/entryId/revision/sourceHash/path/generatedHash` 及审批依据，原文中的代码在授权范围内逐字保留，面向模型的资料包装与存储原文分开处理。
+
+每次源卡修订、暂停、撤回或复核失败时，标记相关导出物待同步/需停用；同一 slug 已属于其他文件则先解决冲突。对于插件托管的已生成文件，哈希一致且来源已暂停或撤回时，将它从 DSH 可发现目录移至隔离区，记录路径、原因与恢复方法。用户已手改的文件不覆盖，保留差异、标记“宿主仍能发现此副本”并让用户选择备份后停用或手工处理。导出更新、取消和恢复均绑定期望生成哈希；更新失败可重试。源码与来源仍不具备资格时不能重新启用托管技能。登记测试/Lint 固化时需绑定相应位置和覆盖断言。
+
+R1 起保留后续可核验的文件基线；R3 拟增 `accremind.kb.getRevision({id, revision})` 授权查询、实例差异、当时的证据与操作时间线。旧条目第一次接管时保留现有完整原文及当前修订；旧来源日期、旧统计和操作日志标记各自来源。启动迁移支持中断重试，报告已留存、可由 Git 验证恢复、仅存元信息三种历史。失联证据仍显示原定位；不同仓库同名文件不可自动补作证据。
+
+## 五、交付与验收
+
+### 5.1 发布顺序与阶段出口
+
+| 阶段 | 可交付成果 | 阶段出口 |
+|---|---|---|
+| **R1 正文保真** | 原文件读取、围栏感知分段、局部修订、源哈希并发控制、可恢复文件写入与明确的备份边界 | 旧卡和手写长文通过读→显示→改标题/状态→重建→再读的字节级断言；外部编辑冲突保全双方；模拟文件/索引在不同提交阶段中断，重试结果一致，不生成伪历史 |
+| **R2 旧库接入与按需复用** | 只读注册、逐项预览、受控标签、来源定位、重跑去重、权威导航检索、代码按需阅读、子包版本过滤与改前／改后操作 | 一份多章节的真实来源可按任务和元数据发现；同一预览重跑复用原结果；处理移动、同名和源文冲突；验证跨版本、无答案、超预算、源文引用和跳过沉淀 |
+| **R3 版本化治理与验证** | 可查询的不可变修订与证据、实例修订、四类回执、独立验证/反证、导出同步和恢复 | 从真实回合或治理记录打开当时正文；同任务重试幂等，反证生效后普通检索/托管导出停止供给；修订对比可指出变动实例、受影响的证据与成果物 |
+
+旧版 M0–M3 的本地分流、符号巡检、JIT、宿主适配与 WebUI 作为回归基线保留。语料评测另用有答案、无答案、版本错配及源文失联样本，固定标注，同源近似题整体放入调优集或留出集，列出分子与分母。提炼分流核对基线答案、增量断言与证据，检索报告 Precision@5、Recall@5、无答案误返回、适用条件错误及耗时；单元测试的通过率不能替代这些质量结果。
+
+### 5.2 复利工程验收用例
+
+旧库样本来自 `optimos-intco-frontend/.agents/skills/compound-engineering/references/experiences/`。发布前固定样本提交或内容哈希，并单独记录本次执行环境、任务和结果。旧库作者记录的通过次数属于历史证据。
+
+| 编号 | 操作与样本 | 通过条件 |
+| --- | --- | --- |
+| R1-01 | 将「表格列设置」的多段描述、七项规则、原始代码和验证边界作为测试卡。加入代码围栏内的行首 `##`、冲突标记示例、自定义节、未知元数据和 CRLF。 | 解析得到完整段落与代码，原文下载与磁盘文件逐字节一致。分别修改标题、变更治理状态和执行试用转正，所有未编辑正文块及未知字段逐字节保留。 |
+| R1-02 | 打开旧版四节卡及包含改前、改后与 diff 的测试卡，重建 SQLite 内容索引。 | 旧卡可照常读取，ID、修订号和状态正确。知识详情能分别查看改前代码、改后代码与原文。重建后的索引定位到同一正文，保留已有验证和回执事件。 |
+| R1-03 | 打开编辑器后从 Git 工作区修改同一卡片。另模拟原子文件写成功但索引更新失败。 | 保存时明确提示冲突，提供磁盘版本和草稿的差异。重新载入或重试索引更新后，磁盘内容仍完整，索引回到当前卡片版本。 |
+| R2-01 | 扫描旧库正文、索引和模板；预览后连续接入相同版本两次；修改一条旧来源的内容后再次接入。 | H3 的 iPad 点击失效和 H4 的 Modal 内容裁剪有各自的来源定位、条件与验证版本。索引、模板保持导航用途；重复接入复用条目标识和待处理结果。来源变化生成差异预览，保留已审核的旧版本。 |
+| R2-02 | 检索「客户分级末尾 10%」，再用旧库的请求序列守卫复现 A 先发、B 后发、A 返回时 B 仍在加载。 | 前者链接到项目 README 的 `rankingRate >= 0.9` 说明及实现。若 A 提前关闭了 B 的加载状态，记录实际反例并将对应断言留待验证。旧来源的 high 等级和验证日期原样可查。 |
+| R2-03 | 在真实 DSH 会话提问「弹窗里的月份面板被截断」，点开命中的原文及复现示例。再用明确不兼容版本和无答案的问题查询。 | 回合前摘要说明触发条件并给出定位，只在按需读取时提供示例；触摸失效与内容裁剪分别返回各自适用条件。已知版本不符、版本未知与无匹配各有准确反馈。模拟查询保留只读行为。 |
+| R2-04 | 在原项目查看「表格列设置」迁移后的日期与验证详情，核对 Vue、组件库、多设备及后端适用范围。 | 原文的 50 项回归、26 项检查和 SSR 证据按来源显示；mock API 与待验收边界可见。当前修订新增的独立任务验证数为零。 |
+| R2-05 | 在真实会话分别运行先读后改、直接首次写入。结束后选择跳过沉淀，再让已排队的采集任务尝试提交。 | 回合提示标明触发时点，直接首次写入的后置提醒不会记成已做写前检查。跳过沉淀和任务是否解决分别记录，后台任务复查跳过状态并结案。 |
+| R2-06 | 用横跨五种归属且至少两页的经验样本，加入缺主题、暂停、已失效、已归档、有多个标签的条目及导航记录。应用关键词、主题及标签筛选，在卡片／表格／总结间切换。 | 三种视图可遍历同一条目集合，均报告过滤后的全量总数与主题分布。来源与已归档条目各用自身口径，旧卡从“未归类”可找到；打开详情再返回仍在原查询和条目位置。另用 `editableLoading` 或 `references/experiences/api.md` 验证按代码与来源查找。 |
+| R2-07 | 审核一条候选送入试用，再处理一条已经待复核的试用经验并归档。 | 候选审核结果能打开对应试用条目。旧经验归档后可从历史路径回查；已无处置动作的待复核条目移出治理待办，页头徽标与默认待办列表一致。 |
+| R3-01 | 给已经被回合引用的 r1 补充证据，再修正关键示例生成 r2。分别从旧回执和新检索打开。 | 补证归到原条目；修订后旧回执打开当时的 r1 结论、代码与证据，新检索返回适用的 r2。变更原因与差异可追溯，r2 的验证账本独立核算。 |
+| R3-02 | 拿同样采用 `document.body` 的两个旧案例审核归并，再制造同版本、同前提、方向相反的断言。 | 不同机制的案例可分别检索，验证一条只刷新对应场景。同前提矛盾进入冲突裁决，展示双方证据与影响范围。重复提交相同证据使用已有处理结果。 |
+| R3-03 | 在两个独立任务验证同一修订，第一个任务重复提交；随后提交含证据的反例，并单独执行时效确认。 | 同一任务只计一次；两次独立正向结果按现有成熟度规则晋升。反证暂停受影响项的自动检索，时效确认独立生效。处理反证并登记依据后再恢复。 |
+| R3-04 | 从已验证 r1 导出 Skill，分别测试源条目修订、暂停与人工编辑过的导出文件。 | 导出物可定位源条目及 r1。治理页能识别版本落后、暂停和本地差异。获准更新后，生成的材料携带新版本的条件、结论及选择的示例，手工改动有明确的差异处理路径。 |
+| R3-05 | 用「表格列设置」创建同一条经验的反证与时效复核，分别打开回执、卡片和治理。先尝试恢复检索，再完成时效核对和反证处置。 | 待办计一条资源、显示两项原因。恢复被阻塞时能定位缺项；确认时效后保留暂停，反证核对、恢复和降级结果各自留痕。已处理支持返回同一条目的证据与原查询。 |
+| R3-06 | 勾选本页多个条目，预览补充主题和标签；模拟一条在提交前被修改，再重试。 | 未冲突的条目完成整理，冲突项保留待处理动作。正文、原文证据、归属、检索开关、修订验证记录可对照。未勾选或换查询后隐藏的条目没有被修改。 |
+
+## 六、沿用的工程机制与回归入口
+
+本节保留 V3.1 架构决策的工程定位。运行时契约以所链接的代码为准，R1–R3 增量以本文各节的阶段出口为准。
+
+| 机制 | 原有约束与实现入口 |
+| --- | --- |
+| 双包解耦 | `@accremind/core` 继续以 Node 24 标准库实现内核、文件操作和 SQLite 查询。Cordis、DSH 事件及鉴权接口由 `@accremind/dsh-plugin` 适配。保留 CLI 的 `init`、`status`、`search`、`get`、`rebuild`、`bootstrap`、`ui` 入口及其既有用法。[内核入口](./packages/core/src/index.ts) · [插件入口](./packages/dsh-plugin/src/index.ts) · [CLI](./packages/dsh-plugin/src/cli.ts) |
+| 本地空间与索引 | 保留项目正式经验、项目规范、工作区本机试用、个人及跨项目技术空间。拦截未解决的冲突文件，单卡异常可单独复核。持久化边界和全库备份按 §2.4。[路径与原子写入](./packages/core/src/codec/atomic-fs.ts) · [实际数据库定义](./packages/core/src/store/sqlite-schema.ts) |
+| 回合前与文件触发 | 常驻规则维持稳定的序列化和固定顺序；回合前雷达按双语别名、报错和已知文件检索。文件工具执行后，在结果末尾附加未展示的适用经验。展示材料沿用只读边界与预算。工作台经宿主 RPC 访问内核，命中预览复用匹配逻辑。[回合编译](./packages/core/src/view/view-compiler.ts) · [宿主钩子](./packages/dsh-plugin/src/native-host.ts) |
+| 符号级复核 | 结合仓库相对路径、符号名、行范围及去注释和空白后的指纹核对源码。仅行号漂移时重新定位；符号消失、逻辑指纹变化或依赖越界时送复核。历史证据引用保留原提交和定位。[符号锚点](./packages/core/src/symbol/symbol-anchor.ts) · [时效巡检](./packages/core/src/governance/git-staleness.ts) |
+| Git 考古和采集 | 扫描回滚、修复信号、短时间重复修复和含测试变动的提交，先预览或选定提交再收集证据。选中的提交以原 SHA 为依据参与既有五路分流；本机扫描与可选模型推理分别回归。[Git 考古](./packages/core/src/governance/git-archaeology.ts) · [增量评估](./packages/core/src/capture/delta-assessor.ts) |
+
+`pnpm verify` 继续执行确定性回归。R1 增加直接写文件、重建和中断恢复用例；R2 增加样本语料、来源解析与正常宿主入口；R3 增加历史正文、反馈和托管产物的跨操作回归。真实性验收按 §5.2 单独记录实测结果。
+
+## 七、知识浏览与治理队列契约
+
+本节定义现有顶部四个菜单内部的查询和操作。R2 交付经验、导航及已归档／撤回条目的浏览，治理待办先提供只读投影，从中进入已有复核服务。R3 补齐按修订的历史浏览、批量整理、按原因持久裁决、已处理记录与写入恢复。权限、四维状态、证据和操作账本沿用 §2–§4。
+
+### 7.1 知识浏览、分组与计数
+
+知识库内设水平入口 **经验条目｜来源导航｜历史记录**。拟增管理 RPC `accremind.kb.browse`，沿用现有 `accremind.kb.list` 和模型搜索的契约。宿主确定当前工作区及可见资源。先做权限过滤，再计算列表、分组、计数和摘要。
+
+| 集合 | 查询对象与计数单位 | 默认范围 |
+|---|---|---|
+| 经验条目 `entries` | 每个可见归属空间内的 `entryId` 取当前修订，同一资源只计一次。试用转正沿用同一身份 | 跨全部可见归属的 `active`、`probation`。含草稿成熟度、待复核、已失效、暂停检索的经验，并列出相应状态。可另筛“可自动检索”；候选及待补证留在候选审核 |
+| 来源导航 `sources` | 按稳定导航资源 ID 计数，返回 `code_index` 或 `authoritative_link`、来源标题、章节/符号、可用性。导航有多条引用时合并展示出处 | 可见的代码索引及权威来源入口，含等待修复的失联入口。打开操作仍需核验权限和定位；此集合不计入经验条数 |
+| 历史记录 `history` | 返回归档/撤回条目及已留存的旧修订或明确标为“仅元信息”的记录，分别返回去重 `entryCount`、`revisionCount`。一条经验的多个修订可在其下展开 | 可查的历史资源。并列当时版本、现行版本与可回放性，复用 §4.3 历史读取，缺失内容不以当前正文填充 |
+
+`browse` 输入 `collection, q, filters, sort, cursor, limit`；`filters` 的命名维度为 `layer, primaryTopicId, tagIds, type, status, maturity, freshness, serving`，来源/历史另有 `kind, availability` 等集合专用维度。不同维度取交集，同维度多选取并集，`tagIds` 默认要求选定标签全部出现。未登记主主题用专用筛选值 `unassigned`。响应含 `rows, total, facets, groups, summary, nextCursor, queryToken`。固定排序以资源稳定 ID 作末位，游标绑定查询和索引版本；失效返回 `cursor_expired` 并允许保持筛选、回到第一页。切换卡片、表格、总结复用同一查询，呈现方式不进入筛选条件。
+
+管理检索支持条目 ID、正文中的错误和代码标识、主题与别名、原文章节和仓库相对路径。正文片段只在源文可访问时索引与返回，匹配结果指向实际段落。入口全局搜索复用三种集合的查询，返回按各入口分组的数量与少量命中，由选中项跳转。候选处理记录保存目标条目、来源或补证入口，已转成试用时返回实际知识 ID。
+
+每条经验选一个主主题，缺失时进入“未归类”。先按归属选范围，再把范围内结果按主主题分组；选“全部”时按主题汇聚所有可见归属。`total` 和 `summary` 覆盖过滤后的全量资源，分组计数按同一结果去重，各主题组可加总。`facets[维度]` 在保留其他筛选、移除自身维度条件后按唯一资源计数，便于切换条件，多标签计数可重叠。“可自动检索”复用实际服务资格判断，待复核标记与明确版本冲突分别处理。三个集合有各自计数单位；当前页条数单列。
+
+批量整理仅对当前页明确勾选的身份执行。`classify.preview` 接收资源列表、`primaryTopicId` 变更及标签增加/移除项，列出每条的之前/之后、无变化、无权修改及冲突。`classify.apply(planId, requestId)` 对逐条的编辑权限、修订号和文件哈希再次核对，沿用 §2.3 文件写入与恢复，返回逐项成功/跳过/冲突，失败项可单独重试。纯主题/标签调整作为组织元数据审计，保持语义修订和验证有效性；原文字节哈希随受管字段更新。归属、可见范围、结论与适用条件不在该 RPC 的白名单，分别走原授权/修订流程。
+
+### 7.2 治理待办、裁决与已处理记录
+
+治理与设置内设 **治理待办｜已处理｜设置**。`accremind.gov.listWork` 根据当前卡片、近期巡检与来源检查、独立验证、导出登记、文件异常及已记裁决生成投影。读取队列与执行扫描使用独立操作，读取展示最近检查时间，显式扫描或后台任务才触发巡检。`resourceKey=(ownerScope,resourceKind,stableId)` 唯一标识一行。ownerScope 取稳定的所属工作区或用户授权空间，不使用可修改的知识分类或存储区。经验以条目为单位，来源问题以来源条目为单位，损坏/合并冲突文件以授权存储区内的文件为单位。相同条目的到期复核、符号变化、反证暂停或导出待处理可并列，相关来源或文件资源互相链接。待审核候选和试用“有效/淘汰”继续使用现有入口；治理只收录有独立处置动作的原因。
+
+原因组使用“反证与冲突”“时效待复核”“来源与文件异常”“Skill 待同步”。尚缺证据且已发出补证请求时显示“等待补证”，从请求与后续证据推导，不与候选审核重复建单。能定位到源条目的导出异常归在该条目，失联来源或损坏文件各自保留独立身份。顶部总数按当前有可执行动作的资源去重，多个原因不累加；等待他人补证且当前无可执行动作的资源单列。已确认失效且无其他待处理原因时移出待办，原决定仍可从历史找到。
+
+响应的行包含 `resourceKey, title, currentRef, reasons[], lastDetectedAt`。每个原因含 `reasonId, code, detectedAt, evidenceRefs, basisHash, allowedActions`。`reasonId` 由资源、原因码和稳定触发依据生成，例如待核的依赖基准、某条反证记录、待处理的来源/导出哈希。重复扫描同一依据复用 ID；新证据或已复核基准后的新漂移产生新原因。使用既有 `freshness/serving` 及其真实依据确定可操作事项，单凭“已暂停”标记不能虚构反证。队列可按资源类型、原因和优先级筛选；返回匹配的资源数、原因数及全体原因摘要，分页按资源行。展示所有原因并标出哪些匹配了筛选。
+
+`accremind.gov.decide({resourceKey,reasonId,action,reason,evidenceRefs,expectedRef,basisHash,requestId})` 一次裁决一个指定原因。在同一资源写入边界内复查权限、当前修订/文件哈希或来源版本、原因依据与允许动作，再调用已有复核、反证裁决、来源重绑或导出同步服务。提交事实状态变化与带动作、处理人、证据、前后基准的操作记录；涉及文件时复用 §2.3 的恢复日志。成功后重新计算整行投影。确认到期时效不会解除同条目的反证暂停。支持先登记反证核对结果；“恢复检索”单独检查当前时效与所有尚未解决的反证，其余原因仍阻塞时返回 `blockedBy[]`、对应证据与下一步动作，保存已做的核对。只有处理依据确实改变的原因才从待办移除；其他原因仍可独立处理。
+
+同一 `requestId` 重放取得原裁决，复用 ID 却改变内容返回 `request_conflict`。不同请求已处理同一触发依据时返回原决定 `already_decided`；当前版本或证据已变则返回 `basis_changed` 及最新允许动作，保留用户已写的说明。未授权请求不返回资源详情；对已获授权的资源可区分来源失联与缺少证据。“已处理”读取持久裁决账本，支持按资源归并并展开每次决定；同一资源有尚未处置的其他原因时，可同时出现在待办与已处理。队列本身可丢弃重算，不额外维护一套手工开关的工单状态。

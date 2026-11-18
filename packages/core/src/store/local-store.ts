@@ -15,6 +15,7 @@ import {
   parseEntryMarkdown,
   serializeEntryMarkdown,
 } from '../codec/frontmatter.ts';
+import { isRepositoryKnowledgeLayer } from '../contracts/types.ts';
 import type {
   CaptureAssessment,
   CorruptedFileRecord,
@@ -27,9 +28,15 @@ import type {
   UsageEvent,
   ValidationRecord,
 } from '../contracts/types.ts';
-import { enforceHardPublishGate, validateCaptureAssessment } from '../contracts/validator.ts';
+import { enforceHardPublishGate, isAbsoluteMachinePath, validateCaptureAssessment } from '../contracts/validator.ts';
 import type { GetEntryOutcome, KnowledgeStoreProvider } from './provider.ts';
 import { ACCREMIND_SQLITE_DDL, satisfiesSemverRange } from './sqlite-schema.ts';
+
+function checkDomainStorage(layer: KnowledgeEntry['layer'], zone: StorageZone): void {
+  if (layer === 'domain' && zone !== 'project' && zone !== 'probation') {
+    throw new Error('领域知识只能放入当前仓库的项目库或本地试用池');
+  }
+}
 
 export const GLOBAL_WORKSPACE_ID = '__global__';
 
@@ -201,6 +208,9 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   }
 
   initializeAndReconcile(): { syncedCount: number; corruptedCount: number } {
+    this.db.prepare(`UPDATE capture_assessments SET review_state = 'pending'
+      WHERE workspace_id = ? AND disposition = 'needs_confirmation'
+      AND review_state = 'decided' AND decided_at IS NULL`).run(this.workspaceId);
     ensureStoreDirectoriesSync(this.paths);
     const zoneScans: Array<{ zone: StorageZone; dir: string; wsId: string }> = [
       { zone: 'rules', dir: this.paths.projectRulesDir, wsId: this.workspaceId },
@@ -234,6 +244,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
 
           try {
             const parsed = parseEntryMarkdown(rawMd, fullPath);
+            checkDomainStorage(parsed.layer, zone);
             seenKeys.add(`${wsId}::${parsed.id}`);
 
             const existing = this.db
@@ -438,6 +449,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     zone: StorageZone,
     assessment: CaptureAssessment | null,
   ): KnowledgeEntry {
+    checkDomainStorage(entry.layer, zone);
     const resolvedAssessment =
       assessment ??
       (entry.capture_assessment_id ? this.getAssessment(entry.capture_assessment_id) : null);
@@ -493,6 +505,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     if (!row) {
       throw new Error(`未找到条目: ${entry.id}`);
     }
+    checkDomainStorage(entry.layer, row.storage_zone);
     const markdown = serializeEntryMarkdown(entry);
     const contentHash = sha256Hex(markdown);
     writeFileAtomicSync(row.file_path, markdown);
@@ -779,7 +792,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
 
     const reviewState =
       reviewStateOverride ??
-      (assessment.disposition === 'knowledge_candidate' ? 'pending' : 'decided');
+      (assessment.disposition === 'knowledge_candidate' || assessment.disposition === 'needs_confirmation' ? 'pending' : 'decided');
 
     this.db
       .prepare(
@@ -793,7 +806,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       .run(
         assessment.id,
         assessment.workspace_id,
-        assessment.source_fingerprint,
+        JSON.stringify([assessment.workspace_id, assessment.source_fingerprint]),
         assessment.question,
         JSON.stringify(assessment.checked_context),
         assessment.discoverability,
@@ -829,16 +842,21 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
 
   findAssessmentByFingerprint(fingerprint: string): CaptureAssessment | null {
     const row = this.db
-      .prepare('SELECT * FROM capture_assessments WHERE source_fingerprint = ?')
-      .get(fingerprint) as Record<string, unknown> | undefined;
+      .prepare('SELECT * FROM capture_assessments WHERE workspace_id = ? AND source_fingerprint IN (?, ?)')
+      .get(this.workspaceId, JSON.stringify([this.workspaceId, fingerprint]), fingerprint) as Record<string, unknown> | undefined;
     return row ? this.mapAssessmentRow(row) : null;
   }
 
   private mapAssessmentRow(row: Record<string, unknown>): CaptureAssessment {
+    const storedFingerprint = String(row.source_fingerprint);
+    const prefix = '[' + JSON.stringify(row.workspace_id) + ',';
+    // Older databases stored the fingerprint directly in a globally unique column.
+    const fingerprint = storedFingerprint.startsWith(prefix)
+      ? JSON.parse(storedFingerprint)[1] as string : storedFingerprint;
     return {
       id: String(row.id),
       workspace_id: String(row.workspace_id),
-      source_fingerprint: String(row.source_fingerprint),
+      source_fingerprint: fingerprint,
       question: String(row.question),
       checked_context: JSON.parse(String(row.checked_context_json)),
       discoverability: row.discoverability as CaptureAssessment['discoverability'],
@@ -900,12 +918,25 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     outcome: 'success' | 'failure' | 'inconclusive';
     evidenceNote: string;
   }): { record: ValidationRecord; updatedEntry: KnowledgeEntry } {
+    if (!input.evidenceNote?.trim() || !input.taskFingerprint?.trim()) {
+      throw new Error('验证需要真实任务标识与本次验证依据');
+    }
     const row = this.findRawEntryRow(input.entryId);
     if (!row) {
       throw new Error(`验证目标条目不存在: ${input.entryId}`);
     }
 
     const entry = rowToEntry(row);
+    if (entry.status !== 'active' && entry.status !== 'probation') {
+      throw new Error('仅能验证正式或试用中的经验');
+    }
+    if (input.outcome === 'success' && entry.serving === 'suspended') {
+      throw new Error('请先核对反证并恢复检索');
+    }
+    if (input.outcome === 'success' && entry.evidence.some(ev =>
+      ev.source_type === 'session_turn' && ev.source_ref === input.sessionId)) {
+      throw new Error('请在产生该经验的会话之外验证');
+    }
     const now = new Date().toISOString();
     const record: ValidationRecord = {
       id: `VAL-${randomUUID().slice(0, 8)}`,
@@ -919,7 +950,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       created_at: now,
     };
 
-    this.db
+    const saved = this.db
       .prepare(
         `INSERT OR IGNORE INTO validation_records (
           id, workspace_id, entry_id, revision, session_id, task_fingerprint, outcome, evidence_note, created_at
@@ -937,6 +968,18 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
         record.created_at,
       );
 
+    if (!saved.changes) {
+      const prior = this.db.prepare(`SELECT * FROM validation_records
+        WHERE workspace_id = ? AND entry_id = ? AND revision = ? AND task_fingerprint = ?`)
+        .get(row.workspace_id, entry.id, entry.revision, input.taskFingerprint) as unknown as ValidationRecord;
+      if (prior.outcome === input.outcome) return { record: prior, updatedEntry: entry };
+      // A later counterexample in the same task supersedes its earlier positive vote.
+      if (input.outcome !== 'failure') throw new Error('本任务已有不同的验证结论，请先复核证据');
+      this.db.prepare('UPDATE validation_records SET outcome = ?, evidence_note = ?, created_at = ? WHERE id = ?')
+        .run('failure', input.evidenceNote, now, prior.id);
+      record.id = prior.id;
+    }
+
     if (input.outcome === 'failure') {
       const suspendedEntry: KnowledgeEntry = {
         ...entry,
@@ -949,21 +992,22 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     if (input.outcome === 'success') {
       const successCountRow = this.db
         .prepare(
-          `SELECT COUNT(DISTINCT task_fingerprint) AS cnt
+          `SELECT COUNT(DISTINCT CASE WHEN outcome = 'success' THEN task_fingerprint END) AS cnt,
+                  COUNT(CASE WHEN outcome = 'failure' THEN 1 END) AS failures
            FROM validation_records
-           WHERE workspace_id = ? AND entry_id = ? AND revision = ? AND outcome = 'success'`,
+           WHERE workspace_id = ? AND entry_id = ? AND revision = ?`,
         )
-        .get(row.workspace_id, entry.id, entry.revision) as { cnt: number };
+        .get(row.workspace_id, entry.id, entry.revision) as { cnt: number; failures: number };
 
       const independentSuccesses = Number(successCountRow.cnt ?? 0);
       const nextMaturity: KnowledgeEntry['maturity'] =
-        independentSuccesses >= 2
+        independentSuccesses >= 2 && successCountRow.failures === 0
           ? 'proven'
           : independentSuccesses >= 1
             ? 'verified'
             : entry.maturity;
 
-      if (row.storage_zone === 'probation') {
+      if (entry.status === 'probation') {
         const promoted = this.promoteProbationToActive(entry.id, {
           maturity: nextMaturity,
           last_validated_at: now,
@@ -983,14 +1027,14 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     return { record, updatedEntry: entry };
   }
 
-  recordProbationExposure(entryId: string): { autoArchived: boolean; exposures: number } {
+  recordProbationExposure(entryId: string, waitForFeedback = false): { autoArchived: boolean; exposures: number } {
     const row = this.findRawEntryRow(entryId);
     if (!row || row.status !== 'probation') {
       return { autoArchived: false, exposures: row?.probation_exposures ?? 0 };
     }
 
-    const nextExposures = row.probation_exposures + 1;
-    if (nextExposures >= this.maxProbationExposures) {
+    const nextExposures = Math.min(this.maxProbationExposures, row.probation_exposures + 1);
+    if (!waitForFeedback && nextExposures >= this.maxProbationExposures) {
       const entry = rowToEntry(row);
       const archived: KnowledgeEntry = {
         ...entry,
@@ -1146,9 +1190,29 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     return out;
   }
 
+  getReviewItem(id: string) {
+    const row = this.db.prepare('SELECT * FROM capture_assessments WHERE workspace_id = ? AND id = ?')
+      .get(this.workspaceId, id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      assessment: this.mapAssessmentRow(row),
+      reviewState: String(row.review_state),
+      candidateDraft: row.candidate_entry_json ? JSON.parse(String(row.candidate_entry_json)) as KnowledgeEntry : null,
+    };
+  }
+
+  countAssessments(reviewState: 'pending' | 'decided' | 'all' = 'all'): number {
+    const filter = reviewState === 'all' ? '' : ' AND review_state = ?';
+    const args = reviewState === 'all' ? [this.workspaceId] : [this.workspaceId, reviewState];
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM capture_assessments WHERE workspace_id = ?${filter}`)
+      .get(...args) as {count:number};
+    return row.count;
+  }
+
   listAssessments(options: {
     reviewState?: 'pending' | 'decided' | 'all';
     limit?: number;
+    offset?: number;
   } = {}): Array<{
     assessment: CaptureAssessment;
     reviewState: string;
@@ -1156,25 +1220,11 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   }> {
     const state = options.reviewState ?? 'all';
     const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
-
-    const rows =
-      state === 'all'
-        ? (this.db
-            .prepare(
-              `SELECT * FROM capture_assessments
-               WHERE workspace_id = ?
-               ORDER BY created_at DESC
-               LIMIT ?`,
-            )
-            .all(this.workspaceId, limit) as Array<Record<string, unknown>>)
-        : (this.db
-            .prepare(
-              `SELECT * FROM capture_assessments
-               WHERE workspace_id = ? AND review_state = ?
-               ORDER BY created_at DESC
-               LIMIT ?`,
-            )
-            .all(this.workspaceId, state, limit) as Array<Record<string, unknown>>);
+    const offset = Math.max(0, options.offset ?? 0);
+    const stateFilter = state === 'all' ? '' : ' AND review_state = ?';
+    const args = state === 'all' ? [this.workspaceId] : [this.workspaceId, state];
+    const rows = this.db.prepare(`SELECT * FROM capture_assessments WHERE workspace_id = ?${stateFilter}
+      ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
       assessment: this.mapAssessmentRow(row),
@@ -1189,6 +1239,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     assessmentId: string;
     decision: 'approve_active' | 'approve_probation' | 'index_only' | 'link_existing' | 'discard';
     editedEntry?: KnowledgeEntry;
+    navigationLocator?: string;
   }): {
     ok: boolean;
     missingFields?: string[];
@@ -1219,10 +1270,11 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     }
 
     if (input.decision === 'index_only' || input.decision === 'link_existing') {
-      const locator =
-        assessment.checked_context.checked_files[0] ??
-        assessment.checked_context.checked_docs[0] ??
-        'README.md';
+      const defaults = input.decision === 'index_only' ? assessment.checked_context.checked_files : assessment.checked_context.checked_docs;
+      const locator = input.navigationLocator?.trim() || defaults[0]?.trim();
+      if (!locator || isAbsoluteMachinePath(locator)) {
+        return {ok:false, missingFields:['navigationLocator: 请填写可核查的仓库相对位置或稳定文档引用']};
+      }
       this.appendNavigationItem({
         id: `NAV-${randomUUID().slice(0, 8)}`,
         kind: input.decision === 'index_only' ? 'code_index' : 'authoritative_link',
@@ -1298,18 +1350,24 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       throw new Error(`未找到待编辑条目: ${input.id}`);
     }
     const existing = rowToEntry(row);
+    const layerChanged = input.patch.layer !== undefined && input.patch.layer !== existing.layer;
+    if (layerChanged && (!isRepositoryKnowledgeLayer(existing.layer) || !isRepositoryKnowledgeLayer(input.patch.layer) ||
+        (row.storage_zone !== 'project' && row.storage_zone !== 'probation'))) {
+      return { ok: false, missingFields: ['layer: 仅可在本仓库的业务领域知识和项目知识之间调整分类'] };
+    }
     const now = new Date().toISOString();
-    const reviewDue = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
 
     const nextEntry: KnowledgeEntry = {
       ...existing,
       ...input.patch,
       id: existing.id,
       revision: existing.revision + 1,
-      maturity: input.revisionImpact === 'substantive' ? 'draft' : existing.maturity,
-      freshness: 'current',
+      maturity: layerChanged || input.revisionImpact === 'substantive' ? 'draft' : existing.maturity,
+      freshness: existing.freshness,
+      serving: existing.serving,
+      status: existing.status,
       updated_at: now,
-      review_due_at: input.patch.review_due_at ?? reviewDue,
+      review_due_at: existing.review_due_at,
     };
 
     const assessment = nextEntry.capture_assessment_id

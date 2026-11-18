@@ -23,6 +23,7 @@ export interface DshToolDefinition<TArgs = Record<string, unknown>> {
 
 export interface DshTurnHookPayload {
   sessionId: string;
+  turnId?: string;
   userPrompt?: string;
   assistantReply?: string;
   activeFiles?: string[];
@@ -33,6 +34,7 @@ export interface DshTurnHookPayload {
 
 export interface DshToolAfterHookPayload {
   sessionId: string;
+  turnId?: string;
   toolName: string;
   args: Record<string, unknown>;
   result: DshToolResult;
@@ -63,6 +65,9 @@ export interface DshProjectedMessage {
  * - `ctx.webui.registerRpc(...)`
  */
 export interface CordisContext {
+  get?(name: string): any;
+  reflect?: { provide(name: string, value: unknown): void };
+  inject?(names: string[], install: (ctx: CordisContext) => void): unknown;
   effect(setup: () => () => void): void;
   provide?(serviceName: string, instance?: unknown): void;
   on?(event: string, listener: (...args: any[]) => unknown): () => void;
@@ -94,7 +99,7 @@ export interface CordisContext {
       slot: 'turn-footer' | 'sidebar-panel';
       id: string;
       title: string;
-      renderHtml?: () => string;
+      renderHtml?: (owner?: { sessionId: string; turnId: string }) => string;
     }): (() => void) | void;
   };
 }

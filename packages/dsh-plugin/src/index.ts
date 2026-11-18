@@ -1,3 +1,5 @@
+import { createDemoSessions } from './demo-workspace.ts';
+import { workspaceGate } from './workspace-settings.ts';
 import {
   AutoCaptureCoordinator,
   GitStalenessScanner,
@@ -16,6 +18,8 @@ import type {
   DshToolDefinition,
   DshTurnHookPayload,
 } from './cordis-types.ts';
+import { TurnReceipts } from './turn-receipts.ts';
+import { mountNativeHost } from './native-host.ts';
 import { createWebuiRpcHandlers, type RpcHandlerMap } from './rpc-handlers.ts';
 import { extractTargetRelativePath, interceptFileToolResult } from './tool-guard.ts';
 import { createAccreMindTools } from './tools.ts';
@@ -28,7 +32,7 @@ export * from './webui/ui-bundle.ts';
 export * from './webui/local-server.ts';
 
 export const name = 'accremind';
-export const inject = ['tools'];
+export const inject = ['tools', 'agents', 'systemPrompt'];
 
 export interface DshPluginRuntimeOptions extends Partial<AccreMindConfig> {
   projectRoot?: string;
@@ -94,6 +98,10 @@ function resolveDefaultLlmAdapter(explicit?: LlmInferenceAdapter | null): LlmInf
 export function createAccreMindRuntime(
   rawOptions: DshPluginRuntimeOptions = {},
 ): AccreMindPluginInstance {
+  return createWorkspaceRuntime(rawOptions, false);
+}
+
+function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: boolean): AccreMindPluginInstance {
   const config: AccreMindConfig = {
     ...DEFAULT_ACCREMIND_CONFIG,
     ...rawOptions,
@@ -120,13 +128,15 @@ export function createAccreMindRuntime(
   const stalenessScanner = new GitStalenessScanner(store);
   stalenessScanner.scanWorkspace();
 
+  const receipts = new TurnReceipts(store);
   const viewCompiler = new ViewCompiler(store, {
     residentRulesTokens: config.budgets.residentRulesTokens,
     turnRadarTokens: config.budgets.turnRadarTokens,
     toolGuardTokens: config.budgets.toolGuardTokens,
-  });
+  }, (entry, session, source, file) => receipts.record(entry, session, source, file));
 
-  const triageEngine = new TriageEngine(store, config.writeGate);
+  const gate = workspaceGate(store.paths, config.writeGate);
+  const triageEngine = new TriageEngine(store, gate.read);
   const llmAdapter = resolveDefaultLlmAdapter(rawOptions.llmAdapter);
 
   const autoCapture = new AutoCaptureCoordinator({
@@ -142,6 +152,9 @@ export function createAccreMindRuntime(
     maxReadTokens: config.budgets.toolReadMaxTokens,
   });
   const rpcHandlers = createWebuiRpcHandlers({
+    receipts,
+    tools,
+    demoMode,
     store,
     viewCompiler,
     budgets: config.budgets,
@@ -150,6 +163,25 @@ export function createAccreMindRuntime(
     autoCapture,
     getLlmAdapter: () => llmAdapter,
   });
+
+  const demoSessions = demoMode ? null : createDemoSessions((projectRoot, globalDir) =>
+    createWorkspaceRuntime({ projectRoot, globalDir, llmAdapter: null, autoCapture: { enabled: false } }, true),
+  );
+  Object.assign(rpcHandlers, demoSessions?.handlers);
+  const modelEndpoint = () => {
+    if (!llmAdapter) return '未配置模型';
+    if (rawOptions.llmAdapter) return '宿主模型适配器';
+    try { return new URL(process.env.ACCREMIND_LLM_BASE_URL || 'https://api.deepseek.com/v1').origin; }
+    catch { return '自定义推理端点'; }
+  };
+  rpcHandlers['accremind.settings.get'] = () => ({
+    writeGate: gate.read(), modelEndpoint: modelEndpoint(), modelAvailable: Boolean(llmAdapter),
+    autoCapture: config.autoCapture.enabled,
+  });
+  rpcHandlers['accremind.settings.setGate'] = ({ writeGate }) => {
+    gate.save(writeGate);
+    return { writeGate: gate.read() };
+  };
 
   const sessionSurfacedMap = new Map<string, Set<string>>();
   const getSessionSet = (sessionId: string): Set<string> => {
@@ -177,6 +209,7 @@ export function createAccreMindRuntime(
     },
 
     compileBeforeTurn(payload: DshTurnHookPayload): CompiledTurnView {
+      receipts.begin(payload.sessionId, payload.turnId);
       const surfaced = getSessionSet(payload.sessionId);
       if (payload.userPrompt) {
         autoCapture.recordTurnConversation(payload.sessionId, payload.userPrompt, undefined);
@@ -193,6 +226,10 @@ export function createAccreMindRuntime(
       if (compiled.residentPrefix && payload.injectSystemStablePrefix) {
         payload.injectSystemStablePrefix(compiled.residentPrefix);
       }
+      for (const id of compiled.residentRuleIds) {
+        const item = store.getEntry(id, { recordUsage: false });
+        if (item.found && item.servable) receipts.record(item.entry, payload.sessionId, 'rule');
+      }
       if (compiled.radarBlock && payload.injectTurnEphemeralContext) {
         payload.injectTurnEphemeralContext(compiled.radarBlock);
       }
@@ -200,6 +237,7 @@ export function createAccreMindRuntime(
     },
 
     handleAfterTool(payload: DshToolAfterHookPayload) {
+      receipts.begin(payload.sessionId, payload.turnId);
       const surfaced = getSessionSet(payload.sessionId);
       const editedRelPath =
         payload.toolName === 'read_file'
@@ -235,6 +273,7 @@ export function createAccreMindRuntime(
     },
 
     async handleTurnCompleted(payload) {
+      receipts.finish(payload.sessionId);
       if (!config.autoCapture.enabled) return;
       autoCapture.recordTurnConversation(
         payload.sessionId,
@@ -253,6 +292,7 @@ export function createAccreMindRuntime(
     dispose() {
       if (disposed) return;
       disposed = true;
+      demoSessions?.dispose();
       sessionSurfacedMap.clear();
       store.close();
     },
@@ -265,6 +305,10 @@ export function createAccreMindRuntime(
  * `tools/post-execute` waterfall JIT guard, `ctx.provide('accremind')`, and WebUI RPC handlers.
  */
 export function apply(ctx: CordisContext, rawOptions: DshPluginRuntimeOptions = {}): void {
+  if (ctx.get && ctx.reflect) {
+    mountNativeHost(ctx, rawOptions, createAccreMindRuntime);
+    return;
+  }
   ctx.effect(() => {
     const runtime = createAccreMindRuntime({
       ...rawOptions,
@@ -362,6 +406,16 @@ export function apply(ctx: CordisContext, rawOptions: DshPluginRuntimeOptions = 
       }
     }
     if (ctx.webui?.registerSlot) {
+      const footer = ctx.webui.registerSlot({
+        slot: 'turn-footer', id: 'accremind-turn-receipt', title: '本轮使用的经验',
+        renderHtml: (owner) => {
+          if (!owner?.sessionId || !owner.turnId) return '';
+          const data = runtime.rpcHandlers['accremind.turn.list']!({ sessionId: owner.sessionId, turnId: owner.turnId }) as { receipts: { hits: { id: string; revision: number }[] }[] };
+          const refs = data.receipts[0]?.hits.map(hit => hit.id + '@r' + hit.revision).join('、') ?? '';
+          return refs ? '本轮使用的经验 · ' + refs.replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';') : '';
+        },
+      });
+      if (typeof footer === 'function') disposers.push(footer);
       const offSlot = ctx.webui.registerSlot({
         slot: 'sidebar-panel',
         id: 'accremind-workbench',

@@ -1,9 +1,13 @@
+import { WORKSPACE_CLIENT } from './workspace-client.ts';
+import { WORKFLOW_CLIENT } from './workflow-client.ts';
+
 export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
 (function() {
   var STATE = {
     tab: 'kb',
+    demoToken: null,
     viewMode: 'cards',
-    theme: localStorage.getItem('accremind_theme') || 'dark',
+    theme: 'dark',
     overview: null,
     kbItems: [],
     zeroReason: 'none',
@@ -13,9 +17,22 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     archCommits: []
   };
 
+  try { STATE.theme = localStorage.getItem('accremind_theme') || 'dark'; } catch { /* isolated host frame */ }
+  try {
+    var savedMode = localStorage.getItem('accremind_library_view');
+    if (['cards','table','summary'].includes(savedMode)) STATE.viewMode = savedMode;
+  } catch { /* embedded host without persistent preferences */ }
   document.documentElement.setAttribute('data-theme', STATE.theme);
 
   async function rpc(method, params) {
+    activeCalls++;
+    try {
+      if (STATE.demoToken) return await hostRpc('accremind.demo.call', {token:STATE.demoToken,method:method,params:params || {}});
+      return await hostRpc(method, params);
+    } finally { activeCalls--; }
+  }
+
+  async function hostRpc(method, params) {
     if (window.__DSH_ACCREMIND_RPC__) {
       return window.__DSH_ACCREMIND_RPC__(method, params || {});
     }
@@ -55,21 +72,19 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     var box = document.getElementById('dialog-box');
     var levelBanner = '';
     if (opts.level === 'S01') {
-      levelBanner = '<div class="alert-box alert-s01"><strong>S01 高危熔断操作</strong> · 必须填写可追溯依据，操作立即变更检索状态</div>';
-    } else if (opts.level === 'L6') {
-      levelBanner = '<div class="alert-box alert-s03"><strong>L6 四维正交铁律</strong> · 四个状态维度彼此正交并存，全站严禁使用“85% 可信度”等伪概率百分比</div>';
+      levelBanner = '<div class="alert-box alert-s01">提交后会立即暂停该经验的自动检索。</div>';
     }
 
     box.innerHTML =
       '<div style="padding:16px 20px;border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;">' +
-        '<strong style="font-size:15px;">' + esc(opts.title) + '</strong>' +
+        '<strong id="dialog-title" style="font-size:15px;">' + esc(opts.title) + '</strong>' +
         '<button class="btn btn-sm" id="dlg-x">✕</button>' +
       '</div>' +
       '<div style="padding:18px 20px;">' +
         levelBanner +
         (opts.bodyHtml || '') +
         (opts.inputLabel
-          ? '<div class="form-row" style="margin-top:10px;"><label>' + esc(opts.inputLabel) + '</label>' +
+          ? '<div class="form-row" style="margin-top:10px;"><label for="dlg-input">' + esc(opts.inputLabel) + '</label>' +
             '<textarea id="dlg-input" rows="3" placeholder="' + esc(opts.placeholder || '') + '">' + esc(opts.defaultValue || '') + '</textarea></div>'
           : '') +
         '<div id="dlg-err"></div>' +
@@ -81,40 +96,42 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
           : '') +
       '</div>';
 
+    var opener = document.activeElement;
     mask.classList.add('open');
-    var close = function() { mask.classList.remove('open'); };
+    var close = function() { mask.classList.remove('open'); if (opener && opener.isConnected) opener.focus(); };
+    (box.querySelector('input,textarea') || document.getElementById('dlg-cancel')).focus();
     document.getElementById('dlg-x').onclick = close;
     document.getElementById('dlg-cancel').onclick = close;
 
     var okBtn = document.getElementById('dlg-ok');
     if (okBtn && opts.onConfirm) {
       okBtn.onclick = async function() {
+        if (okBtn.disabled) return;
         var val = opts.inputLabel ? document.getElementById('dlg-input').value.trim() : '';
         if (opts.requireInput && !val) {
           document.getElementById('dlg-err').innerHTML = '<div class="alert-box alert-s01">请填写必填说明后再继续</div>';
           return;
         }
         try {
+          okBtn.disabled = true;
           await opts.onConfirm(val);
           close();
         } catch (err) {
           document.getElementById('dlg-err').innerHTML = '<div class="alert-box alert-s01">' + esc(err.message) + '</div>';
-        }
+        } finally { okBtn.disabled = false; }
       };
     }
   }
 
+  ${WORKSPACE_CLIENT}
+
   function show4dLegendModal() {
     openDialog({
-      title: '四维正交状态矩阵释义 (PRD §5.1 & L6)',
-      level: 'L6',
-      bodyHtml:
-        '<div style="font-size:12.5px;color:var(--text-2);display:grid;gap:8px;">' +
-        '<div><strong>1. 确认态 (Status)</strong>：<code>probation</code>(影子孵化，仅本机试用) · <code>active</code>(已落盘项目库) · <code>withdrawn</code>(错误撤回)</div>' +
-        '<div><strong>2. 成熟度 (Maturity)</strong>：<code>draft</code>(单次捕获待复验) · <code>verified</code>(≥1次跨任务独立验证) · <code>proven</code>(≥2次独立验证)。<em>注意：检索或引用次数绝不自动提升成熟度！</em></div>' +
-        '<div><strong>3. 时效性 (Freshness)</strong>：<code>current</code>(与当前符号哈希一致) · <code>review_due</code>(目标函数逻辑或依赖版本已变动)</div>' +
-        '<div><strong>4. 检索开关 (Serving)</strong>：<code>enabled</code>(正常唤醒) · <code>suspended</code>(收到反证立即熔断停止注入)</div>' +
-        '</div>'
+      title: '如何阅读经验状态',
+      bodyHtml: '<div class="state-guide"><p><strong>确认状态</strong>表示经验处于候选、本机试用、正式、撤回或归档阶段。</p>' +
+        '<p><strong>成熟度</strong>记录独立任务的验证结果。一次有效为“已验证”，两次及以上有效且无反证为“多任务证实”。</p>' +
+        '<p><strong>时效</strong>表示经验是否适用于当前代码与依赖。遇到变更时，进入治理页核对差异。</p>' +
+        '<p><strong>检索开关</strong>决定是否向开发任务推荐该经验。收到反证后暂停，经处理后可恢复。</p></div>'
     });
   }
 
@@ -123,12 +140,11 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     var matCls = e.maturity === 'proven' || e.maturity === 'verified' ? 'm4-ok' : '';
     var frCls = e.freshness === 'current' ? '' : 'm4-warn';
     var svCls = e.serving === 'suspended' ? 'm4-err' : 'm4-ok';
-    return '<div class="matrix-4d" data-open-legend="1" title="点击查看四维正交状态矩阵释义">' +
-      '<span class="m4-cell ' + stCls + '">' + esc(e.status.toUpperCase()) + '</span>' +
-      '<span class="m4-cell ' + matCls + '">' + esc(e.maturity.toUpperCase()) + '</span>' +
-      '<span class="m4-cell ' + frCls + '">' + esc(e.freshness === 'review_due' ? 'REV_DUE' : e.freshness.toUpperCase()) + '</span>' +
-      '<span class="m4-cell ' + svCls + '">' + esc(e.serving === 'enabled' ? 'ON' : 'OFF') + '</span>' +
-      '</div>';
+    var names = {candidate:'候选',active:'已确认',probation:'试用中',withdrawn:'已撤回',archived:'已归档',draft:'待验证',verified:'已验证',proven:'多任务证实',current:'当前适用',review_due:'待复核',stale:'已失效',enabled:'检索开',suspended:'检索暂停'};
+    var chips = [[e.status,stCls,'确认'],[e.maturity,matCls,'成熟度'],[e.freshness,frCls,'时效'],[e.serving,svCls,'检索']];
+    return '<button class="matrix-4d" data-open-legend="1" aria-label="查看状态说明">' + chips.map(function(c) {
+      return '<span class="m4-cell ' + c[1] + '" title="' + esc(c[2] + ' · ' + c[0]) + '">' + esc(names[c[0]] || c[0]) + '</span>';
+    }).join('') + '</button>';
   }
 
   function renderProbationPips(exposures, maxExp) {
@@ -137,7 +153,7 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     for (var i = 0; i < max; i++) {
       pips += '<span class="pip ' + (i < exposures ? 'used' : '') + '"></span>';
     }
-    return '<span class="pip-meter" title="影子孵化剩余曝光寿命 (' + exposures + '/' + max + ' 次无反馈自动归档)">' + pips + ' 孵化 ' + exposures + '/' + max + '</span>';
+    return '<span class="pip-meter" title="影子孵化剩余曝光寿命 (' + exposures + '/' + max + ' 次无反馈自动归档)">' + pips + ' 曝光 ' + exposures + '/' + max + '</span>';
   }
 
   function renderConstellationSvg(items, navCount) {
@@ -175,190 +191,129 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     var ov = await rpc('accremind.dashboard.overview', {});
     STATE.overview = ov;
 
-    document.getElementById('hud-ws').textContent = ov.workspaceId;
-    document.getElementById('rail-dir').textContent = ov.projectDir;
+    var workspaceLabel = document.getElementById('hud-ws');
+    workspaceLabel.textContent = STATE.demoToken ? '演示工作区' : (ov.projectName || ov.workspaceId);
+    workspaceLabel.title = ov.projectDir;
+
 
     document.getElementById('cnt-kb').textContent = ov.counts.totalEntries;
     document.getElementById('cnt-rev').textContent = ov.counts.pendingReviewCount;
-    document.getElementById('cnt-gov').textContent = ov.counts.reviewDueCount + ov.counts.corruptedCount;
+    document.getElementById('cnt-gov').title = '需核对的经验和异常文件';
+    document.getElementById('cnt-gov').textContent = ov.counts.governanceQueueCount;
 
     document.getElementById('m-active').textContent = ov.counts.activeCount;
-    document.getElementById('m-prob').textContent = ov.counts.probationCount;
+    document.getElementById('m-suspended').textContent = ov.counts.suspendedCount;
     document.getElementById('m-ver').textContent = ov.counts.verifiedOrProvenCount;
     document.getElementById('m-stale').textContent = ov.counts.reviewDueCount;
 
     document.getElementById('lt-rules').textContent = ov.counts.rulesCount;
-    document.getElementById('lt-proj').textContent = Math.max(0, ov.counts.activeCount - ov.counts.rulesCount);
+    document.getElementById('lt-proj').textContent = ov.counts.projectActiveCount;
     document.getElementById('lt-prob').textContent = ov.counts.probationCount;
     document.getElementById('lt-nav').textContent = ov.counts.navigationItemsCount;
 
-    var demoBtn = document.getElementById('btn-demo-toggle');
-    if (ov.hasDemoSeeded) {
-      demoBtn.textContent = '✕ 清除演示样本';
-      demoBtn.setAttribute('data-seeded', '1');
-    } else {
-      demoBtn.textContent = '✦ 载入工程暗物质样本';
-      demoBtn.setAttribute('data-seeded', '0');
-    }
+    document.getElementById('overview-total').textContent = ov.counts.totalEntries + ' 条经验';
+    document.getElementById('demo-label').textContent = STATE.demoToken ? '返回我的工作区' : '体验示例';
+    document.getElementById('demo-banner').hidden = !STATE.demoToken;
+    showNextTask(ov.counts);
   }
 
   async function loadVault() {
-    var q = document.getElementById('flt-q').value.trim();
-    var st = document.getElementById('flt-status').value;
-    var tp = document.getElementById('flt-type').value;
-
-    var res = await rpc('accremind.kb.list', {
-      adminView: !q,
-      query: q || undefined,
-      status: st || undefined,
-      type: tp || undefined,
-      includeProbation: true,
-      limit: 30
+    var request = ++vaultRequest;
+    var params = {adminView:true};
+    var query = document.getElementById('flt-q').value.trim();
+    if (query) params.query = query;
+    Object.entries(filterFields).forEach(function(pair) {
+      var value = document.getElementById('flt-' + pair[0]).value;
+      if (value) params[pair[1]] = value;
     });
-
-    STATE.kbItems = res.items || [];
+    var res = await rpc('accremind.kb.list', params);
+    if (request !== vaultRequest) return;
+    STATE.kbItems = res.items;
     STATE.zeroReason = res.zeroReason;
-
-    document.getElementById('constellation-svg-slot').innerHTML =
-      renderConstellationSvg(STATE.kbItems, STATE.overview ? STATE.overview.counts.navigationItemsCount : 0);
-
+    renderScopes(res.scopeCounts || {}, params.layer || '');
+    document.getElementById('vault-count').textContent = res.items.length + ' 条';
+    var filtered = Object.keys(params).length > 1;
+    document.getElementById('clear-filters').hidden = !filtered;
+    if (!filtered) {
+      STATE.allItems = res.items;
+      document.getElementById('constellation-svg-slot').innerHTML = renderConstellationSvg(STATE.allItems);
+    }
     renderVaultItems();
   }
 
   function renderVaultItems() {
     var host = document.getElementById('vault-host');
     var items = STATE.kbItems;
+    if (items.length && STATE.viewMode === 'summary') { renderKnowledgeSummary(host, items); return; }
 
     if (!items || items.length === 0) {
-      var zeroExplain = {
-        no_applicable_entry: '当前筛选或检索词无匹配经验（L3 诚实空结果：系统绝不填充无关凑数条目）',
-        version_excluded: '存在相关历史经验，但当前仓库 package.json 依赖版本不满足前置约束，已自动排除',
-        suspended_conflict: '匹配条目因收到反证反馈当前处于熔断暂停 (suspended) 状态'
-      };
-      host.innerHTML =
-        '<div class="empty-observatory">' +
-          '<div style="font-size:28px;margin-bottom:8px;">🔭</div>' +
-          '<div style="font-size:15px;font-weight:650;margin-bottom:6px;">暗物质观测站当前无匹配条目</div>' +
-          '<div style="color:var(--text-2);max-width:520px;margin:0 auto 16px;">' + esc(zeroExplain[STATE.zeroReason] || '仅沉淀代码与现有文档无法直接恢复的工程增量。') + '</div>' +
-          '<div style="display:flex;justify-content:center;gap:10px;">' +
-            '<button class="btn btn-primary" data-seed-now="1">✦ 一键注入 4 条高仿真工程暗物质样本</button>' +
-            '<button class="btn" data-open-create="1">＋ 手动录入第一条经验</button>' +
-          '</div>' +
-        '</div>';
+      var empty = !STATE.overview || !STATE.overview.counts.totalEntries;
+      host.innerHTML = '<div class="empty-observatory"><h3>' + (empty ? '这里将显示已录入的经验' : '没有符合当前条件的经验') + '</h3><p>' +
+        (empty ? '扫描仓库历史，或直接记录一条有证据的项目约束。' : '可清除筛选，或改用条目编号、其他别名重新搜索。') +
+        '</p><div class="action-row">' + (empty ? '<button class="btn" data-open-create>手动录入经验</button>' :
+        button('reset','清除全部筛选',false)) + '</div></div>';
       return;
     }
+
+    function titleButton(e) {
+      return '<button type="button" class="vc-title knowledge-title" data-detail="' + esc(e.id) + '">' + esc(e.title) + '</button>';
+    }
+    function promoteButton(e) {
+      return e.status === 'probation' ? '<button class="btn btn-sm btn-emerald" data-promote="' + esc(e.id) + '">转为正式</button>' : '';
+    }
+    function reference(e) {
+      var first = (e.evidence || []).find(function(item) { return item.locator || item.source_ref; });
+      if (!first) return '';
+      var locator = first.locator || first.source_ref;
+      return '<code class="knowledge-evidence" title="' + esc(locator + (first.summary ? ' · ' + first.summary : '')) + '">' +
+        esc(locator.replace(/\\b[0-9a-f]{40}\\b/gi, function(sha) { return sha.slice(0,8); })) + '</code>';
+    }
+
+    var presentations = items.map(function(hit) {
+      var e = hit.entry;
+      var summary = knowledgeSummary(e);
+      return {entry:e, type:knowledgeTypeLabel(e.type), scope:knowledgeScopeLabel(hit.storageZone, e.layer),
+        claim:e.claim || '', conditions:(e.preconditions || []).filter(Boolean).join('；'),
+        summary:summary && summary !== e.claim && summary !== e.title ? summary : '',
+        contextLabel:e.knowledge_delta ? '知识增量' : '依据', reference:reference(e), exposures:hit.probationExposures || 0};
+    });
 
     if (STATE.viewMode === 'table') {
-      var rows = items.map(function(hit) {
-        var e = hit.entry;
-        var pCls = e.priority === 'P0' ? 'tag-p0' : e.priority === 'P1' ? 'tag-p1' : '';
-        return '<tr>' +
-          '<td class="mono" style="font-size:12px;">' + esc(e.id) + '@r' + esc(e.revision) + '</td>' +
-          '<td><div class="vc-title" data-detail="' + esc(e.id) + '">' + esc(e.title) + '</div></td>' +
-          '<td><span class="tag tag-type">' + esc(e.type) + '</span> <span class="tag ' + pCls + '">' + esc(e.priority) + '</span></td>' +
-          '<td>' + render4dMatrix(e) + '</td>' +
-          '<td style="text-align:right;">' +
-            (e.status === 'probation' ? '<button class="btn btn-sm btn-emerald" data-promote="' + esc(e.id) + '">⚡ 淬炼转正</button> ' : '') +
-            '<button class="btn btn-sm" data-detail="' + esc(e.id) + '">检视棱镜</button>' +
-          '</td></tr>';
+      var rows = presentations.map(function(v) {
+        var e = v.entry;
+        return '<tr data-entry-id="' + esc(e.id) + '">' +
+          '<th scope="row">' + titleButton(e) + '<small class="knowledge-meta">' + esc(e.id + '@r' + e.revision + ' · ' + e.priority) + '</small></th>' +
+          '<td>' + esc(v.type) + '</td><td>' + esc(v.scope) + '</td>' +
+          '<td class="knowledge-cell-claim">' + esc(v.claim || '待补充') + '</td>' +
+          '<td>' + esc(v.conditions || '未记录') + '</td>' +
+          '<td>' + (v.summary ? esc(v.summary) : v.reference || '—') + '</td>' +
+          '<td>' + render4dMatrix(e) + (e.status === 'probation' ? '<div>' + promoteButton(e) + '</div>' : '') + '</td></tr>';
       }).join('');
-      host.innerHTML = '<div class="glass-panel"><table class="data-tbl"><thead><tr><th>ID</th><th>经验断言标题</th><th>分类 / 代价</th><th>四维正交遥测</th><th style="text-align:right;">操作</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      host.innerHTML = '<div class="glass-panel table-scroll" role="region" tabindex="0" aria-label="知识条目表，可横向滚动">' +
+        '<table class="data-tbl knowledge-table"><thead><tr>' +
+        ['知识条目','知识类型','知识归属','核心结论','适用条件','增量或依据','状态'].map(function(label) {
+          return '<th scope="col">' + label + '</th>';
+        }).join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
       return;
     }
 
-    host.innerHTML = '<div class="vault-grid">' + items.map(function(hit) {
-      var e = hit.entry;
-      var pCls = e.priority === 'P0' ? 'tag-p0' : e.priority === 'P1' ? 'tag-p1' : '';
-      var aliases = (e.search_aliases || []).slice(0, 5).map(function(a) {
-        return '<span class="tag">' + esc(a) + '</span>';
-      }).join('');
-      var maxExp = STATE.overview ? STATE.overview.maxProbationExposures : 3;
-      return '<article class="vault-card">' +
-        '<div class="vc-top">' +
-          '<div style="display:flex;align-items:center;gap:6px;">' +
-            '<code style="font-size:12px;color:var(--accent);font-weight:700;">' + esc(e.id) + '@r' + esc(e.revision) + '</code>' +
-            '<span class="tag tag-type">' + esc(e.type) + '</span>' +
-            '<span class="tag ' + pCls + '">' + esc(e.priority) + '</span>' +
-            (e.layer === 'team_rule' ? '<span class="l1-lock-pill">KV-PINNED</span>' : '') +
-          '</div>' +
-          (e.status === 'probation' ? renderProbationPips(hit.probationExposures || 0, maxExp) : '') +
-        '</div>' +
-        '<div class="vc-title" data-detail="' + esc(e.id) + '">' + esc(e.title) + '</div>' +
-        '<div class="vc-delta">' + esc((e.knowledge_delta || e.claim).slice(0, 135)) + '</div>' +
-        (aliases ? '<div class="vc-aliases">' + aliases + '</div>' : '') +
-        '<div class="vc-foot">' +
-          render4dMatrix(e) +
-          '<div style="display:flex;gap:6px;">' +
-            (e.status === 'probation' ? '<button class="btn btn-sm btn-emerald" data-promote="' + esc(e.id) + '">⚡ 转正</button>' : '') +
-            '<button class="btn btn-sm" data-detail="' + esc(e.id) + '">检视 / 修订</button>' +
-          '</div>' +
-        '</div>' +
-      '</article>';
+    var maxExp = STATE.overview ? STATE.overview.maxProbationExposures : 3;
+    host.innerHTML = '<div class="vault-grid">' + presentations.map(function(v) {
+      var e = v.entry;
+      return '<article class="vault-card knowledge-card" data-entry-id="' + esc(e.id) + '">' +
+        '<div class="vc-top knowledge-meta"><span class="tag tag-type">' + esc(v.type) + '</span><span>' + esc(v.scope) + '</span>' +
+        '<code>' + esc(e.id + '@r' + e.revision) + '</code><small title="遗漏代价优先级">' + esc(e.priority) + '</small></div>' +
+        '<h3>' + titleButton(e) + '</h3><p class="knowledge-claim">' + esc(v.claim || '待补充核心结论') + '</p>' +
+        '<dl class="knowledge-facts"><div class="knowledge-fact"><dt>适用条件</dt><dd>' + esc(v.conditions || '未记录') + '</dd></div>' +
+        (v.summary ? '<div class="knowledge-fact"><dt>' + v.contextLabel + '</dt><dd>' + esc(v.summary) + '</dd></div>' : '') +
+        (v.reference ? '<div class="knowledge-fact"><dt>证据</dt><dd>' + v.reference + '</dd></div>' : '') + '</dl>' +
+        '<div class="vc-foot">' + render4dMatrix(e) +
+        (e.status === 'probation' ? renderProbationPips(v.exposures, maxExp) + promoteButton(e) : '') +
+        '</div></article>';
     }).join('') + '</div>';
   }
 
-  async function loadPrismReview() {
-    var data = await rpc('accremind.review.listQueue', { reviewState: 'all' });
-    STATE.reviewItems = data.items || [];
-    STATE.navItems = data.navigationItems || [];
-
-    var host = document.getElementById('prism-queue-host');
-    if (STATE.reviewItems.length === 0) {
-      host.innerHTML = '<div class="empty-observatory">暂无捕获评估记录。可点击右上角「✦ 载入工程暗物质样本」体验双栏分光镜对照审核。</div>';
-    } else {
-      host.innerHTML = STATE.reviewItems.map(function(item) {
-        var a = item.assessment;
-        var pending = item.reviewState === 'pending';
-        var methodBadge = a.checked_context && a.checked_context.method === 'isolated_check'
-          ? '<span class="l1-lock-pill">ISOLATED BLIND CHECK · ' + esc(a.checked_context.token_used) + ' tok</span>'
-          : '<span class="tag">' + esc(a.checked_context ? a.checked_context.method : 'check') + '</span>';
-
-        var dock = pending
-          ? '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border-subtle);">' +
-              '<button class="btn btn-sm btn-primary" data-rev-decide="approve_active" data-ca="' + esc(a.id) + '">✓ 批准入项目正式库 (.accremind/entries)</button>' +
-              '<button class="btn btn-sm btn-emerald" data-rev-decide="approve_probation" data-ca="' + esc(a.id) + '">🧪 放入影子孵化舱 (probation)</button>' +
-              '<button class="btn btn-sm" data-rev-decide="index_only" data-ca="' + esc(a.id) + '">↳ 仅转代码导航 (index_only)</button>' +
-              '<button class="btn btn-sm" data-rev-decide="link_existing" data-ca="' + esc(a.id) + '">🔗 链接权威文档 (link_existing)</button>' +
-              '<button class="btn btn-sm btn-crimson" data-rev-decide="discard" data-ca="' + esc(a.id) + '">✕ 丢弃无增量噪声</button>' +
-            '</div>'
-          : '<div style="font-size:12px;color:var(--text-3);margin-top:8px;">已归档分流结论：<code>' + esc(a.disposition) + '</code></div>';
-
-        return '<div class="prism-card">' +
-          '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-            '<div><code style="color:var(--accent);font-weight:700;">' + esc(a.id) + '</code> ' +
-            '<span class="tag ' + (a.priority === 'P0' ? 'tag-p0' : 'tag-p1') + '">' + esc(a.priority) + '</span> ' +
-            '<strong style="margin-left:6px;">中立盲测问题：' + esc(a.question) + '</strong></div>' +
-            methodBadge +
-          '</div>' +
-          '<div class="prism-grid">' +
-            '<div class="prism-pane">' +
-              '<div class="prism-label">Visible Matter · 仅看当前源码与文档得出的基线</div>' +
-              '<div style="color:var(--text-2);">' + esc(a.baseline_answer || '（现有代码无相关上下文表达）') + '</div>' +
-            '</div>' +
-            '<div class="prism-divider">Δ</div>' +
-            '<div class="prism-pane delta">' +
-              '<div class="prism-label">Dark-Matter Delta · 剥离复述后真正新增的隐性约束</div>' +
-              '<div style="color:var(--text-1);font-weight:500;">' + esc(a.knowledge_delta || '（零增量）') + '</div>' +
-              '<div style="margin-top:8px;font-size:11.5px;color:var(--text-2);">缺失代价：' + esc(a.omission_consequence) + '</div>' +
-            '</div>' +
-          '</div>' +
-          dock +
-        '</div>';
-      }).join('');
-    }
-
-    var navHost = document.getElementById('nav-index-host');
-    if (STATE.navItems.length === 0) {
-      navHost.innerHTML = '<div style="color:var(--text-3);font-size:12.5px;">暂无分流至此的代码导航或文档链接。</div>';
-    } else {
-      navHost.innerHTML = STATE.navItems.map(function(n) {
-        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border-subtle);">' +
-          '<div><span class="tag tag-type">' + esc(n.kind) + '</span> <strong style="margin-left:6px;">' + esc(n.title) + '</strong></div>' +
-          '<code style="font-size:12px;color:var(--accent);">' + esc(n.locator) + '</code>' +
-        '</div>';
-      }).join('');
-    }
-  }
+  ${WORKFLOW_CLIENT}
 
   async function runCompilerReactor() {
     var promptVal = document.getElementById('sim-prompt').value;
@@ -417,36 +372,7 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
       '</div>';
   }
 
-  async function loadGovernance() {
-    var res = await rpc('accremind.gov.scanStaleness', {});
-    STATE.staleData = res;
-    var host = document.getElementById('gov-stale-host');
-    var html = '';
-
-    if (res.corruptedFiles && res.corruptedFiles.length > 0) {
-      html += '<div class="alert-box alert-s01"><strong>隔离区告警：检测到 ' + res.corruptedFiles.length + ' 个未解决 Git 冲突或损坏文件（不影响其余条目正常运行）</strong><br/>' +
-        res.corruptedFiles.map(function(c) { return '<code>' + esc(c.file_path) + '</code> — ' + esc(c.reason); }).join('<br/>') + '</div>';
-    }
-
-    if (!res.staleEntries || res.staleEntries.length === 0) {
-      html += '<div style="padding:16px;color:var(--text-2);background:var(--bg-elev-2);border-radius:10px;border:1px solid var(--border-subtle);">' +
-        '✓ 所有生效条目的函数符号去空白哈希 (<code>symbol_anchors</code>) 与当前 Git HEAD 完全对齐，零待复核积压。</div>';
-    } else {
-      html += res.staleEntries.map(function(e) {
-        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--bg-elev-2);border:1px solid var(--amber);border-radius:10px;margin-bottom:10px;gap:12px;">' +
-          '<div><code style="color:var(--amber);font-weight:700;">' + esc(e.id) + '@r' + esc(e.revision) + '</code> ' +
-          '<strong style="margin-left:6px;">' + esc(e.title) + '</strong> ' +
-          '<div style="font-size:12px;color:var(--text-2);margin-top:3px;">触发依据：' + esc((e.invalidation_triggers || []).join('；')) + '</div></div>' +
-          '<div style="display:flex;gap:8px;flex-shrink:0;">' +
-            '<button class="btn btn-sm btn-emerald" data-fresh-confirm="' + esc(e.id) + '">✓ 核对新代码后确认仍有效</button>' +
-            '<button class="btn btn-sm" data-detail="' + esc(e.id) + '">修订版本</button>' +
-          '</div></div>';
-      }).join('');
-    }
-    host.innerHTML = html;
-  }
-
-  async function openEntryDrawer(id) {
+  async function openEntryDrawer(id, initialTab) {
     var data = await rpc('accremind.kb.get', { id: id });
     if (!data.found) { toast('未找到条目 ' + id); return; }
     var e = data.entry;
@@ -457,42 +383,123 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     var drawerTabs = document.getElementById('drw-tabs');
     drawerTabs.style.display = 'flex';
 
+    var fields = {
+      title: ['f-ed-title', '标题'], search_aliases: ['f-ed-aliases', '检索别名', ','],
+      claim: ['f-ed-claim', '核心结论'], knowledge_delta: ['f-ed-delta', '知识增量'],
+      rationale: ['f-ed-rationale', '原因依据'], preconditions: ['f-ed-pre', '前置条件', '\\n'],
+      invalidation_triggers: ['f-ed-inv', '失效条件', '\\n']
+    };
+    var editableScope = e.layer === 'domain' || e.layer === 'project';
+    if (editableScope) fields.layer = ['f-ed-layer', '知识归属'];
+    var draftKey = (STATE.overview ? STATE.overview.projectDir : '') + '/' + e.id + '@r' + e.revision;
+    var prior = entryDrafts.get(draftKey);
+    var draft = Object.assign({}, e, prior ? prior.draft : {});
+    var impact = prior ? prior.impact : 'substantive';
+
+    function changedKeys() {
+      return Object.keys(fields).filter(function(k) { return JSON.stringify(e[k]) !== JSON.stringify(draft[k]); });
+    }
+    function scopeLabel(layer) { return knowledgeScopeLabel(data.storageZone, layer); }
+    function changeValue(key, value) {
+      if (key === 'layer') return scopeLabel(value);
+      return Array.isArray(value) ? value.join('；') : String(value);
+    }
+    function renderChanges() {
+      var keys = changedKeys();
+      var save = document.getElementById('drw-btn-save');
+      if (save) save.disabled = keys.length === 0;
+      var discard = document.getElementById('drw-btn-discard');
+      if (discard) discard.hidden = keys.length === 0;
+      if (keys.length) entryDrafts.set(draftKey, {draft:draft, impact:impact});
+      else entryDrafts.delete(draftKey);
+      var preview = document.getElementById('drw-change-preview');
+      if (preview) preview.innerHTML = keys.length ? '<strong>待保存的修改</strong>' + keys.map(function(k) {
+        return '<div>' + esc(fields[k][1]) + ' · <del>' + esc(changeValue(k,e[k])) + '</del> → <ins>' + esc(changeValue(k,draft[k])) + '</ins></div>';
+      }).join('') : '';
+      var scopeChanged = keys.includes('layer');
+      var impactSelector = document.getElementById('f-ed-impact');
+      if (impactSelector) {
+        impactSelector.disabled = scopeChanged;
+        impactSelector.value = scopeChanged ? 'substantive' : impact;
+      }
+      var warning = document.getElementById('drw-s02-banner');
+      if (warning) warning.style.display = keys.length && (scopeChanged || impact === 'substantive') ? 'block' : 'none';
+    }
     function renderTabEdit() {
+      var summary = knowledgeSummary(e);
+      var conditions = (e.preconditions || []).join('；');
+      var sources = (e.evidence || []).filter(function(source) { return source.locator || source.source_ref; });
       document.getElementById('drw-scroll').innerHTML =
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">' +
-          render4dMatrix(e) +
-          '<span class="l1-lock-pill">L1 REFERENCE ONLY · NON-EXECUTABLE</span>' +
-        '</div>' +
-        '<div id="drw-s03-banner"></div>' +
-        '<div id="drw-s02-banner" class="alert-box alert-s02"><strong>S02 就地变更影响预览</strong>：当前选择「实质结论/条件变更」，保存后版本号升至 <code>r' + (e.revision + 1) + '</code>，成熟度将按 PRD §5.3 重置为 <code>draft</code> 待重新独立验证。</div>' +
-        '<div class="form-row"><label>标题 (Title) *</label><div class="form-hint">一句话写清：什么条件下，需要注意什么</div><input id="f-ed-title" value="' + esc(e.title) + '" /></div>' +
-        '<div class="form-row"><label>双语与口语检索别名 (search_aliases)</label><div class="form-hint">逗号分隔，弥合口语提问（如“重复扣款”）与底层标识符（如 idempotency_key）断层</div><input id="f-ed-aliases" value="' + esc((e.search_aliases || []).join(', ')) + '" /></div>' +
-        '<div class="form-row"><label>核心结论 (Claim) *</label><textarea id="f-ed-claim" rows="3">' + esc(e.claim) + '</textarea></div>' +
-        '<div class="form-row"><label>相较现有代码新增的不可恢复上下文 (Knowledge Delta) *</label><textarea id="f-ed-delta" rows="3">' + esc(e.knowledge_delta) + '</textarea></div>' +
-        '<div class="form-row"><label>原因依据 (Rationale) *</label><textarea id="f-ed-rationale" rows="2">' + esc(e.rationale) + '</textarea></div>' +
-        '<div class="form-row"><label>适用前置条件 (Preconditions · 每行一条) *</label><textarea id="f-ed-pre" rows="2">' + esc((e.preconditions || []).join('\\n')) + '</textarea></div>' +
-        '<div class="form-row"><label>失效触发条件 (Invalidation Triggers · 每行一条) *</label><textarea id="f-ed-inv" rows="2">' + esc((e.invalidation_triggers || []).join('\\n')) + '</textarea></div>' +
-        '<div class="form-row"><label>验证命令与方法（L1 纯文本锁定展示）</label><pre class="code-vault">' + esc(e.verification_method) + '</pre></div>' +
-        '<div class="form-row"><label>本次修订性质 *</label>' +
-          '<select id="f-ed-impact"><option value="substantive">实质结论或前置条件变更（重置成熟度为 draft）</option><option value="editorial">仅排版或错别字润色（保留当前成熟度）</option></select>' +
+        '<section class="knowledge-detail-summary" aria-label="已保存的知识内容"><div class="knowledge-meta">' +
+          '<span class="tag tag-type">' + esc(knowledgeTypeLabel(e.type)) + '</span> ' + esc(scopeLabel(e.layer)) + '</div>' +
+          '<p class="knowledge-claim">' + esc(e.claim || '待补充核心结论') + '</p>' +
+          '<dl class="knowledge-facts"><div class="knowledge-fact"><dt>适用条件</dt><dd>' + esc(conditions || '未记录') + '</dd></div>' +
+          (summary && summary !== e.claim && summary !== e.title ? '<div class="knowledge-fact"><dt>' +
+            (e.knowledge_delta ? '知识增量' : '依据') + '</dt><dd>' + esc(summary) + '</dd></div>' : '') +
+          (sources.length ? '<div class="knowledge-fact"><dt>证据</dt><dd>' + sources.map(function(source) {
+            return '<div><code class="knowledge-evidence">' + esc(source.locator || source.source_ref) + '</code>' +
+              (source.summary ? ' · ' + esc(source.summary) : '') + '</div>';
+          }).join('') + '</dd></div>' : '') +
+          '</dl>' + render4dMatrix(e) + '</section>' +
+        '<h3>修订内容</h3>' +
+        '<div id="drw-s03-banner"></div><div id="drw-change-preview" aria-live="polite"></div>' +
+        '<div id="drw-s02-banner" class="alert-box alert-s02">此次为实质修订。保存后生成 <code>r' + (e.revision + 1) + '</code>，成熟度回到待验证。</div>' +
+        '<div class="form-row"><label for="f-ed-title">标题 *</label><div class="form-hint">一句话写清适用条件和要点。</div><input id="f-ed-title" value="' + esc(e.title) + '" /></div>' +
+        (editableScope ? '<div class="form-row"><label for="f-ed-layer">知识归属</label><select id="f-ed-layer">' +
+          '<option value="domain">' + esc(scopeLabel('domain')) + '</option><option value="project">' + esc(scopeLabel('project')) +
+          '</option></select><div class="form-hint">更改归属按实质修订保存。</div></div>' : '') +
+        '<div class="form-row"><label for="f-ed-aliases">搜索别名</label><div class="form-hint">可填写业务叫法和代码标识，用逗号分隔。</div><input id="f-ed-aliases" value="' + esc((e.search_aliases || []).join(', ')) + '" /></div>' +
+        '<div class="form-row"><label for="f-ed-claim">核心结论 *</label><textarea id="f-ed-claim" rows="3">' + esc(e.claim) + '</textarea></div>' +
+        '<div class="form-row"><label for="f-ed-delta">代码或文档之外的知识增量 *</label><textarea id="f-ed-delta" rows="3">' + esc(e.knowledge_delta) + '</textarea></div>' +
+        '<div class="form-row"><label for="f-ed-rationale">结论依据 *</label><textarea id="f-ed-rationale" rows="2">' + esc(e.rationale) + '</textarea></div>' +
+        '<div class="form-row"><label for="f-ed-pre">适用条件（每行一条）*</label><textarea id="f-ed-pre" rows="2">' + esc((e.preconditions || []).join('\\n')) + '</textarea></div>' +
+        '<div class="form-row"><label for="f-ed-inv">哪些变化会使结论失效（每行一条）*</label><textarea id="f-ed-inv" rows="2">' + esc((e.invalidation_triggers || []).join('\\n')) + '</textarea></div>' +
+        '<div class="form-row"><label>验证方法</label><pre class="code-vault">' + esc(e.verification_method) + '</pre></div>' +
+        '<div class="form-row"><label for="f-ed-impact">本次修订性质 *</label>' +
+          '<select id="f-ed-impact"><option value="substantive">结论或适用条件有变（回到待验证）</option><option value="editorial">仅排版或错别字润色（保留当前成熟度）</option></select>' +
         '</div>';
 
+      Object.keys(fields).forEach(function(k) {
+        var spec = fields[k], input = document.getElementById(spec[0]);
+        input.value = spec[2] ? draft[k].join(spec[2] === ',' ? ', ' : spec[2]) : draft[k];
+        input.oninput = function() {
+          draft[k] = spec[2] ? input.value.split(spec[2]).map(function(v) { return v.trim(); }).filter(Boolean) : input.value;
+          renderChanges();
+        };
+      });
       var impactSel = document.getElementById('f-ed-impact');
-      impactSel.onchange = function() {
-        document.getElementById('drw-s02-banner').style.display = impactSel.value === 'substantive' ? 'block' : 'none';
-      };
+      impactSel.value = impact;
+      impactSel.onchange = function() { impact = impactSel.value; renderChanges(); };
+      renderChanges();
     }
 
     function renderTabRawMd() {
       document.getElementById('drw-scroll').innerHTML =
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
-          '<span style="font-size:12px;color:var(--text-2);">本地磁盘权威真源格式（可直接纳入项目 Git PR 评审）</span>' +
+          '<span style="font-size:12px;color:var(--text-2);">此修订保存的 Markdown 内容</span>' +
           '<button class="btn btn-sm" id="btn-copy-md">复制 Markdown</button>' +
         '</div>' +
-        '<pre class="code-vault" style="max-height:calc(100vh - 230px);">' + esc(data.rawMarkdown || '') + '</pre>';
-      document.getElementById('btn-copy-md').onclick = function() {
-        if (navigator.clipboard) navigator.clipboard.writeText(data.rawMarkdown || '');
-        toast('已复制 Markdown 真源内容到剪贴板');
+        '<pre id="entry-markdown" tabindex="0" class="code-vault" style="max-height:calc(100vh - 230px);">' + esc(data.rawMarkdown || '') + '</pre>';
+      document.getElementById('btn-copy-md').onclick = async function() {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(data.rawMarkdown || '');
+            toast('已复制 Markdown');
+            return;
+          }
+        } catch { /* Embedded pages may not have clipboard permission. */ }
+        var pre = document.getElementById('entry-markdown');
+        var selection = window.getSelection();
+        if (pre && selection) {
+          pre.focus();
+          var range = document.createRange();
+          range.selectNodeContents(pre);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          toast('已选中 Markdown，请按系统复制快捷键');
+        } else {
+          toast('当前窗口无法访问剪贴板，请手动选中原文复制');
+        }
       };
     }
 
@@ -500,24 +507,56 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
       var anchors = e.symbol_anchors || [];
       var vals = data.validations || [];
       document.getElementById('drw-scroll').innerHTML =
-        '<div style="font-weight:650;margin-bottom:8px;">函数/类符号去空白逻辑指纹锚点 (symbol_anchors)</div>' +
+        '<div style="font-weight:650;margin-bottom:8px;">关联的函数与类</div>' +
         (anchors.length === 0
           ? '<div style="color:var(--text-3);margin-bottom:18px;font-size:12.5px;">当前条目使用路径 Glob 监听 (' + esc((e.watch_paths || []).join(', ') || '无') + ')。</div>'
-          : anchors.map(function(a) {
+          : anchors.map(function(a, index) {
               return '<div style="padding:10px 12px;background:var(--bg-elev-1);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:10px;">' +
                 '<div><strong>' + esc(a.symbol_name) + '</strong> · <code>' + esc(a.file_path + '#L' + a.start_line + '-L' + a.end_line) + '</code></div>' +
-                '<div class="mono" style="font-size:11px;color:var(--text-3);margin-top:4px;">SHA256: ' + esc(a.normalized_sha256) + '</div></div>';
+                '<div class="mono" style="font-size:11px;color:var(--text-3);margin-top:4px;">SHA256: ' + esc(a.normalized_sha256) + '</div>' +
+                '<button class="btn btn-sm" data-read-anchor="' + index + '">查看源码</button> ' +
+                '<button class="btn btn-sm" data-rebind="' + index + '">重新绑定代码锚点</button></div>';
             }).join('')) +
-        '<div style="font-weight:650;margin:18px 0 8px;">跨任务独立验证账本 (引用次数不计入此表)</div>' +
+        '<div style="font-weight:650;margin:18px 0 8px;">独立任务的验证记录</div>' +
         (vals.length === 0
           ? '<div style="color:var(--text-3);font-size:12.5px;">尚无跨会话独立验证记录。</div>'
           : vals.map(function(v) {
               var cls = v.outcome === 'success' ? 'm4-ok' : 'm4-err';
               return '<div style="padding:10px 12px;background:var(--bg-elev-1);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;">' +
                 '<span class="m4-cell ' + cls + '" style="border-radius:4px;">' + esc(v.outcome.toUpperCase()) + '</span> ' +
-                '<code style="font-size:11.5px;margin-left:6px;">task:' + esc(v.task_fingerprint) + '</code>' +
+                '<code style="font-size:11.5px;margin-left:6px;">r' + esc(v.revision) + ' · ' + esc(v.task_fingerprint) + '</code>' +
                 '<div style="margin-top:5px;color:var(--text-2);font-size:12.5px;">' + esc(v.evidence_note) + '</div></div>';
             }).join(''));
+      document.querySelectorAll('[data-read-anchor]').forEach(function(btn) {
+        btn.onclick = async function() {
+          var anchor = anchors[Number(btn.getAttribute('data-read-anchor'))];
+          try {
+            var source = await rpc('accremind.gov.readAnchor', {id:e.id, revision:e.revision, filePath:anchor.file_path, symbolName:anchor.symbol_name});
+            openDialog({title:anchor.symbol_name, bodyHtml:'<p><code>' + esc(anchor.file_path) + '#L' + esc(source.startLine) +
+              '-L' + esc(source.endLine) + '</code></p><pre class="code-vault">' + esc(source.code) + '</pre>' +
+              (source.truncated ? '<p>当前仅展示源码片段。</p>' : '')});
+          } catch(err) { toast(err.message); }
+        };
+      });
+      document.querySelectorAll('[data-rebind]').forEach(function(btn) {
+        btn.onclick = function() {
+          if (changedKeys().length) { toast('请先保存或丢弃本次修订，再变更锚点。'); return; }
+          var anchor = anchors[Number(btn.getAttribute('data-rebind'))];
+          openDialog({title:'重新绑定代码锚点', bodyHtml:'<p>保存后创建新修订，回到草稿并进入时效复核。检索状态保持为 ' + esc(e.serving) +
+              '。</p><div class="form-row"><label for="rebind-file">仓库内相对路径</label><input id="rebind-file" value="' +
+              esc(anchor.file_path) + '" /></div>',
+            inputLabel:'目标函数或类的符号名', defaultValue:anchor.symbol_name, requireInput:true, confirmText:'核对代码并重新绑定',
+            onConfirm:async function(symbol) {
+              var path = document.getElementById('rebind-file').value.trim();
+              if (!path) throw new Error('请填写仓库内的文件路径');
+              await rpc('accremind.gov.rebindAnchor', {id:e.id, revision:e.revision, oldFilePath:anchor.file_path,
+                oldSymbolName:anchor.symbol_name, filePath:path, symbolName:symbol});
+              await syncAll();
+              await openEntryDrawer(e.id, 'gene');
+            }
+          });
+        };
+      });
     }
 
     document.querySelectorAll('.d-tab').forEach(function(btn) {
@@ -533,46 +572,53 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
 
     renderTabEdit();
 
-    var canExportSkill = e.maturity === 'verified' || e.maturity === 'proven';
+    var canExportSkill = e.status === 'active' && e.freshness === 'current' && e.serving === 'enabled' &&
+      (e.maturity === 'verified' || e.maturity === 'proven');
     document.getElementById('drw-foot').innerHTML =
       '<div style="display:flex;flex-wrap:wrap;gap:6px;">' +
         '<button class="btn btn-sm btn-emerald" id="drw-btn-val">✓ 登记独立验证</button>' +
-        '<button class="btn btn-sm btn-crimson" id="drw-btn-s01">⚠ S01 反证熔断/撤回</button>' +
+        '<button class="btn btn-sm btn-crimson" id="drw-btn-s01">登记反证并暂停检索</button>' +
         (canExportSkill ? '<button class="btn btn-sm" id="drw-btn-skill">✦ 固化为 SKILL.md</button>' : '') +
       '</div>' +
-      '<button class="btn btn-primary" id="drw-btn-save">保存新版本</button>';
+      '<button class="btn" id="drw-btn-discard" hidden>丢弃未保存修改</button><button class="btn btn-primary" id="drw-btn-save" disabled>保存新版本</button>';
+    document.getElementById('drw-btn-discard').onclick = function() {
+      draft = Object.assign({}, e);
+      impact = 'substantive';
+      document.querySelector('[data-dtab="edit"]').click();
+    };
+    renderChanges();
+    if (initialTab === 'gene') document.querySelector('[data-dtab="gene"]').click();
 
     document.getElementById('drawer-backdrop').classList.add('open');
 
     document.getElementById('drw-btn-save').onclick = async function() {
-      if (!document.getElementById('f-ed-title')) {
-        document.querySelector('[data-dtab="edit"]').click();
+      var keys = changedKeys();
+      if (!keys.length) return;
+      var patch = {};
+      keys.forEach(function(k) { patch[k] = draft[k]; });
+      var save = document.getElementById('drw-btn-save');
+      save.disabled = true;
+      var res;
+      try {
+        res = await rpc('accremind.kb.saveRevision', { id: e.id, expectedRevision: e.revision,
+          revisionImpact: keys.includes('layer') ? 'substantive' : impact, patch: patch });
+      } catch (err) {
+        toast(err.message);
+        renderChanges();
+        return;
       }
-      var res = await rpc('accremind.kb.saveRevision', {
-        id: e.id,
-        revisionImpact: document.getElementById('f-ed-impact').value,
-        patch: {
-          title: document.getElementById('f-ed-title').value,
-          search_aliases: document.getElementById('f-ed-aliases').value.split(',').map(function(s){return s.trim();}).filter(Boolean),
-          claim: document.getElementById('f-ed-claim').value,
-          knowledge_delta: document.getElementById('f-ed-delta').value,
-          rationale: document.getElementById('f-ed-rationale').value,
-          preconditions: document.getElementById('f-ed-pre').value.split('\\n').map(function(s){return s.trim();}).filter(Boolean),
-          invalidation_triggers: document.getElementById('f-ed-inv').value.split('\\n').map(function(s){return s.trim();}).filter(Boolean)
-        }
-      });
-
       if (!res.ok) {
+        document.querySelector('[data-dtab="edit"]').click();
         var fieldMap = {
           title: 'f-ed-title',
           claim: 'f-ed-claim',
           knowledge_delta: 'f-ed-delta',
-          rationale: 'f-ed-rationale',
+          rationale: 'f-ed-rationale', layer: 'f-ed-layer',
           preconditions: 'f-ed-pre',
           invalidation_triggers: 'f-ed-inv'
         };
         document.getElementById('drw-s03-banner').innerHTML =
-          '<div class="alert-box alert-s03"><strong>S03 门禁阻断 · 点击缺失项直接定位输入</strong>：<div style="margin-top:6px;display:grid;gap:4px;">' +
+          '<div class="alert-box alert-s03"><strong>保存前请补齐以下内容</strong><div style="margin-top:6px;display:grid;gap:4px;">' +
           res.missingFields.map(function(msg) {
             var key = msg.split(':')[0].trim();
             var targetInput = fieldMap[key] || 'f-ed-title';
@@ -581,7 +627,8 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
         return;
       }
 
-      toast('已原子写入 Markdown 真源并升级至 r' + res.entry.revision);
+      entryDrafts.delete(draftKey);
+      toast('已保存 r' + res.entry.revision);
       closeDrawer();
       await syncAll();
     };
@@ -591,11 +638,13 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
         title: '登记跨任务独立验证证据 (' + e.id + ')',
         inputLabel: '本次在哪个独立需求/测试中验证了该经验有效？ *',
         placeholder: '例如：在结算重构任务中运行 webhook-concurrency.spec.ts 验证并发无双入账',
-        defaultValue: '在独立开发任务中复用该约束并通过回归测试验证',
+        bodyHtml: '<div class="form-row"><label for="validation-task">独立任务或工单 ID *</label><input id="validation-task" placeholder="例如 BILL-238" /></div>',
         requireInput: true,
         confirmText: '提交正向验证',
         onConfirm: async function(note) {
-          await rpc('accremind.feedback.submit', { id: e.id, kind: 'verified_effective', detail: note });
+          var task = document.getElementById('validation-task').value.trim();
+          if (!task) throw new Error('请填写可追溯的任务或工单 ID');
+          await rpc('accremind.feedback.submit', { id: e.id, revision: e.revision, taskFingerprint: task, kind: 'verified_effective', detail: note });
           toast('独立验证已入账，成熟度已重算');
           closeDrawer();
           await syncAll();
@@ -605,16 +654,16 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
 
     document.getElementById('drw-btn-s01').onclick = function() {
       openDialog({
-        title: 'S01 反证熔断或撤回条目 (' + e.id + ')',
+        title: '登记反证并暂停检索 (' + e.id + ')',
         level: 'S01',
         danger: true,
         inputLabel: '请填写该经验已失效或结论错误的证据依据 *',
         placeholder: '例如：升级 v3 SDK 后底层已内置自动字节序保护，原结论不再成立',
         requireInput: true,
-        confirmText: '立即熔断暂停检索',
+        confirmText: '暂停检索',
         onConfirm: async function(reason) {
-          await rpc('accremind.feedback.submit', { id: e.id, kind: 'suspected_error', detail: reason });
-          toast('已触发 S01 熔断，该条目 serving 已置为 suspended');
+          await rpc('accremind.feedback.submit', { id: e.id, revision: e.revision, kind: 'suspected_error', detail: reason });
+          toast('已登记反证并暂停这条经验的检索');
           closeDrawer();
           await syncAll();
         }
@@ -641,71 +690,118 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
   }
 
   function openCreateDrawer() {
-    document.getElementById('drw-title').textContent = '捕获新工程暗物质经验 (强制 S03 增量门禁)';
+    document.getElementById('drw-title').textContent = '记录研发经验';
     document.getElementById('drw-tabs').style.display = 'none';
     document.getElementById('drw-scroll').innerHTML =
-      '<div id="cr-feedback"></div>' +
-      '<div class="form-row"><label>中立场景问题 (Question · 不含答案暗示) *</label><input id="cr-q" placeholder="例如：分布式定时任务跨实例调度时如何避免重复对账？" /></div>' +
-      '<div class="form-row"><label>仅看现有代码的基线答案 (Visible Baseline) *</label><input id="cr-base" placeholder="例如：代码仅展示了 @Cron 注解触发 reconcile()" /></div>' +
-      '<div class="form-row"><label>代码外新增不可恢复上下文 (Dark-Matter Delta) *</label><textarea id="cr-delta" rows="2" placeholder="例如：K8s 滚动发布期间新旧 Pod 重叠存活 30s，无数据库租约锁曾导致双发对账单"></textarea></div>' +
-      '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;">' +
-        '<div class="form-row"><label>经验标题 *</label><input id="cr-title" placeholder="什么条件下需要注意什么" /></div>' +
-        '<div class="form-row"><label>知识类型 *</label><select id="cr-type"><option value="pitfall">pitfall</option><option value="decision">decision</option><option value="guideline">guideline</option><option value="model">model</option><option value="process">process</option></select></div>' +
-        '<div class="form-row"><label>缺失代价优先级 *</label><select id="cr-prio"><option value="P0">P0 严重事故</option><option value="P1" selected>P1 重复排障</option><option value="P2">P2 辅助理解</option></select></div>' +
+      '<div id="cr-feedback" role="status"></div>' +
+      '<div class="form-row"><label for="cr-layer">知识范围</label><select id="cr-layer"><option value="project">项目知识 · 本项目的实现与约束</option><option value="domain">领域知识 · 业务概念、规则与流程</option></select></div>' +
+      '<div class="form-row"><label for="cr-route">代码与文档对这个问题的覆盖程度</label><select id="cr-route">' +
+        '<option value="knowledge_candidate">有代码外新增经验</option><option value="index_only">代码已能回答，保存导航</option>' +
+        '<option value="link_existing">已有权威文档，保存链接</option><option value="needs_confirmation">证据不足，提交待补</option>' +
+        '<option value="discard">没有复用价值，记录丢弃原因</option></select></div>' +
+      '<div class="form-row"><label for="cr-q">遇到了什么问题？ *</label><input id="cr-q" placeholder="例如：分布式定时任务跨实例调度时如何避免重复对账？" /></div>' +
+      '<div class="form-row"><label for="cr-base">从当前代码或文档能知道什么？ *</label><input id="cr-base" placeholder="例如：代码仅展示了 @Cron 注解触发 reconcile()" /></div>' +
+      '<div class="form-row"><label for="cr-delta">还有哪些经验无法从代码得知？ *</label><textarea id="cr-delta" rows="2" placeholder="例如：K8s 滚动发布期间新旧 Pod 重叠存活 30s，无数据库租约锁曾导致双发对账单"></textarea></div>' +
+      '<div class="capture-fields">' +
+        '<div class="form-row"><label for="cr-title">经验标题 *</label><input id="cr-title" placeholder="什么条件下需要注意什么" /></div>' +
+        '<div class="form-row"><label for="cr-type">知识类型 *</label><select id="cr-type"><option value="pitfall">排障陷阱</option><option value="decision">架构决策</option><option value="guideline">规范</option><option value="model">领域模型</option><option value="process">操作流程</option></select></div>' +
+        '<div class="form-row"><label for="cr-prio">忽略这条经验的代价 *</label><select id="cr-prio"><option value="P0">P0 严重事故</option><option value="P1" selected>P1 重复排障</option><option value="P2">P2 辅助理解</option></select></div>' +
       '</div>' +
-      '<div class="form-row"><label>双语检索别名 (逗号分隔)</label><input id="cr-alias" placeholder="滚动发布双发, 定时任务防重, cron lease lock" /></div>' +
-      '<div class="form-row"><label>可执行结论 (Claim) *</label><textarea id="cr-claim" rows="2"></textarea></div>' +
-      '<div class="form-row"><label>适用前置条件 (每行一条) *</label><textarea id="cr-pre" rows="2"></textarea></div>' +
-      '<div class="form-row"><label>失效触发条件 (每行一条) *</label><textarea id="cr-inv" rows="2"></textarea></div>' +
-      '<div class="form-row"><label>证据仓库相对路径定位 (严禁 /Users/... 本机绝对路径) *</label><input id="cr-loc" placeholder="src/jobs/reconcile.job.ts#L15-L42" /></div>';
+      '<div class="form-row" hidden><label for="cr-polarity">规范方向</label><select id="cr-polarity"><option value="recommend">建议这样做</option><option value="avoid">禁止这样做</option></select></div>' +
+      '<div class="form-row"><label for="cr-alias">搜索别名（中英文均可，逗号分隔）</label><input id="cr-alias" placeholder="滚动发布双发, 定时任务防重, cron lease lock" /></div>' +
+      '<div class="form-row"><label for="cr-claim">遇到同样情况应该怎样做？ *</label><textarea id="cr-claim" rows="2"></textarea></div>' +
+      '<div class="form-row"><label for="cr-pre">适用条件（每行一条）*</label><textarea id="cr-pre" rows="2"></textarea></div>' +
+      '<div class="form-row"><label for="cr-inv">失效条件（每行一条）*</label><textarea id="cr-inv" rows="2"></textarea></div>' +
+      '<div class="form-row"><label for="cr-method">如何验证这条结论 *</label><textarea id="cr-method" rows="2" placeholder="回归用例或可重复的检查方法"></textarea></div>' +
+      '<div class="form-row"><label for="cr-note">证据内容 *</label><textarea id="cr-note" rows="2" placeholder="记录的现象、测试结果或文档结论"></textarea></div>' +
+      '<div class="form-row"><label for="cr-loc">证据位置（仓库相对路径）*</label><input id="cr-loc" placeholder="src/jobs/reconcile.job.ts#L15-L42" /></div>';
 
     document.getElementById('drw-foot').innerHTML =
-      '<span style="font-size:12px;color:var(--text-3);">通过门禁后默认进入本机影子孵化舱，验证后迁入项目库</span>' +
-      '<button class="btn btn-primary" id="btn-submit-capture">执行五路分流与入库</button>';
+      '<span class="form-hint">项目写入策略决定新经验进入试用池或待审队列。</span>' +
+      '<button class="btn btn-primary" id="btn-submit-capture">提交经验</button>';
 
     document.getElementById('drawer-backdrop').classList.add('open');
 
-    document.getElementById('btn-submit-capture').onclick = async function() {
+    var route = document.getElementById('cr-route');
+    function updateCaptureForm() {
+      var candidate = route.value === 'knowledge_candidate';
+      ['cr-layer','cr-title','cr-type','cr-prio','cr-alias','cr-claim','cr-pre','cr-inv','cr-method','cr-delta'].forEach(function(id){
+        document.getElementById(id).closest('.form-row').hidden = !candidate;
+      });
+      var discarded = route.value === 'discard';
+      document.getElementById('cr-note').closest('.form-row').hidden = !candidate && !discarded;
+      document.querySelector('label[for="cr-note"]').textContent = discarded ? '丢弃原因 *' : '证据内容 *';
+      document.getElementById('cr-note').placeholder = discarded ? '为什么这条信息无需沉淀为经验？' : '记录的现象、测试结果或文档结论';
+      document.getElementById('cr-loc').closest('.form-row').hidden = discarded;
+      document.querySelector('label[for="cr-loc"]').textContent = route.value === 'needs_confirmation' ? '已有线索的位置（可选）' : '证据位置（仓库相对路径）*';
+      document.getElementById('cr-polarity').closest('.form-row').hidden = !candidate || document.getElementById('cr-type').value !== 'guideline';
+      document.getElementById('btn-submit-capture').textContent = {knowledge_candidate:'提交经验',index_only:'保存代码导航',link_existing:'保存文档链接',needs_confirmation:'提交待补证',discard:'记录丢弃原因'}[route.value];
+    }
+    document.getElementById('cr-layer').value = document.getElementById('flt-layer').value === 'domain' ? 'domain' : 'project';
+    route.onchange = updateCaptureForm;
+    document.getElementById('cr-type').onchange = updateCaptureForm;
+    updateCaptureForm();
+    document.getElementById('btn-submit-capture').onclick = async function(ev) {
+      var button = ev.currentTarget;
+      if (button.disabled) return;
+      button.disabled = true;
       try {
-        var resp = await fetch('/rpc', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            method: '__tool.accremind_capture',
-            params: {
+        var disposition = route.value;
+        var discovery = {knowledge_candidate:'missing_context', index_only:'code_recoverable', link_existing:'authoritative_source',
+          needs_confirmation:'inconclusive', discard:'inconclusive'};
+        var candidate = disposition === 'knowledge_candidate';
+        var required = ['cr-q','cr-base'];
+        if (candidate) required.push('cr-delta','cr-title','cr-claim','cr-pre','cr-inv','cr-method','cr-note','cr-loc');
+        if (disposition === 'discard') required.push('cr-note');
+        if (disposition === 'index_only' || disposition === 'link_existing') required.push('cr-loc');
+        var missing = required.find(function(id){ return !document.getElementById(id).value.trim(); });
+        if (missing) {
+          var field = document.getElementById(missing);
+          field.focus();
+          throw new Error('请填写' + field.closest('.form-row').querySelector('label').textContent);
+        }
+        var out = await rpc('accremind.capture.manual', {
               question: document.getElementById('cr-q').value,
-              discoverability: 'missing_context',
-              disposition: 'knowledge_candidate',
+              discoverability: discovery[disposition],
+              layer: document.getElementById('cr-layer').value,
+              disposition: disposition,
               baseline_answer: document.getElementById('cr-base').value,
-              knowledge_delta: document.getElementById('cr-delta').value,
+              knowledge_delta: candidate ? document.getElementById('cr-delta').value : '',
               title: document.getElementById('cr-title').value,
               type: document.getElementById('cr-type').value,
               priority: document.getElementById('cr-prio').value,
-              polarity: 'avoid',
-              search_aliases: document.getElementById('cr-alias').value.split(',').map(function(s){return s.trim();}).filter(Boolean),
+              polarity: document.getElementById('cr-type').value === 'guideline' ? document.getElementById('cr-polarity').value : undefined,
+              search_aliases: document.getElementById('cr-alias').value.split(/[,，]/).map(function(s){return s.trim();}).filter(Boolean),
               claim: document.getElementById('cr-claim').value,
-              rationale: document.getElementById('cr-delta').value,
+              rationale: candidate || disposition === 'discard' ? document.getElementById('cr-note').value : document.getElementById('cr-base').value,
               preconditions: document.getElementById('cr-pre').value.split('\\n').map(function(s){return s.trim();}).filter(Boolean),
               invalidation_triggers: document.getElementById('cr-inv').value.split('\\n').map(function(s){return s.trim();}).filter(Boolean),
-              file_locator: document.getElementById('cr-loc').value
-            }
-          })
+              verification_method: document.getElementById('cr-method').value,
+              evidence_summary: candidate ? document.getElementById('cr-note').value : '',
+              file_locator: disposition === 'discard' ? '' : document.getElementById('cr-loc').value
         });
-        var json = await resp.json();
-        if (json.error) throw new Error(json.error);
-        var out = json.result;
+        var destination = {probation:'本机试用池', project:'项目经验库', knowledge_candidate:'待审核队列',index_only:'代码导航',link_existing:'文档索引',needs_confirmation:'待补证队列',discard:'审核历史'};
         if (out.downgradedReason) {
+          var pending = out.finalDisposition === 'needs_confirmation';
           document.getElementById('cr-feedback').innerHTML =
-            '<div class="alert-box alert-s01"><strong>S03 门禁自动降级拦截 (' + esc(out.finalDisposition) + ')</strong>：<br/>' + esc(out.downgradedReason) + '</div>';
+            '<div class="alert-box alert-s01"><strong>已保存到' + esc(destination[out.finalDisposition] || '候选审核') + '</strong><p>' +
+            esc(out.downgradedReason) + '</p><button class="btn btn-sm" id="cr-check-result">' + (pending ? '去候选审核补证' : '查看代码与文档索引') + '</button></div>';
+          document.getElementById('cr-check-result').onclick = async function() {
+            closeDrawer();
+            reviewState = 'pending'; reviewOffset = 0;
+            await switchTab('review');
+            var target = pending ? Array.from(document.querySelectorAll('[data-assessment]')).find(function(row) { return row.dataset.assessment === out.assessmentId; }) : document.getElementById('nav-index-host');
+            if (target) target.scrollIntoView({block:'center'});
+          };
           await syncAll();
           return;
         }
-        toast('捕获成功 → 已进入 ' + (out.persistedZone || out.finalDisposition));
+        toast(out.duplicate ? '此记录已存在 · ' + out.assessmentId : '已保存到' + (destination[out.persistedZone || out.finalDisposition] || '经验库'));
         closeDrawer();
         await syncAll();
       } catch (err) {
         document.getElementById('cr-feedback').innerHTML = '<div class="alert-box alert-s01">' + esc(err.message) + '</div>';
-      }
+      } finally { button.disabled = false; }
     };
   }
 
@@ -713,15 +809,22 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     document.getElementById('drawer-backdrop').classList.remove('open');
   }
 
-  function switchTab(tab) {
+  async function switchTab(tab) {
     STATE.tab = tab;
     document.querySelectorAll('.nav-btn').forEach(function(b) {
-      b.classList.toggle('active', b.getAttribute('data-nav') === tab);
+      var selected = b.getAttribute('data-nav') === tab;
+      b.classList.toggle('active', selected);
+      if (selected) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
     });
     ['kb', 'review', 'reactor', 'gov'].forEach(function(id) {
       document.getElementById('view-' + id).style.display = id === tab ? 'block' : 'none';
     });
-    if (tab === 'reactor') runCompilerReactor();
+    document.getElementById('app-error').hidden = true;
+    window.scrollTo(0,0);
+    if (tab === 'review') await loadPrismReview();
+    if (tab === 'reactor') await loadReceipts();
+    if (tab === 'gov') { await loadGovernance(); await loadSettings(); await refreshDashboard(); }
+    if (tab === 'kb') await loadVault();
   }
 
   // Command Palette (Cmd+K / Ctrl+K)
@@ -737,21 +840,22 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
   function renderCmdkResults(q) {
     var lower = q.trim().toLowerCase();
     var cmds = [
-      { label: '切换到：暗物质知识星图库', hint: 'Tab 1', run: function() { switchTab('kb'); } },
-      { label: '切换到：增量分光镜审核台 (Delta Prism)', hint: 'Tab 2', run: function() { switchTab('review'); } },
-      { label: '切换到：三层上下文编译反应堆 & JIT 护栏沙盒', hint: 'Tab 3', run: function() { switchTab('reactor'); } },
-      { label: '切换到：符号基因时效巡检 & Git 考古时光机', hint: 'Tab 4', run: function() { switchTab('gov'); } },
-      { label: '动作：＋ 捕获新工程暗物质经验', hint: 'Drawer', run: function() { openCreateDrawer(); } },
+      { label: '打开知识库', hint: 'Tab 1', run: function() { switchTab('kb'); } },
+      { label: '审核候选经验', hint: 'Tab 2', run: function() { switchTab('review'); } },
+      { label: '查看回合回执与命中模拟', hint: 'Tab 3', run: function() { switchTab('reactor'); } },
+      { label: '治理与设置', hint: 'Tab 4', run: function() { switchTab('gov'); } },
+      { label: '录入经验', hint: 'Drawer', run: function() { openCreateDrawer(); } },
       { label: '动作：切换暗色黑曜石 / 亮色瑞士蓝图主题', hint: 'Theme', run: function() { toggleTheme(); } },
       { label: '动作：从双层 Markdown 真源全量无损重建 SQLite 索引', hint: 'Rebuild', run: async function() { await rpc('accremind.gov.rebuildIndex', {}); toast('SQLite 索引重建完成'); await syncAll(); } },
-      { label: '图例：查看四维正交状态矩阵规范 (L6 禁百分比)', hint: 'Legend', run: function() { show4dLegendModal(); } }
+      { label: STATE.demoToken ? '返回我的工作区' : '体验演示空间', hint: '工作区', run: switchDemo },
+      { label: '查看经验状态说明', hint: '帮助', run: function() { show4dLegendModal(); } }
     ];
 
-    (STATE.kbItems || []).forEach(function(hit) {
+    (STATE.allItems || STATE.kbItems || []).forEach(function(hit) {
       var e = hit.entry;
       cmds.push({
         label: '经验 ' + e.id + ' · ' + e.title,
-        hint: (e.search_aliases || []).slice(0, 2).join(', ') || e.type,
+        hint: (e.search_aliases || []).join(', ') || e.type,
         run: function() { openEntryDrawer(e.id); }
       });
     });
@@ -763,10 +867,11 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
 
     var listEl = document.getElementById('cmdk-list');
     listEl.innerHTML = filtered.slice(0, 12).map(function(c, idx) {
-      return '<div class="cmdk-item" data-cmdk-idx="' + idx + '">' +
-        '<span>' + esc(c.label) + '</span><span class="kbd">' + esc(c.hint) + '</span></div>';
+      return '<button class="cmdk-item" data-cmdk-idx="' + idx + '">' +
+        '<span>' + esc(c.label) + '</span><span class="kbd">' + esc(c.hint) + '</span></button>';
     }).join('');
 
+    if (!filtered.length) listEl.textContent = '没有匹配的经验或操作';
     listEl.querySelectorAll('[data-cmdk-idx]').forEach(function(el) {
       el.onclick = function() {
         var item = filtered[Number(el.getAttribute('data-cmdk-idx'))];
@@ -779,21 +884,22 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
   function toggleTheme() {
     STATE.theme = STATE.theme === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', STATE.theme);
-    localStorage.setItem('accremind_theme', STATE.theme);
+    try { localStorage.setItem('accremind_theme', STATE.theme); } catch { /* isolated host frame */ }
     document.getElementById('btn-theme').textContent = STATE.theme === 'dark' ? '☀ 亮色蓝图' : '☾ 暗色观测';
   }
 
   async function syncAll() {
     await refreshDashboard();
     await loadVault();
-    await loadPrismReview();
-    await loadGovernance();
+    if (STATE.tab === 'review') await loadPrismReview();
+    if (STATE.tab === 'reactor') await loadReceipts();
+    if (STATE.tab === 'gov') { await loadGovernance(); await loadSettings(); }
   }
 
   // Global Event Delegation
   document.addEventListener('click', async function(ev) {
     var navBtn = ev.target.closest('[data-nav]');
-    if (navBtn) { switchTab(navBtn.getAttribute('data-nav')); return; }
+    if (navBtn) { await switchTab(navBtn.getAttribute('data-nav')); return; }
 
     var detailTrigger = ev.target.closest('[data-detail]');
     if (detailTrigger) { await openEntryDrawer(detailTrigger.getAttribute('data-detail')); return; }
@@ -804,47 +910,32 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     var promoteBtn = ev.target.closest('[data-promote]');
     if (promoteBtn) {
       var pid = promoteBtn.getAttribute('data-promote');
-      await rpc('accremind.probation.decide', { id: pid, action: 'promote' });
-      toast('⚡ 已将 ' + pid + ' 淬炼转正并原子迁入项目 .accremind/entries/');
-      await syncAll();
+      var hit = STATE.kbItems.find(function(item) { return item.entry.id === pid; });
+      if (!hit) return;
+      openDialog({title:'将试用草稿转为正式经验',bodyHtml:'<p>' + esc(hit.entry.title) + '</p><p>保存到项目经验库，可随 Git 共享。成熟度维持原值。</p>',confirmText:'转为正式',
+        onConfirm:async function() { await rpc('accremind.probation.decide',{id:pid,revision:hit.entry.revision,action:'promote'}); toast('已转为正式经验'); await syncAll(); }});
+
       return;
     }
 
-    var seedNow = ev.target.closest('[data-seed-now]');
-    if (seedNow) {
-      await rpc('accremind.demo.seed', {});
-      toast('✦ 已注入 4 条工程暗物质样本与 1 条待审分光镜候选');
-      await syncAll();
+    var demo = ev.target.closest('[data-demo-switch]');
+    if (demo) { await switchDemo(); return; }
+    var actionBtn = ev.target.closest('[data-work-action]');
+    if (actionBtn) {
+      var action = actionBtn.dataset.workAction;
+      if (action === 'review') { reviewState = 'pending'; reviewOffset = 0; await switchTab('review'); }
+      else if (action === 'demo') await switchDemo();
+      else if (action === 'reset') { clearFilters(); await loadVault(); }
+      else if (action === 'discover') {
+        await switchTab('gov');
+        document.getElementById('btn-gov-arch').scrollIntoView({block:'center'});
+        await loadArchaeology();
+      } else await switchTab(action);
       return;
     }
 
     var openCreate = ev.target.closest('[data-open-create]');
     if (openCreate) { openCreateDrawer(); return; }
-
-    var revBtn = ev.target.closest('[data-rev-decide]');
-    if (revBtn) {
-      var caId = revBtn.getAttribute('data-ca');
-      var dec = revBtn.getAttribute('data-rev-decide');
-      var res = await rpc('accremind.review.decide', { assessmentId: caId, decision: dec });
-      if (!res.ok) {
-        openDialog({
-          title: 'S03 门禁阻断',
-          bodyHtml: '<div class="alert-box alert-s01">' + (res.missingFields || []).map(esc).join('<br/>') + '</div>'
-        });
-        return;
-      }
-      toast('分光镜裁决已完成：' + dec);
-      await syncAll();
-      return;
-    }
-
-    var freshBtn = ev.target.closest('[data-fresh-confirm]');
-    if (freshBtn) {
-      await rpc('accremind.gov.confirmFresh', { id: freshBtn.getAttribute('data-fresh-confirm') });
-      toast('✓ 已刷新复核检查点，恢复为 current 状态');
-      await syncAll();
-      return;
-    }
 
     var focusJump = ev.target.closest('[data-focus-id]');
     if (focusJump) {
@@ -874,24 +965,14 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     }
 
     var layerTile = ev.target.closest('[data-filter-shortcut]');
-    if (layerTile) {
-      var kind = layerTile.getAttribute('data-filter-shortcut');
-      switchTab(kind === 'nav' ? 'review' : 'kb');
-      if (kind === 'probation') {
-        document.getElementById('flt-status').value = 'probation';
-        await loadVault();
-      } else if (kind === 'active') {
-        document.getElementById('flt-status').value = 'active';
-        await loadVault();
-      }
-      return;
-    }
+    if (layerTile) await libraryShortcut(layerTile.dataset.filterShortcut);
   });
 
   // Top & Filter Bindings
   document.getElementById('btn-theme').textContent = STATE.theme === 'dark' ? '☀ 亮色蓝图' : '☾ 暗色观测';
   document.getElementById('btn-theme').onclick = toggleTheme;
   document.getElementById('btn-cmdk').onclick = openCommandPalette;
+  document.getElementById('btn-mobile-actions').onclick = openCommandPalette;
   document.getElementById('btn-new-entry').onclick = openCreateDrawer;
   document.getElementById('drw-close').onclick = closeDrawer;
   document.getElementById('drawer-backdrop').onclick = function(e) { if (e.target.id === 'drawer-backdrop') closeDrawer(); };
@@ -899,26 +980,26 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
   document.getElementById('dialog-mask').onclick = function(e) { if (e.target.id === 'dialog-mask') e.target.classList.remove('open'); };
   document.getElementById('cmdk-input').oninput = function(e) { renderCmdkResults(e.target.value); };
 
-  document.getElementById('btn-demo-toggle').onclick = async function() {
-    var seeded = document.getElementById('btn-demo-toggle').getAttribute('data-seeded') === '1';
-    if (seeded) {
-      await rpc('accremind.demo.clear', {});
-      toast('已清理全部演示样本，恢复空白工作区');
-    } else {
-      await rpc('accremind.demo.seed', {});
-      toast('✦ 已注入 4 条演示样本与分光镜待审队列');
+  document.getElementById('refresh-receipts').onclick = loadReceipts;
+  document.getElementById('toggle-filters').onclick = function() { moreFilters(document.getElementById('more-filters').hidden); };
+  document.getElementById('clear-filters').onclick = function() { clearFilters(); loadVault().catch(reportError); };
+  document.getElementById('flt-q').oninput = function() { loadVault().catch(reportError); };
+  Object.keys(filterFields).forEach(function(key) { document.getElementById('flt-' + key).onchange = loadVault; });
+  document.getElementById('cmdk-input').onkeydown = function(event) {
+    if (event.key === 'ArrowDown' || event.key === 'Enter') {
+      var first = document.querySelector('#cmdk-list button');
+      if (first) { event.preventDefault(); if (event.key === 'Enter') first.click(); else first.focus(); }
     }
-    await syncAll();
   };
 
-  document.getElementById('flt-q').oninput = function() { loadVault(); };
-  document.getElementById('flt-status').onchange = function() { loadVault(); };
-  document.getElementById('flt-type').onchange = function() { loadVault(); };
-
   document.querySelectorAll('[data-view-mode]').forEach(function(btn) {
+    var selected = btn.getAttribute('data-view-mode') === STATE.viewMode;
+    btn.classList.toggle('active', selected);
+    btn.setAttribute('aria-pressed', String(selected));
     btn.onclick = function() {
       STATE.viewMode = btn.getAttribute('data-view-mode');
-      document.querySelectorAll('[data-view-mode]').forEach(function(b) { b.classList.toggle('active', b === btn); });
+      try { localStorage.setItem('accremind_library_view', STATE.viewMode); } catch { /* use current session */ }
+      document.querySelectorAll('[data-view-mode]').forEach(function(b) { b.classList.toggle('active', b === btn); b.setAttribute('aria-pressed', String(b === btn)); });
       renderVaultItems();
     };
   });
@@ -936,24 +1017,7 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     toast('SQLite FTS5 派生索引已重建');
     await syncAll();
   };
-  document.getElementById('btn-gov-arch').onclick = async function() {
-    var out = await rpc('accremind.gov.bootstrapHistory', { topK: 10 });
-    var wrap = document.getElementById('arch-timeline-host');
-    if (!out.minedCommits || out.minedCommits.length === 0) {
-      wrap.innerHTML = '<div style="color:var(--text-3);padding:10px 0;">当前 Git 仓库最近历史未检出得分 ≥ 3 的 revert / hotfix / race 返工簇提交。</div>';
-      return;
-    }
-    wrap.innerHTML = out.minedCommits.map(function(c) {
-      return '<div style="padding:14px 16px;background:var(--bg-elev-2);border:1px solid var(--border-subtle);border-radius:10px;margin-bottom:10px;">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
-          '<div><code style="color:var(--accent);font-weight:700;">' + esc(c.commitSha.slice(0, 8)) + '</code> <strong style="margin-left:8px;">' + esc(c.subject) + '</strong></div>' +
-          '<span class="tag tag-p0">信号强度 ' + esc(c.signalScore) + '</span>' +
-        '</div>' +
-        '<div style="font-size:12px;color:var(--text-2);margin-bottom:8px;">触发依据：' + esc(c.signalReasons.join(' · ')) + '</div>' +
-        '<pre class="code-vault" style="max-height:140px;">' + esc(c.diffPreview.slice(0, 900)) + '</pre>' +
-      '</div>';
-    }).join('');
-  };
+  document.getElementById('btn-gov-arch').onclick = loadArchaeology;
 
   document.addEventListener('keydown', function(e) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -961,10 +1025,26 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
       openCommandPalette();
       return;
     }
-    if (e.key === 'Escape') {
-      closeDrawer();
-      document.getElementById('cmdk-mask').classList.remove('open');
-      document.getElementById('dialog-mask').classList.remove('open');
+    var dialog = document.getElementById('dialog-mask'), palette = document.getElementById('cmdk-mask');
+    var overlay = dialog.classList.contains('open') ? dialog : palette.classList.contains('open') ? palette :
+      (document.getElementById('drawer-backdrop').classList.contains('open') ? document.getElementById('drawer-backdrop') : null);
+    if (overlay) {
+      if (e.key === 'Escape') {
+        if (overlay === dialog) document.getElementById('dlg-cancel').click();
+        else if (overlay === palette) {
+          palette.classList.remove('open');
+          var searchButton = document.getElementById('btn-cmdk');
+          (searchButton.getClientRects().length ? searchButton : document.getElementById('btn-mobile-actions')).focus();
+        }
+        else closeDrawer();
+      }
+      if (e.key === 'Tab') {
+        var targets = Array.from(overlay.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea,select,summary')).filter(function(el) { return el.getClientRects().length; });
+        var index = targets.indexOf(document.activeElement);
+        if (targets.length && (index === -1 || (e.shiftKey ? index === 0 : index === targets.length - 1))) {
+          e.preventDefault(); targets[e.shiftKey ? targets.length - 1 : 0].focus();
+        }
+      }
       return;
     }
     var activeTag = document.activeElement ? document.activeElement.tagName : '';
@@ -975,6 +1055,9 @@ export const ACCREMIND_OBSERVATORY_CLIENT_SCRIPT = `
     }
   });
 
-  syncAll().catch(function(err) { toast(err.message); });
+  window.addEventListener('unhandledrejection', function(event) { reportError(event.reason); });
+  document.getElementById('demo-banner').hidden = !STATE.demoToken;
+  if (window === window.top && new URLSearchParams(location.search).get('demo') === '1') switchDemo().catch(reportError);
+  else syncAll().catch(reportError);
 })();
 `;

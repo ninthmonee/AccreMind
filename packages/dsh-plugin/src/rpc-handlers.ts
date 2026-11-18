@@ -1,6 +1,12 @@
 import * as fs from 'node:fs';
+import type { TurnReceipts } from './turn-receipts.ts';
+import type { DshToolDefinition } from './cordis-types.ts';
+import { advanceDemoOrder, readDemoBaseline } from './demo-fixture.ts';
+import { decideReview, reviewMissingFields } from './candidate-review.ts';
 import * as path from 'node:path';
 import {
+  KNOWLEDGE_LAYERS,
+  isRepositoryKnowledgeLayer,
   exportEntryToDshSkill,
   runArchaeologyBootstrap,
   scanGitHistorySignals,
@@ -28,6 +34,10 @@ export type RpcHandlerMap = Record<
   (params: Record<string, unknown>) => Promise<unknown> | unknown
 >;
 
+function emptyScopeCounts(): Record<KnowledgeLayer, number> {
+  return Object.fromEntries(KNOWLEDGE_LAYERS.map(layer => [layer, 0])) as Record<KnowledgeLayer, number>;
+}
+
 function estimateTokens(text: string): number {
   if (!text) return 0;
   return Math.ceil(Buffer.byteLength(text, 'utf8') / 3.2);
@@ -41,6 +51,9 @@ const DEMO_ASSESSMENT_IDS = ['CA-DEMO-01', 'CA-DEMO-02', 'CA-DEMO-03', 'CA-DEMO-
  * Browser views NEVER touch `node:sqlite`, `fs`, or OS processes directly.
  */
 export function createWebuiRpcHandlers(deps: {
+  receipts: TurnReceipts;
+  tools: DshToolDefinition<any>[];
+  demoMode?: boolean;
   store: LocalMarkdownSqliteStore;
   viewCompiler: ViewCompiler;
   budgets: AccreMindConfig['budgets'];
@@ -59,19 +72,59 @@ export function createWebuiRpcHandlers(deps: {
     getLlmAdapter,
   } = deps;
 
+  function currentEntry(params: Record<string, unknown>) {
+    const found = store.getEntry(String(params.id ?? ''), { recordUsage: false, includeHistoryOrSuspended: true });
+    if (!found.found || !found.servable) throw new Error('未找到条目');
+    deps.receipts.checkReference(params, found.entry);
+    return found.entry;
+  }
+
+  function decideGovernance(params: Record<string, unknown>, action: 'resolve' | 'stale') {
+    const entry = currentEntry(params);
+    const reason = String(params.reason ?? '').trim();
+    if (!reason) throw new Error('请填写本次裁决的依据');
+    if (!['active', 'probation'].includes(entry.status)) throw new Error('归档或撤回的经验不能在此更改');
+    if (action === 'resolve' && (entry.serving !== 'suspended' || entry.freshness !== 'current')) {
+      throw new Error('仅能对时效已核对、检索已暂停的经验解除反证');
+    }
+    const now = new Date().toISOString();
+    const next = store.updateExistingEntryDirect({
+      ...entry, ...(action === 'resolve' ? { serving: 'enabled' as const } : { freshness: 'stale' as const }), updated_at: now,
+    });
+    store.rawDb.prepare('INSERT INTO governance_decisions VALUES (?, ?, ?, ?, ?, ?)').run(
+      store.workspaceId, entry.id, entry.revision, action, reason, now,
+    );
+    return next;
+  }
+
   return {
+    'accremind.gov.markStale': (params) => decideGovernance(params, 'stale'),
+    'accremind.gov.resolveConflict': (params) => decideGovernance(params, 'resolve'),
+    'accremind.turn.list': (params) => ({
+      receipts: deps.receipts.list(typeof params.sessionId === 'string' ? params.sessionId : undefined,
+        typeof params.turnId === 'string' ? params.turnId : undefined, Number(params.limit ?? 20)),
+    }),
+    'accremind.capture.manual': async (params) => {
+      const capture = deps.tools.find((tool) => tool.name === 'accremind_capture')!;
+      const out = await capture.execute(params, { sessionId: 'webui-manual' });
+      if (out.isError) throw new Error(out.content[0]?.text ?? '捕获失败');
+      return JSON.parse(out.content[0]!.text);
+    },
     'accremind.dashboard.overview': () => {
       const all = store.listEntriesForAdmin();
-      const pendingAssessments = store.listAssessments({ reviewState: 'pending' });
+      const pendingCount = store.countAssessments('pending');
       const corrupted = store.listCorruptedFiles();
       const queuedJobs = autoCapture.listQueuedJobs();
 
       let activeCount = 0;
       let rulesCount = 0;
+      let projectActiveCount = 0;
       let probationCount = 0;
       let reviewDueCount = 0;
       let suspendedCount = 0;
+      let governanceQueueCount = 0;
       let verifiedOrProvenCount = 0;
+      const byScope = emptyScopeCounts();
       const byType: Record<string, number> = {
         pitfall: 0,
         decision: 0,
@@ -81,21 +134,26 @@ export function createWebuiRpcHandlers(deps: {
       };
 
       for (const { entry, storageZone } of all) {
-        if (storageZone === 'rules' || entry.layer === 'team_rule') rulesCount += 1;
+        if (storageZone === 'project' && entry.status === 'active') projectActiveCount += 1;
+        if (storageZone === 'rules') rulesCount += 1;
         if (entry.status === 'active') activeCount += 1;
         if (entry.status === 'probation') probationCount += 1;
-        if (entry.freshness === 'review_due' || entry.freshness === 'stale') reviewDueCount += 1;
+        if (entry.freshness === 'review_due') reviewDueCount += 1;
         if (entry.serving === 'suspended') suspendedCount += 1;
+        if (entry.freshness !== 'current' || (entry.serving === 'suspended' &&
+            (entry.status === 'active' || entry.status === 'probation'))) governanceQueueCount += 1;
         if (entry.maturity === 'verified' || entry.maturity === 'proven') {
           verifiedOrProvenCount += 1;
         }
+        byScope[entry.layer] = (byScope[entry.layer] ?? 0) + 1;
         byType[entry.type] = (byType[entry.type] ?? 0) + 1;
       }
 
-      const hasDemoSeeded = all.some((i) => DEMO_ENTRY_IDS.includes(i.entry.id));
+      const hasDemoSeeded = deps.demoMode === true && all.some((i) => DEMO_ENTRY_IDS.includes(i.entry.id));
 
       return {
         workspaceId: store.workspaceId,
+        projectName: path.basename(store.paths.projectRoot),
         projectDir: store.paths.projectAccreMindDir,
         globalDir: store.paths.globalRoot,
         maxProbationExposures: store.maxProbationExposures,
@@ -103,13 +161,17 @@ export function createWebuiRpcHandlers(deps: {
         hasDemoSeeded,
         counts: {
           totalEntries: all.length,
+          byScope,
+          byCategory: byType,
           activeCount,
+          projectActiveCount,
           rulesCount,
           probationCount,
           reviewDueCount,
           suspendedCount,
+          governanceQueueCount: governanceQueueCount + corrupted.length,
           verifiedOrProvenCount,
-          pendingReviewCount: pendingAssessments.length,
+          pendingReviewCount: pendingCount,
           corruptedCount: corrupted.length,
           queuedCaptureJobs: queuedJobs.length,
           navigationItemsCount: store.listNavigationItems().length,
@@ -124,12 +186,23 @@ export function createWebuiRpcHandlers(deps: {
           status: (params.status as EntryStatus | undefined) || undefined,
           freshness: (params.freshness as Freshness | undefined) || undefined,
           serving: (params.serving as ServingStatus | undefined) || undefined,
-          layer: (params.layer as KnowledgeLayer | undefined) || undefined,
           type: (params.type as KnowledgeType | undefined) || undefined,
           query: typeof params.query === 'string' ? params.query : undefined,
         });
+        const matching = items.filter(({ entry, storageZone }) =>
+          (!params.storageZone || storageZone === params.storageZone) &&
+          (!params.maturity || (params.maturity === 'verified_or_proven'
+            ? entry.maturity === 'verified' || entry.maturity === 'proven'
+            : entry.maturity === params.maturity)),
+        );
+        const scopeCounts = emptyScopeCounts();
+        for (const {entry} of matching) {
+          scopeCounts[entry.layer] = (scopeCounts[entry.layer] ?? 0) + 1;
+        }
+        const filtered = params.layer ? matching.filter(({entry}) => entry.layer === params.layer) : matching;
         return {
-          items: items.map((i) => ({
+          scopeCounts,
+          items: filtered.map((i) => ({
             entry: i.entry,
             storageZone: i.storageZone,
             probationExposures: i.probationExposures,
@@ -137,7 +210,7 @@ export function createWebuiRpcHandlers(deps: {
             matchReasons: [],
             truncated: false,
           })),
-          zeroReason: items.length === 0 ? 'no_applicable_entry' : 'none',
+          zeroReason: filtered.length === 0 ? 'no_applicable_entry' : 'none',
           tokenUsed: 0,
         };
       }
@@ -177,7 +250,16 @@ export function createWebuiRpcHandlers(deps: {
 
     'accremind.kb.saveRevision': (params) => {
       const id = String(params.id ?? '');
+      if (params.expectedRevision !== undefined) currentEntry({ id, revision: params.expectedRevision });
       const patch = (params.patch ?? {}) as Partial<KnowledgeEntry>;
+      const editableStrings = ['title', 'claim', 'rationale', 'knowledge_delta'];
+      const editableLists = ['search_aliases', 'invalidation_triggers', 'preconditions'];
+      for (const [name, value] of Object.entries(patch)) {
+        if (name === 'layer' && isRepositoryKnowledgeLayer(value)) continue;
+        if (editableStrings.includes(name) && typeof value === 'string') continue;
+        if (editableLists.includes(name) && Array.isArray(value) && value.every(v => typeof v === 'string')) continue;
+        throw new Error(`无法通过正文修订修改字段 ${name}`);
+      }
       const revisionImpact =
         params.revisionImpact === 'editorial' ? 'editorial' : 'substantive';
       return store.saveRevision({ id, patch, revisionImpact });
@@ -205,8 +287,12 @@ export function createWebuiRpcHandlers(deps: {
     },
 
     'accremind.probation.decide': (params) => {
-      const id = String(params.id ?? '');
+      const entry = currentEntry(params);
+      const id = entry.id;
       const action = String(params.action ?? '');
+      if (entry.status !== 'probation' || (action === 'promote' && entry.serving !== 'enabled')) {
+        throw new Error('试用状态已变化，请刷新后重新核对');
+      }
       if (action === 'promote') {
         return store.promoteProbationToActive(id);
       }
@@ -217,29 +303,28 @@ export function createWebuiRpcHandlers(deps: {
     },
 
     'accremind.feedback.submit': (params) => {
-      const id = String(params.id ?? '');
+      const entry = currentEntry(params);
+      const id = entry.id;
       const kind = String(params.kind ?? '');
       const detail = String(params.detail ?? '');
       if (!detail.trim()) {
         throw new Error('反馈说明与依据不能为空');
       }
 
-      if (kind === 'suspected_error') {
+      if (kind === 'verified_effective' || kind === 'suspected_error') {
+        const sessionId = typeof params.sessionId === 'string' ? params.sessionId : 'webui-manual';
+        let task = params.turnId ? `session:${sessionId}` : String(params.taskFingerprint ?? '').trim();
+        if (!task && kind === 'suspected_error') task = `report:${sha256Hex(detail.trim())}`;
+        if (!task) throw new Error('请填写独立任务、工单或测试运行标识');
+        if (kind === 'verified_effective' && entry.evidence.some((ev) =>
+          ev.source_type === 'session_turn' && ev.source_ref === sessionId && params.turnId)) {
+          throw new Error('请在产生该经验的会话之外验证');
+        }
         return store.submitValidation({
           entryId: id,
-          sessionId: 'webui-feedback',
-          taskFingerprint: `feedback-err-${Date.now()}`,
-          outcome: 'failure',
-          evidenceNote: detail,
-        });
-      }
-
-      if (kind === 'verified_effective') {
-        return store.submitValidation({
-          entryId: id,
-          sessionId: 'webui-validation',
-          taskFingerprint: String(params.taskFingerprint || `manual-val-${Date.now()}`),
-          outcome: 'success',
+          sessionId,
+          taskFingerprint: task,
+          outcome: kind === 'verified_effective' ? 'success' : 'failure',
           evidenceNote: detail,
         });
       }
@@ -269,6 +354,7 @@ export function createWebuiRpcHandlers(deps: {
       const turnView = viewCompiler.compileTurnView(
         {
           sessionId: 'webui-simulator',
+          preview: true,
           userPrompt,
           errorOutput,
           activeFiles: activeFile ? [activeFile] : [],
@@ -279,6 +365,7 @@ export function createWebuiRpcHandlers(deps: {
       const jitOut = midTurnToolFile
         ? viewCompiler.compileFileToolGuard({
             sessionId: 'webui-simulator',
+            preview: true,
             filePath: midTurnToolFile,
             sessionSurfacedIds: simSurfaced,
           })
@@ -304,53 +391,73 @@ export function createWebuiRpcHandlers(deps: {
     'accremind.review.listQueue': (params) => {
       const reviewState =
         (params.reviewState as 'pending' | 'decided' | 'all' | undefined) ?? 'all';
+      const limit = typeof params.limit === 'number' && Number.isInteger(params.limit)
+        ? Math.max(1, Math.min(200, params.limit)) : 50;
+      const offset = typeof params.offset === 'number' && Number.isInteger(params.offset)
+        ? Math.max(0, params.offset) : 0;
+      const total = store.countAssessments(reviewState);
       return {
-        items: store.listAssessments({ reviewState, limit: 50 }),
+        offset, limit, total, hasMore: offset + limit < total,
+        items: store.listAssessments({reviewState, limit, offset}).map(item => ({
+          ...item, missingFields: reviewMissingFields(item),
+        })),
         navigationItems: store.listNavigationItems(),
       };
     },
 
-    'accremind.review.decide': (params) => {
-      const assessmentId = String(params.assessmentId ?? '');
-      const decision = params.decision as
-        | 'approve_active'
-        | 'approve_probation'
-        | 'index_only'
-        | 'link_existing'
-        | 'discard';
-      const editedEntry = params.editedEntry as KnowledgeEntry | undefined;
-      return store.decideAssessment({ assessmentId, decision, editedEntry });
-    },
+    'accremind.review.decide': (params) => decideReview(store, params),
 
     'accremind.gov.scanStaleness': () => {
       const scan = stalenessScanner.scanWorkspace();
-      const staleEntries = store
-        .listEntriesForAdmin()
-        .filter((i) => i.entry.freshness === 'review_due' || i.entry.freshness === 'stale');
+      const entries = store.listEntriesForAdmin().map(item => item.entry);
+      const staleEntries = entries.filter(entry => entry.freshness !== 'current');
       return {
-        scan,
-        staleEntries: staleEntries.map((s) => s.entry),
+        scan, staleEntries,
+        reviewDetails: Object.fromEntries(staleEntries.map(e => [e.id, stalenessScanner.reviewDetails(e)])),
+        suspendedEntries: entries.filter(entry => entry.serving === 'suspended' && (entry.status === 'active' || entry.status === 'probation')),
         corruptedFiles: store.listCorruptedFiles(),
       };
+    },
+
+    'accremind.gov.requestReview': (params) => {
+      const entry = currentEntry(params);
+      const reason = String(params.reason ?? '').trim();
+      if (!reason) throw new Error('请填写重新评估的具体依据');
+      if (entry.freshness !== 'stale' || !['active', 'probation'].includes(entry.status)) {
+        throw new Error('仅可重新评估已标为失效的正式或试用条目');
+      }
+      const now = new Date().toISOString();
+      const updated = store.updateExistingEntryDirect({...entry, freshness:'review_due', serving:'suspended', updated_at:now});
+      store.rawDb.prepare('UPDATE freshness_reviews SET reason = ? WHERE workspace_id = ? AND entry_id = ?')
+        .run(reason,store.workspaceId,entry.id);
+      store.rawDb.prepare('INSERT INTO governance_decisions VALUES (?, ?, ?, ?, ?, ?)').run(
+        store.workspaceId,entry.id,entry.revision,'request_review',reason,now);
+      return updated;
+    },
+
+    'accremind.gov.readAnchor': (params) => {
+      const entry = currentEntry(params);
+      return stalenessScanner.readAnchor(entry, String(params.filePath ?? ''), String(params.symbolName ?? ''));
+    },
+
+    'accremind.gov.rebindAnchor': (params) => {
+      const entry = currentEntry(params);
+      if (params.revision !== entry.revision) throw new Error('条目版本已经变更，请刷新并重新核对');
+      return {entry:stalenessScanner.rebindAnchor(entry, String(params.oldFilePath ?? ''), String(params.oldSymbolName ?? ''),
+        String(params.filePath ?? '').trim(), String(params.symbolName ?? '').trim())};
     },
 
     'accremind.gov.confirmFresh': (params) => {
       const id = String(params.id ?? '');
       const found = store.getEntry(id, { recordUsage: false, includeHistoryOrSuspended: true });
-      if (!found.found || !found.servable) {
-        throw new Error(`未找到条目: ${id}`);
+      if (!found.found || !found.servable) throw new Error(`未找到条目: ${id}`);
+      if (params.revision !== undefined && params.revision !== found.entry.revision) {
+        throw new Error('条目版本已经变更，请刷新后重新核对');
       }
-      const now = new Date().toISOString();
-      const nextDue = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
-      const refreshed: KnowledgeEntry = {
-        ...found.entry,
-        freshness: 'current',
-        serving: 'enabled',
-        last_validated_at: now,
-        review_due_at: nextDue,
-        updated_at: now,
-      };
-      return store.updateExistingEntryDirect(refreshed);
+      if (typeof params.reviewToken === 'string' && params.reviewToken !== stalenessScanner.reviewDetails(found.entry).reviewToken) {
+        throw new Error('对照代码已经变化，请刷新差异后再次核对');
+      }
+      return stalenessScanner.confirmFresh(found.entry);
     },
 
     'accremind.gov.bootstrapHistory': async (params) => {
@@ -360,13 +467,14 @@ export function createWebuiRpcHandlers(deps: {
       const llm = getLlmAdapter();
 
       if (extractWithLlm && llm) {
-        return runArchaeologyBootstrap({
+        const result = await runArchaeologyBootstrap({
           store,
           triageEngine,
           llm,
-          maxCommitsToScan: maxCommits,
-          topK,
+          maxCommitsToScan: maxCommits, topK,
+          commitShas: Array.isArray(params.commitShas) ? params.commitShas.map(String) : undefined,
         });
+        return {...result, modelAvailable:true};
       }
 
       const minedCommits = scanGitHistorySignals({
@@ -375,7 +483,8 @@ export function createWebuiRpcHandlers(deps: {
         topK,
       });
       return {
-        minedCommits,
+        minedCommits, modelAvailable: Boolean(llm),
+        message: extractWithLlm && !llm ? '当前未连接提炼模型，仅扫描提交；尚未生成候选。' : undefined,
         triageReport: null as null | { dispositionCounts: Record<Disposition, number> },
       };
     },
@@ -404,6 +513,8 @@ export function createWebuiRpcHandlers(deps: {
     },
 
     'accremind.demo.seed': () => {
+      if (!deps.demoMode) throw new Error('请先进入独立演示工作区');
+      const baseline = readDemoBaseline(store.paths.projectRoot);
       const now = new Date().toISOString();
       const future = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
 
@@ -426,9 +537,9 @@ export function createWebuiRpcHandlers(deps: {
         watch_paths: ['src/billing/**/*.ts', 'src/payment/**/*.ts'],
         symbol_anchors: [],
         invalidation_triggers: ['集团安全与账务规范大版本更新'],
-        verification_method: 'pnpm lint:finance',
+        verification_method: '核对此项目 docs/adr/001-finance-redlines.md 中的规范',
         alternatives: [],
-        enforcement: { kind: 'lint', status: 'verified', ref: 'eslint-plugin-finance-safe' },
+        enforcement: { kind: 'none', status: 'proposed', ref: null },
         status: 'active',
         maturity: 'proven',
         freshness: 'current',
@@ -441,7 +552,7 @@ export function createWebuiRpcHandlers(deps: {
             id: 'EV-R901',
             source_type: 'doc_ref',
             source_ref: 'docs/adr/001-finance-redlines.md',
-            locator: 'docs/adr/001-finance-redlines.md#L1-L32',
+            locator: 'docs/adr/001-finance-redlines.md#L1-L3',
             summary: '账务精度与隐私合规强制规范',
           },
         ],
@@ -459,7 +570,7 @@ export function createWebuiRpcHandlers(deps: {
         source_fingerprint: 'fp-demo-01',
         question: '微信与 Stripe 异步支付回调如何防止并发双倍入账与验签失败？',
         checked_context: {
-          head_commit: '9831b32',
+          head_commit: baseline.commit,
           checked_files: ['src/payment/webhook.ts'],
           checked_docs: ['README.md'],
           method: 'isolated_check',
@@ -472,7 +583,7 @@ export function createWebuiRpcHandlers(deps: {
         claim_evidence_map: [
           {
             assertion: '必须保留原始 Buffer 验签并依赖 idempotency_key 唯一索引直接 INSERT 捕获冲突',
-            evidence_locator: 'src/payment/webhook.ts#L28-L64',
+            evidence_locator: baseline.paymentLocator,
             verified_fact: true,
           },
         ],
@@ -496,17 +607,9 @@ export function createWebuiRpcHandlers(deps: {
         exclusions: [],
         dependency_constraints: [],
         watch_paths: ['src/payment/**/*.ts'],
-        symbol_anchors: [
-          {
-            file_path: 'src/payment/webhook.ts',
-            symbol_name: 'PaymentWebhookController.handleCallback',
-            normalized_sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-            start_line: 28,
-            end_line: 64,
-          },
-        ],
+        symbol_anchors: [baseline.payment],
         invalidation_triggers: ['统一接入 API 网关层签名与去重插件后复核'],
-        verification_method: 'pnpm test src/payment/webhook-concurrency.spec.ts',
+        verification_method: 'node --test --test-name-pattern=payment tests/scenarios.test.mjs',
         alternatives: [
           {
             option: 'Redis SETNX 5秒锁',
@@ -514,7 +617,7 @@ export function createWebuiRpcHandlers(deps: {
             evidence_id: 'EV-901',
           },
         ],
-        enforcement: { kind: 'test', status: 'verified', ref: 'src/payment/webhook-concurrency.spec.ts' },
+        enforcement: { kind: 'test', status: 'verified', ref: 'tests/scenarios.test.mjs' },
         status: 'active',
         maturity: 'proven',
         freshness: 'current',
@@ -526,8 +629,8 @@ export function createWebuiRpcHandlers(deps: {
           {
             id: 'EV-901',
             source_type: 'git_commit',
-            source_ref: 'a509721',
-            locator: 'src/payment/webhook.ts#L28-L64',
+            source_ref: baseline.commit,
+            locator: baseline.paymentLocator,
             summary: '并发 50 线程回调重放压测与唯一键拦截回归测试',
           },
         ],
@@ -545,7 +648,7 @@ export function createWebuiRpcHandlers(deps: {
         source_fingerprint: 'fp-demo-02',
         question: 'Redis Cluster 分片环境下执行多键 Lua 脚本清理用户会话有何隐性限制？',
         checked_context: {
-          head_commit: '9831b32',
+          head_commit: baseline.commit,
           checked_files: ['src/auth/session-cache.ts'],
           checked_docs: [],
           method: 'single_pass_check',
@@ -558,7 +661,7 @@ export function createWebuiRpcHandlers(deps: {
         claim_evidence_map: [
           {
             assertion: '同用户多键原子脚本必须使用 {uid} Hash Tag 强制同槽位',
-            evidence_locator: 'src/auth/session-cache.ts#L14-L39',
+            evidence_locator: 'src/auth/session-cache.ts#L1-L3',
             verified_fact: true,
           },
         ],
@@ -584,7 +687,7 @@ export function createWebuiRpcHandlers(deps: {
         watch_paths: ['src/auth/**/*.ts'],
         symbol_anchors: [],
         invalidation_triggers: ['切换至非分片内存存储架构'],
-        verification_method: 'pnpm test:cluster src/auth/session-cache.spec.ts',
+        verification_method: 'node --test --test-name-pattern=session tests/scenarios.test.mjs',
         alternatives: [],
         enforcement: { kind: 'none', status: 'proposed', ref: null },
         status: 'probation',
@@ -597,9 +700,9 @@ export function createWebuiRpcHandlers(deps: {
         evidence: [
           {
             id: 'EV-902',
-            source_type: 'session_turn',
-            source_ref: 'turn-redis-slot',
-            locator: 'src/auth/session-cache.ts#L14-L39',
+            source_type: 'git_commit',
+            source_ref: baseline.commit,
+            locator: 'src/auth/session-cache.ts#L1-L3',
             summary: '预发集群 CROSSSLOT 报错堆栈与 {uid} 修复验证',
           },
         ],
@@ -618,7 +721,7 @@ export function createWebuiRpcHandlers(deps: {
         source_fingerprint: 'fp-demo-03',
         question: '订单落库后发送下游履约消息为何要求挂载在事务提交回调之后？',
         checked_context: {
-          head_commit: '60428ec',
+          head_commit: baseline.commit,
           checked_files: ['src/order/order.service.ts'],
           checked_docs: [],
           method: 'isolated_check',
@@ -631,7 +734,7 @@ export function createWebuiRpcHandlers(deps: {
         claim_evidence_map: [
           {
             assertion: '必须在事务提交落盘回调后再投递下游事件',
-            evidence_locator: 'src/order/order.service.ts#L84-L112',
+            evidence_locator: baseline.orderLocator,
             verified_fact: true,
           },
         ],
@@ -645,7 +748,7 @@ export function createWebuiRpcHandlers(deps: {
         revision: 1,
         type: 'decision',
         knowledge_role: 'experience',
-        layer: 'project',
+        layer: 'domain',
         title: '订单领域事件投递必须延迟至数据库事务提交落盘回调之后',
         search_aliases: ['丢单', '查无订单', '事务竞态', 'afterCommit', '履约延迟'],
         claim: '禁止在 @Transactional 方法体内直接调用 mqProducer.send，统一通过 txManager.afterCommit 注册或写本地 Outbox 表。',
@@ -655,14 +758,14 @@ export function createWebuiRpcHandlers(deps: {
         exclusions: [],
         dependency_constraints: [],
         watch_paths: ['src/order/**/*.ts'],
-        symbol_anchors: [],
+        symbol_anchors: [baseline.order],
         invalidation_triggers: ['OrderService.createOrder 函数体逻辑重构或切换 Outbox 模式'],
-        verification_method: 'pnpm test src/order/tx-race.spec.ts',
+        verification_method: 'node --test --test-name-pattern=order tests/scenarios.test.mjs',
         alternatives: [],
-        enforcement: { kind: 'test', status: 'implemented', ref: 'src/order/tx-race.spec.ts' },
+        enforcement: { kind: 'test', status: 'implemented', ref: 'tests/scenarios.test.mjs' },
         status: 'active',
         maturity: 'verified',
-        freshness: 'review_due',
+        freshness: 'current',
         serving: 'enabled',
         priority: 'P0',
         capture_assessment_id: ca3.id,
@@ -671,15 +774,22 @@ export function createWebuiRpcHandlers(deps: {
           {
             id: 'EV-903',
             source_type: 'git_commit',
-            source_ref: 'f5083d6',
-            locator: 'src/order/order.service.ts#L84-L112',
+            source_ref: baseline.commit,
+            locator: baseline.orderLocator,
             summary: '模拟提交延迟 30ms 的履约消费竞态复现测试',
+          },
+          {
+            id: 'EV-903-SCOPE',
+            source_type: 'doc_ref',
+            source_ref: 'docs/demo-evidence.md',
+            locator: 'docs/demo-evidence.md#L7',
+            summary: '示例按订单履约的业务时序约束归为领域知识，经验与代码仍保存在当前仓库。',
           },
         ],
         created_at: now,
         updated_at: now,
         last_validated_at: now,
-        review_due_at: now,
+        review_due_at: future,
       };
       store.upsertEntry(k3, 'project', ca3);
 
@@ -690,7 +800,7 @@ export function createWebuiRpcHandlers(deps: {
         source_fingerprint: 'fp-demo-04',
         question: '大体积报表导出为何禁止使用 ORM 实体全量映射而采用游标流？',
         checked_context: {
-          head_commit: '9831b32',
+          head_commit: baseline.commit,
           checked_files: ['src/report/exporter.ts'],
           checked_docs: ['README.md'],
           method: 'isolated_check',
@@ -703,7 +813,7 @@ export function createWebuiRpcHandlers(deps: {
         claim_evidence_map: [
           {
             assertion: '10万行级导出禁用 ORM Hydration，必须走数据库原生游标流且每批 <= 500 行',
-            evidence_locator: 'src/report/exporter.ts#L19-L52',
+            evidence_locator: 'src/report/exporter.ts#L1-L3',
             verified_fact: true,
           },
         ],
@@ -729,7 +839,7 @@ export function createWebuiRpcHandlers(deps: {
         watch_paths: ['src/report/**/*.ts'],
         symbol_anchors: [],
         invalidation_triggers: ['导出链路整体迁移至离线对象存储批处理架构'],
-        verification_method: 'pnpm test src/report/exporter-mem.spec.ts',
+        verification_method: 'node --test --test-name-pattern=report tests/scenarios.test.mjs',
         alternatives: [],
         enforcement: { kind: 'none', status: 'proposed', ref: null },
         status: 'candidate',
@@ -743,8 +853,8 @@ export function createWebuiRpcHandlers(deps: {
           {
             id: 'EV-904',
             source_type: 'git_commit',
-            source_ref: '60428ec',
-            locator: 'src/report/exporter.ts#L19-L52',
+            source_ref: baseline.commit,
+            locator: 'src/report/exporter.ts#L1-L3',
             summary: 'Pod Exit 137 内存快照对比与游标流压测报告',
           },
         ],
@@ -760,16 +870,19 @@ export function createWebuiRpcHandlers(deps: {
         id: 'NAV-DEMO-01',
         kind: 'code_index',
         title: '系统全局错误码枚举与 HTTP 状态映射表（代码可直接恢复，不占经验库）',
-        locator: 'src/common/errors/error-codes.ts#L1-L90',
+        locator: 'src/common/errors/error-codes.ts#L1',
         summary: '增量门禁判定为 code_recoverable，自动分流至导航锚点而非冗余经验正文',
         assessment_id: 'CA-DEMO-01',
         created_at: now,
       });
 
+      advanceDemoOrder(store.paths.projectRoot);
+      stalenessScanner.scanWorkspace();
       return { seeded: true };
     },
 
     'accremind.demo.clear': () => {
+      if (!deps.demoMode) throw new Error('请先进入独立演示工作区');
       const dirs = [
         store.paths.projectRulesDir,
         store.paths.projectEntriesDir,

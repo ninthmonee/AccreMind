@@ -19,7 +19,11 @@ export type Freshness = (typeof FRESHNESS_STATES)[number];
 export const SERVING_STATUSES = ['enabled', 'suspended'] as const;
 export type ServingStatus = (typeof SERVING_STATUSES)[number];
 
-export const KNOWLEDGE_LAYERS = ['personal', 'team_rule', 'shared_tech', 'project'] as const;
+export const REPOSITORY_KNOWLEDGE_LAYERS = ['domain', 'project'] as const;
+export const KNOWLEDGE_LAYERS = ['personal', 'team_rule', 'shared_tech', ...REPOSITORY_KNOWLEDGE_LAYERS] as const;
+export function isRepositoryKnowledgeLayer(value: unknown): value is (typeof REPOSITORY_KNOWLEDGE_LAYERS)[number] {
+  return value === 'domain' || value === 'project';
+}
 export type KnowledgeLayer = (typeof KNOWLEDGE_LAYERS)[number];
 
 export const PRIORITIES = ['P0', 'P1', 'P2'] as const;

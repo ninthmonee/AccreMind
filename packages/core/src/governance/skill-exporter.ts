@@ -28,6 +28,9 @@ export function exportEntryToDshSkill(options: {
   }
 
   const entry = outcome.entry;
+  if (entry.status !== 'active' || entry.freshness !== 'current' || entry.serving !== 'enabled') {
+    throw new Error('请先确认条目已转正、仍然适用且已启用检索，再导出技能');
+  }
   if (entry.maturity !== 'verified' && entry.maturity !== 'proven') {
     throw new Error(
       `仅允许将已验证 (verified/proven) 的经验导出为 DSH Skill，当前 ${entry.id} 成熟度为 ${entry.maturity}`,

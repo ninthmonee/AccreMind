@@ -135,8 +135,20 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
     assert.equal(assessed.assessment.checked_context.method, 'isolated_check');
     assert.equal(assessed.assessment.checked_context.token_used, 410);
     assert.ok(assessed.candidateEntry);
+    assert.equal(assessed.candidateEntry.layer,'project');
     assert.equal(assessed.candidateEntry.symbol_anchors.length, 1);
     assert.equal(assessed.candidateEntry.symbol_anchors[0]!.symbol_name, 'refreshTokenCache');
+    const invalidLayer = new DeltaAssessor({
+      workspaceId: store.workspaceId,
+      llm: {async completeJson() { return {
+        tokenUsed: 10, content: JSON.stringify({disposition:'needs_confirmation',
+          candidate:{layer:'shared_tech',type:'model',title:'缓冲区实体关系',claim:'证据不足，仍需复查'}}),
+      }; }},
+    });
+    const legacy = await invalidLayer.assess(bundle);
+    assert.equal(legacy.candidateEntry?.type,'model');
+    assert.equal(legacy.candidateEntry?.layer,'project');
+
 
     const triage = new TriageEngine(store, 'probation');
     const out = triage.processCandidate(assessed);
@@ -309,6 +321,10 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
     const store = new LocalMarkdownSqliteStore({ projectRoot: repoRoot, globalDir });
     const triage = new TriageEngine(store, 'probation');
 
+    const selectedSha = execFileSync('git', ['rev-parse','HEAD'], {cwd:repoRoot, encoding:'utf8'}).trim();
+    fs.writeFileSync(path.join(repoRoot, 'src/other.ts'), 'export const other = true;');
+    git(repoRoot, ['add', 'src/other.ts']);
+    git(repoRoot, ['commit', '-m', 'hotfix: rollback unrelated change']);
     const mockBootLlm: LlmInferenceAdapter = {
       async completeJson() {
         return {
@@ -331,6 +347,7 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
             candidate: {
               title: '结算回调必须在入口层按 settle_no 做幂等去重',
               type: 'pitfall',
+              layer: 'domain',
               claim: '所有结算回调先写 settle_no 唯一幂等表再执行业务入账。',
               rationale: '渠道网关 500ms 超时自动重放。',
               search_aliases: ['双倍结算', '回调重放'],
@@ -347,12 +364,15 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
       store,
       triageEngine: triage,
       llm: mockBootLlm,
+      commitShas: [selectedSha],
       topK: 5,
     });
 
-    assert.equal(bootOut.minedCommits.length, 1);
+    assert.deepEqual(bootOut.minedCommits.map(c => c.commitSha), [selectedSha]);
     assert.equal(bootOut.triageReport.persistedExperienceEntries.length, 1);
     assert.equal(bootOut.triageReport.persistedExperienceEntries[0]!.status, 'probation');
+    assert.equal(bootOut.triageReport.persistedExperienceEntries[0]!.type,'pitfall');
+    assert.equal(bootOut.triageReport.persistedExperienceEntries[0]!.layer,'domain');
 
     store.close();
   });

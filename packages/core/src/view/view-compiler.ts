@@ -10,6 +10,7 @@ export interface ViewBudgetConfig {
 
 export interface TurnCompilationInput {
   sessionId: string;
+  preview?: boolean;
   userPrompt?: string;
   activeFiles?: string[];
   errorOutput?: string;
@@ -44,10 +45,21 @@ function formatEntryRadarLine(entry: KnowledgeEntry): string {
 export class ViewCompiler {
   private readonly store: KnowledgeStoreProvider;
   private readonly budgets: ViewBudgetConfig;
+  private readonly onSurface?: (entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string) => void;
 
-  constructor(store: KnowledgeStoreProvider, budgets: ViewBudgetConfig) {
+  constructor(store: KnowledgeStoreProvider, budgets: ViewBudgetConfig, onSurface?: ViewCompiler['onSurface']) {
     this.store = store;
     this.budgets = budgets;
+    this.onSurface = onSurface;
+  }
+
+  private recordHit(entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string) {
+    if (this.onSurface) return this.onSurface(entry, session, source, file);
+    this.store.recordUsage({
+      workspace_id: this.store.workspaceId, session_id: session, entry_id: entry.id,
+      revision: entry.revision, event_type: source === 'jit' ? 'guard_shown' : 'radar_shown', detail: file,
+    });
+    if (entry.status === 'probation') this.store.recordProbationExposure(entry.id);
   }
 
   /**
@@ -138,16 +150,7 @@ export class ViewCompiler {
       surfacedIds.push(entry.id);
       sessionSurfacedIds?.add(entry.id);
 
-      this.store.recordUsage({
-        workspace_id: this.store.workspaceId,
-        session_id: input.sessionId,
-        entry_id: entry.id,
-        revision: entry.revision,
-        event_type: 'radar_shown',
-      });
-      if (entry.status === 'probation') {
-        this.store.recordProbationExposure(entry.id);
-      }
+      if (!input.preview) this.recordHit(entry, input.sessionId, 'radar');
     }
 
     const radarBlock =
@@ -173,6 +176,7 @@ export class ViewCompiler {
    */
   compileFileToolGuard(options: {
     sessionId: string;
+    preview?: boolean;
     filePath: string;
     sessionSurfacedIds: Set<string>;
     workspaceDependencies?: Record<string, string>;
@@ -205,17 +209,7 @@ export class ViewCompiler {
       newlySurfacedIds.push(entry.id);
       options.sessionSurfacedIds.add(entry.id);
 
-      this.store.recordUsage({
-        workspace_id: this.store.workspaceId,
-        session_id: options.sessionId,
-        entry_id: entry.id,
-        revision: entry.revision,
-        event_type: 'guard_shown',
-        detail: options.filePath,
-      });
-      if (entry.status === 'probation') {
-        this.store.recordProbationExposure(entry.id);
-      }
+      if (!options.preview) this.recordHit(entry, options.sessionId, 'jit', options.filePath);
     }
 
     if (lines.length === 0) {

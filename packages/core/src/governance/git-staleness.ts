@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { redactSensitiveText } from '../capture/secret-redactor.ts';
 import { sha256Hex } from '../codec/atomic-fs.ts';
 import type { KnowledgeEntry } from '../contracts/types.ts';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 import { satisfiesSemverRange } from '../store/sqlite-schema.ts';
-import { checkSymbolAnchorDrift } from '../symbol/symbol-anchor.ts';
+import { checkSymbolAnchorDrift, extractSymbolAnchor } from '../symbol/symbol-anchor.ts';
 
 export interface StalenessScanReport {
   skippedUnchanged: boolean;
@@ -65,6 +66,208 @@ export class GitStalenessScanner {
     this.store = store;
   }
 
+  private anchorFile(relativePath: string): string | null {
+    const root = fs.realpathSync(this.store.paths.projectRoot);
+    try {
+      const resolved = fs.realpathSync(path.resolve(root, relativePath));
+      return resolved.startsWith(root + path.sep) && fs.statSync(resolved).isFile()
+        ? resolved
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  reviewDetails(entry: KnowledgeEntry) {
+    const root = this.store.paths.projectRoot;
+    const review = this.store.rawDb
+      .prepare(
+        `SELECT reason, previous_head, affected_paths FROM freshness_reviews
+      WHERE workspace_id = ? AND entry_id = ?`,
+      )
+      .get(this.store.workspaceId, entry.id) as
+      | { reason: string; previous_head: string | null; affected_paths: string }
+      | undefined;
+    const captured =
+      entry.capture_assessment_id &&
+      this.store.getAssessment(entry.capture_assessment_id)?.checked_context.head_commit;
+    const previousHead =
+      review?.previous_head ?? (captured && /^[0-9a-f]{7,64}$/i.test(captured) ? captured : null);
+    const currentHead = runGitSafe(root, ['rev-parse', 'HEAD']);
+    const files: string[] = review
+      ? JSON.parse(review.affected_paths)
+      : entry.symbol_anchors.map((a) => a.file_path);
+    const diff =
+      previousHead && files.length
+        ? runGitSafe(root, [
+            '--literal-pathspecs',
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--no-color',
+            previousHead,
+            '--',
+            ...files,
+          ])
+        : null;
+    const anchors = this.currentAnchors(entry);
+    const decision = this.store.rawDb
+      .prepare(
+        `SELECT action, reason FROM governance_decisions
+      WHERE workspace_id = ? AND entry_id = ? AND action IN ('stale','request_review')
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(this.store.workspaceId, entry.id) as { action: string; reason: string } | undefined;
+    const decisionReason =
+      (entry.freshness === 'stale' && decision?.action === 'stale') ||
+      (!review && entry.freshness === 'review_due' && decision?.action === 'request_review')
+        ? decision.reason
+        : undefined;
+    return {
+      reason: decisionReason ?? review?.reason ?? '该条目已记录为待复核，缺少原巡检详情',
+      previousHead,
+      baselineCommit: previousHead,
+      currentHead,
+      diff: (diff ?? '').slice(0, 24000),
+      truncated: (diff?.length ?? 0) > 24000,
+      anchorIssues: anchors.issues,
+      reviewToken: sha256Hex(
+        JSON.stringify([entry.revision, entry.freshness, previousHead, currentHead, diff, anchors]),
+      ),
+    };
+  }
+
+  private currentAnchors(entry: KnowledgeEntry) {
+    const issues: string[] = [];
+    const anchors = entry.symbol_anchors.map((anchor) => {
+      const source = this.anchorFile(anchor.file_path);
+      const updated =
+        source &&
+        extractSymbolAnchor(anchor.file_path, fs.readFileSync(source, 'utf8'), anchor.symbol_name);
+      if (!updated)
+        issues.push(`找不到锚点 ${anchor.file_path} · ${anchor.symbol_name}，请先修订绑定`);
+      return updated || anchor;
+    });
+    const { deps } = readPackageDependencies(this.store.paths.projectRoot);
+    for (const rule of entry.dependency_constraints) {
+      if (deps[rule.name] && !satisfiesSemverRange(deps[rule.name]!, rule.range)) {
+        issues.push(
+          `当前依赖 ${rule.name}@${deps[rule.name]} 超出 ${rule.range}，请先修订适用版本`,
+        );
+      }
+    }
+    return { anchors, issues };
+  }
+
+  readAnchor(entry: KnowledgeEntry, filePath: string, symbolName: string) {
+    const anchor = entry.symbol_anchors.find(
+      (a) => a.file_path === filePath && a.symbol_name === symbolName,
+    );
+    if (!anchor) throw new Error('当前条目中找不到此锚点');
+    const location = this.anchorFile(filePath);
+    if (!location) throw new Error('当前文件已被移除，请修订绑定');
+    const source = fs.readFileSync(location, 'utf8');
+    const current = extractSymbolAnchor(filePath, source, symbolName);
+    if (!current) throw new Error('当前文件已找不到此符号，请修订绑定');
+    const lines = source
+      .split(/\r?\n/)
+      .slice(current.start_line - 1, Math.min(current.end_line, current.start_line + 159));
+    const text = redactSensitiveText(lines.join('\n')).redactedText;
+    return {
+      startLine: current.start_line,
+      endLine: current.end_line,
+      code: text.slice(0, 24000),
+      truncated: current.end_line - current.start_line >= 160 || text.length > 24000,
+    };
+  }
+
+  rebindAnchor(
+    entry: KnowledgeEntry,
+    oldPath: string,
+    oldName: string,
+    file: string,
+    name: string,
+  ) {
+    if (!['active', 'probation'].includes(entry.status))
+      throw new Error('仅可修订正式或试用条目的锚点');
+    if (!file || path.isAbsolute(file) || file.split(/[\\/]/).includes('..') || !name.trim()) {
+      throw new Error('请填写仓库内相对路径和有效符号名');
+    }
+    const index = entry.symbol_anchors.findIndex(
+      (a) => a.file_path === oldPath && a.symbol_name === oldName,
+    );
+    if (index < 0) throw new Error('旧锚点已经变化，请刷新并重新核对');
+    const source = this.anchorFile(file);
+    if (!source) throw new Error('仓库中找不到此文件');
+    const target = extractSymbolAnchor(file, fs.readFileSync(source, 'utf8'), name);
+    if (!target) throw new Error('文件中找不到此函数或类，请核对符号名');
+    const previous = entry.symbol_anchors[index]!;
+    const oldLocator = `${oldPath}#L${previous.start_line}-L${previous.end_line}`;
+    const newLocator = `${file}#L${target.start_line}-L${target.end_line}`;
+    const symbol_anchors = entry.symbol_anchors.map((anchor, i) => (i === index ? target : anchor));
+    const evidence = entry.evidence.map((ev) =>
+      ev.source_type === 'file_lines' && ev.locator === oldLocator
+        ? {
+            ...ev,
+            locator: newLocator,
+            source_ref: ev.source_ref === oldPath ? file : ev.source_ref,
+          }
+        : ev,
+    );
+    const saved = this.store.updateExistingEntryDirect({
+      ...entry,
+      symbol_anchors,
+      evidence,
+      revision: entry.revision + 1,
+      serving: entry.freshness === 'stale' ? 'suspended' : entry.serving,
+      maturity: 'draft',
+      freshness: 'review_due',
+      updated_at: new Date().toISOString(),
+    });
+    const head = runGitSafe(this.store.paths.projectRoot, ['rev-parse', 'HEAD']);
+    this.store.rawDb
+      .prepare(
+        `INSERT INTO freshness_reviews (workspace_id, entry_id, reason, previous_head, affected_paths)
+       VALUES (?, ?, ?, ?, ?) ON CONFLICT (workspace_id, entry_id)
+       DO UPDATE SET reason = excluded.reason, affected_paths = excluded.affected_paths`,
+      )
+      .run(
+        this.store.workspaceId,
+        entry.id,
+        `已将 ${oldPath} · ${oldName} 重新绑定至 ${file} · ${name}，请核对适用性`,
+        head,
+        JSON.stringify([...new Set([oldPath, file])]),
+      );
+    return saved;
+  }
+
+  confirmFresh(entry: KnowledgeEntry): KnowledgeEntry {
+    if (entry.freshness === 'current') return entry;
+    if (entry.freshness === 'stale') throw new Error('已明确失效的经验须先提交依据并重新评估');
+    const { anchors, issues } = this.currentAnchors(entry);
+    if (issues.length) throw new Error(issues.join('；'));
+    const evidence = entry.evidence.map((ev) => {
+      const index = entry.symbol_anchors.findIndex(
+        (a) => ev.locator === `${a.file_path}#L${a.start_line}-L${a.end_line}`,
+      );
+      if (index < 0) return ev;
+      const a = anchors[index]!;
+      return { ...ev, locator: `${a.file_path}#L${a.start_line}-L${a.end_line}` };
+    });
+    const saved = this.store.updateExistingEntryDirect({
+      ...entry,
+      freshness: 'current',
+      evidence,
+      symbol_anchors: anchors,
+      updated_at: new Date().toISOString(),
+      review_due_at: new Date(Date.now() + 90 * 86400000).toISOString(),
+    });
+    this.store.rawDb
+      .prepare('DELETE FROM freshness_reviews WHERE workspace_id = ? AND entry_id = ?')
+      .run(this.store.workspaceId, entry.id);
+    return saved;
+  }
+
   scanWorkspace(): StalenessScanReport {
     const repoRoot = this.store.paths.projectRoot;
     const currentHead = runGitSafe(repoRoot, ['rev-parse', 'HEAD']);
@@ -76,37 +279,18 @@ export class GitStalenessScanner {
       | { last_checked_head: string; package_deps_sha256: string }
       | undefined;
 
-    if (
-      checkpoint &&
-      currentHead &&
-      checkpoint.last_checked_head === currentHead &&
-      checkpoint.package_deps_sha256 === depsHash
-    ) {
-      return {
-        skippedUnchanged: true,
-        previousHead: checkpoint.last_checked_head,
-        currentHead,
-        relocatedEntries: [],
-        markedReviewDue: [],
-      };
-    }
-
+    const previousHead = checkpoint?.last_checked_head ?? currentHead;
     let changedFiles: Set<string> | null = null;
-    if (checkpoint?.last_checked_head && currentHead && checkpoint.last_checked_head !== currentHead) {
-      const diffOut = runGitSafe(repoRoot, [
+    if (previousHead && currentHead && previousHead !== currentHead) {
+      const changed = runGitSafe(repoRoot, [
         'diff',
         '--name-only',
-        checkpoint.last_checked_head,
+        '-z',
+        previousHead,
         currentHead,
+        '--',
       ]);
-      if (diffOut !== null) {
-        changedFiles = new Set(
-          diffOut
-            .split(/\r?\n/)
-            .map((s) => s.trim())
-            .filter(Boolean),
-        );
-      }
+      if (changed !== null) changedFiles = new Set(changed.split('\0').filter(Boolean));
     }
 
     const activeRows = this.store.rawDb
@@ -152,12 +336,8 @@ export class GitStalenessScanner {
       if (!reviewDueReason && entry.symbol_anchors.length > 0) {
         for (let i = 0; i < updatedAnchors.length; i += 1) {
           const anchor = updatedAnchors[i]!;
-          if (changedFiles && !changedFiles.has(anchor.file_path)) {
-            continue;
-          }
-
-          const absFile = path.join(repoRoot, anchor.file_path);
-          if (!fs.existsSync(absFile)) {
+          const absFile = this.anchorFile(anchor.file_path);
+          if (!absFile) {
             reviewDueReason = `锚定源码文件已被删除或移动: ${anchor.file_path}`;
             break;
           }
@@ -191,6 +371,23 @@ export class GitStalenessScanner {
           freshness: 'review_due',
           updated_at: now,
         };
+        const files = new Set(entry.symbol_anchors.map((a) => a.file_path));
+        for (const file of changedFiles ?? []) {
+          if (entry.watch_paths.some((glob) => path.matchesGlob(file, glob))) files.add(file);
+        }
+        if (reviewDueReason.startsWith('依赖 ')) files.add('package.json');
+        this.store.rawDb
+          .prepare(
+            `INSERT OR REPLACE INTO freshness_reviews
+          (workspace_id, entry_id, reason, previous_head, affected_paths) VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(
+            this.store.workspaceId,
+            id,
+            reviewDueReason,
+            previousHead,
+            JSON.stringify([...files]),
+          );
         this.store.updateExistingEntryDirect(updated);
         markedReviewDue.push({ entryId: entry.id, reason: reviewDueReason });
       } else if (anchorsRelocated) {
