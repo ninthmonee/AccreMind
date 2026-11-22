@@ -30,6 +30,8 @@ export type GetEntryOutcome =
   | { found: false };
 
 export interface KnowledgeStoreProvider {
+  /** Records that an entry went live (ledger) and snapshots its evidence. Optional for other providers. */
+  recordPublication?(entry: KnowledgeEntry, note?: string): void;
   readonly workspaceId: string;
   initializeAndReconcile(): { syncedCount: number; corruptedCount: number };
   rebuildIndexFromScratch(): { syncedCount: number; corruptedCount: number };

@@ -1,10 +1,11 @@
 import { createDemoSessions } from './demo-workspace.ts';
-import { workspaceGate } from './workspace-settings.ts';
+import { repositoryLedgerSharing, workspaceGate, workspaceModelConsent } from './workspace-settings.ts';
 import {
   AutoCaptureCoordinator,
   GitStalenessScanner,
   LocalMarkdownSqliteStore,
   OpenAiCompatibleLlmClient,
+  resolveLlmEndpoint,
   TriageEngine,
   ViewCompiler,
   type AccreMindConfig,
@@ -13,7 +14,6 @@ import {
 } from '@accremind/core';
 import type {
   CordisContext,
-  DshNativeToolPostExecuteContext,
   DshToolAfterHookPayload,
   DshToolDefinition,
   DshTurnHookPayload,
@@ -54,6 +54,7 @@ export const DEFAULT_ACCREMIND_CONFIG: AccreMindConfig = {
   },
   autoCapture: {
     enabled: true,
+    modelUpload: false,
   },
 };
 
@@ -65,6 +66,8 @@ export interface AccreMindPluginInstance {
   readonly autoCapture: AutoCaptureCoordinator;
   readonly tools: DshToolDefinition<any>[];
   readonly rpcHandlers: RpcHandlerMap;
+  /** Resolves once background startup work (the Git freshness scan) has finished. */
+  whenReady(): Promise<void>;
   compileResidentSystemSection(): string;
   compileBeforeTurn(payload: DshTurnHookPayload): CompiledTurnView;
   handleAfterTool(payload: DshToolAfterHookPayload): DshToolAfterHookPayload['result'];
@@ -86,13 +89,7 @@ const COMMAND_TOOL_NAMES = new Set([
 
 function resolveDefaultLlmAdapter(explicit?: LlmInferenceAdapter | null): LlmInferenceAdapter | null {
   if (explicit !== undefined) return explicit;
-  const hasKeyOrLocalEndpoint = Boolean(
-    process.env.ACCREMIND_LLM_API_KEY ||
-      process.env.DEEPSEEK_API_KEY ||
-      process.env.OPENAI_API_KEY ||
-      process.env.ACCREMIND_LLM_BASE_URL,
-  );
-  return hasKeyOrLocalEndpoint ? new OpenAiCompatibleLlmClient() : null;
+  return resolveLlmEndpoint(process.env).configured ? new OpenAiCompatibleLlmClient() : null;
 }
 
 export function createAccreMindRuntime(
@@ -102,6 +99,7 @@ export function createAccreMindRuntime(
 }
 
 function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: boolean): AccreMindPluginInstance {
+  let disposed = false;
   const config: AccreMindConfig = {
     ...DEFAULT_ACCREMIND_CONFIG,
     ...rawOptions,
@@ -123,10 +121,30 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     workspaceId: rawOptions.workspaceId,
     maxProbationExposures: config.maxProbationExposures,
   });
+  const ledgerSharing = repositoryLedgerSharing(store.paths);
+  store.setShareLedger(() => ledgerSharing.read());
 
   store.initializeAndReconcile();
   const stalenessScanner = new GitStalenessScanner(store);
-  stalenessScanner.scanWorkspace();
+  // The Git freshness scan shells out to git and can take seconds on large repositories. It runs
+  // after the current host callback returns so opening a session is never blocked by it.
+  let startupScan: Promise<void> | null = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      try {
+        if (!disposed) stalenessScanner.scanWorkspace();
+      } catch (error) {
+        console.warn(`[accremind] freshness scan skipped: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        if (!disposed) store.runMaintenance();
+      } catch (error) {
+        console.warn(`[accremind] maintenance skipped: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        startupScan = null;
+        resolve();
+      }
+    });
+  });
 
   const receipts = new TurnReceipts(store);
   const viewCompiler = new ViewCompiler(store, {
@@ -136,6 +154,8 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   }, (entry, session, source, file) => receipts.record(entry, session, source, file));
 
   const gate = workspaceGate(store.paths, config.writeGate);
+  // A host-provided adapter is the host's own model service; env keys still need the user's opt-in.
+  const consent = workspaceModelConsent(store.paths, Boolean(config.autoCapture.modelUpload || rawOptions.llmAdapter));
   const triageEngine = new TriageEngine(store, gate.read);
   const llmAdapter = resolveDefaultLlmAdapter(rawOptions.llmAdapter);
 
@@ -171,29 +191,66 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   const modelEndpoint = () => {
     if (!llmAdapter) return '未配置模型';
     if (rawOptions.llmAdapter) return '宿主模型适配器';
-    try { return new URL(process.env.ACCREMIND_LLM_BASE_URL || 'https://api.deepseek.com/v1').origin; }
+    const resolved = resolveLlmEndpoint(process.env);
+    try { return new URL(resolved.baseUrl).origin; }
     catch { return '自定义推理端点'; }
   };
   rpcHandlers['accremind.settings.get'] = () => ({
     writeGate: gate.read(), modelEndpoint: modelEndpoint(), modelAvailable: Boolean(llmAdapter),
-    autoCapture: config.autoCapture.enabled,
+    autoCapture: config.autoCapture.enabled, modelUpload: consent.read(), shareLedger: ledgerSharing.read(),
   });
+  // Turning sharing on moves this machine's records of repository entries into `.accremind/ledger`
+  // (preview them first with accremind.ledger.status); turning it off only stops new writes there.
+  rpcHandlers['accremind.settings.setShareLedger'] = ({ shareLedger }) => {
+    ledgerSharing.save(shareLedger);
+    const moved = shareLedger === true ? store.ledger.exportToRepository((id) => isLocalOnlyEntry(id)) : 0;
+    if (shareLedger === true) store.syncFromLedger();
+    return { shareLedger: ledgerSharing.read(), moved };
+  };
+  const isLocalOnlyEntry = (id: string): boolean => {
+    const found = store.getEntry(id, { recordUsage: false, includeHistoryOrSuspended: true });
+    if (!found.found || !found.servable) return true;
+    const e = found.entry;
+    return e.status === 'probation' || e.layer === 'personal' || e.layer === 'shared_tech';
+  };
+  rpcHandlers['accremind.ledger.status'] = () => {
+    const pending = store.ledger.pendingExport(isLocalOnlyEntry);
+    return {
+      shared: ledgerSharing.read(),
+      sharedFile: ledgerSharing.file,
+      pendingCount: pending.length,
+      // Exactly what would be committed: no sessions, prompts or usage, notes already redacted.
+      preview: pending.slice(0, 20),
+    };
+  };
+  rpcHandlers['accremind.settings.setModelUpload'] = ({ modelUpload }) => {
+    consent.save(modelUpload);
+    return { modelUpload: consent.read() };
+  };
   rpcHandlers['accremind.settings.setGate'] = ({ writeGate }) => {
     gate.save(writeGate);
     return { writeGate: gate.read() };
   };
 
   const sessionSurfacedMap = new Map<string, Set<string>>();
+  const MAX_TRACKED_SESSIONS = 200;
   const getSessionSet = (sessionId: string): Set<string> => {
     let set = sessionSurfacedMap.get(sessionId);
-    if (!set) {
+    if (set) {
+      // Refresh recency so long-running sessions are not evicted.
+      sessionSurfacedMap.delete(sessionId);
+    } else {
       set = new Set<string>();
-      sessionSurfacedMap.set(sessionId, set);
+    }
+    sessionSurfacedMap.set(sessionId, set);
+    while (sessionSurfacedMap.size > MAX_TRACKED_SESSIONS) {
+      const oldest = sessionSurfacedMap.keys().next().value;
+      if (oldest === undefined) break;
+      sessionSurfacedMap.delete(oldest);
     }
     return set;
   };
 
-  let disposed = false;
 
   return {
     store,
@@ -203,6 +260,10 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     autoCapture,
     tools,
     rpcHandlers,
+
+    whenReady(): Promise<void> {
+      return startupScan ?? Promise.resolve();
+    },
 
     compileResidentSystemSection(): string {
       return viewCompiler.compileTurnView({ sessionId: 'system-prefix' }).residentPrefix;
@@ -246,9 +307,12 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
 
       const isCmd = COMMAND_TOOL_NAMES.has(payload.toolName);
       const outputJoined = payload.result.content.map((c) => c.text).join('\n');
+      // Rely on the host's error flag and explicit exit codes; matching words like "Error:" in output
+      // flagged ordinary logs and greps as failures.
       const cmdFailed =
         Boolean(payload.result.isError) ||
-        /\b(?:FAIL|AssertionError|Error:|Command exited with code [1-9])\b/.test(outputJoined);
+        /(?:Command exited with code|exit(?:ed)? (?:with )?code|exit status)[:\s]+[1-9]\d*/i.test(outputJoined) ||
+        (isCmd && /^\s*(?:FAIL|✗|not ok)\b/m.test(outputJoined));
 
       if (config.autoCapture.enabled) {
         autoCapture.recordToolActivity({
@@ -281,7 +345,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         payload.assistantReply,
       );
       const { enqueuedJob } = autoCapture.checkAndEnqueueSession(payload.sessionId);
-      if (enqueuedJob && llmAdapter) {
+      if (enqueuedJob && llmAdapter && consent.read()) {
         // Non-blocking background drain (L2 Iron Law)
         queueMicrotask(() => {
           void autoCapture.processPendingQueue();
@@ -300,135 +364,14 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
 }
 
 /**
- * Native DeepSeek Harness (`@deepseek-ai/dsh` / Cordis) plugin entry:
- * Wires `ctx.tools`, `ctx.systemPrompt.section`, `ctx.sessions.registerMessageProjection`,
- * `tools/post-execute` waterfall JIT guard, `ctx.provide('accremind')`, and WebUI RPC handlers.
+ * DeepSeek Harness (`@deepseek-ai/dsh` / Cordis) plugin entry.
+ * There is exactly one integration path: agent-scoped tools and rules section, the `agent/pre-step`
+ * and `tools/post-execute` waterfalls, `session/event`, and the authenticated connection route
+ * (see `native-host.ts`). Hosts without the agents service are not supported.
  */
 export function apply(ctx: CordisContext, rawOptions: DshPluginRuntimeOptions = {}): void {
-  if (ctx.get && ctx.reflect) {
-    mountNativeHost(ctx, rawOptions, createAccreMindRuntime);
-    return;
+  if (!ctx.get || !ctx.reflect || !ctx.on || !ctx.inject) {
+    throw new Error('AccreMind 需要支持 agents 服务的 DeepSeek Harness 版本，请升级 dsh 后重试。');
   }
-  ctx.effect(() => {
-    const runtime = createAccreMindRuntime({
-      ...rawOptions,
-      llmAdapter: rawOptions.llmAdapter ?? ctx.llm ?? undefined,
-    });
-    const disposers: Array<() => void> = [];
-
-    ctx.provide?.('accremind', runtime);
-
-    // 1. Register the 5 model-facing tools (`@deepseek-ai/dsh-tools`)
-    if (ctx.tools) {
-      for (const tool of runtime.tools) {
-        const off = ctx.tools.register(tool);
-        if (typeof off === 'function') disposers.push(off);
-      }
-    }
-
-    // 2. Mount KV-cache-stable Tier 1 Resident Rules into `@deepseek-ai/dsh-system-prompt`
-    if (ctx.systemPrompt?.section) {
-      const offPrompt = ctx.systemPrompt.section({
-        name: 'accremind-resident-rules',
-        order: 80,
-        text: () => runtime.compileResidentSystemSection(),
-      });
-      if (typeof offPrompt === 'function') disposers.push(offPrompt);
-    }
-
-    // 3. Project dynamic Tier 2 Contextual Radar into turn messages without mutating raw history
-    if (ctx.sessions?.registerMessageProjection) {
-      const offProj = ctx.sessions.registerMessageProjection(({ sessionId, messages }) => {
-        const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-        if (!lastUser) return messages;
-        const compiled = runtime.compileBeforeTurn({
-          sessionId,
-          userPrompt: lastUser.content,
-        });
-        if (!compiled.radarBlock) return messages;
-        const next = [...messages];
-        const lastIdx = next.lastIndexOf(lastUser);
-        next[lastIdx] = {
-          ...lastUser,
-          content: `${lastUser.content}\n\n${compiled.radarBlock}`,
-        };
-        return next;
-      });
-      if (typeof offProj === 'function') disposers.push(offProj);
-    }
-
-    // 4. Register DSH waterfall & lifecycle hooks
-    if (ctx.on) {
-      // Native `@deepseek-ai/dsh` tool post-execute waterfall
-      disposers.push(
-        ctx.on(
-          'tools/post-execute',
-          async (execCtx: DshNativeToolPostExecuteContext, next?: () => Promise<unknown>) => {
-            if (execCtx?.output) {
-              execCtx.output = runtime.handleAfterTool({
-                sessionId: execCtx.sessionId ?? 'dsh-session',
-                toolName: execCtx.tool,
-                args: execCtx.args ?? {},
-                result: execCtx.output,
-              });
-            }
-            return typeof next === 'function' ? next() : execCtx?.output;
-          },
-        ),
-      );
-
-      // Explicit turn & tool lifecycle events
-      disposers.push(
-        ctx.on('dsh/before-turn', (payload: DshTurnHookPayload) => {
-          runtime.compileBeforeTurn(payload);
-        }),
-      );
-      disposers.push(
-        ctx.on('dsh/after-tool', (payload: DshToolAfterHookPayload) => {
-          payload.result = runtime.handleAfterTool(payload);
-        }),
-      );
-      disposers.push(
-        ctx.on(
-          'dsh/after-turn',
-          (payload: { sessionId: string; userPrompt?: string; assistantReply?: string }) => {
-            void runtime.handleTurnCompleted(payload);
-          },
-        ),
-      );
-    }
-
-    // 5. Register safe Host RPC endpoints & embedded sidebar slot for DSH WebUI
-    if (ctx.webui?.registerRpc) {
-      for (const [method, handler] of Object.entries(runtime.rpcHandlers)) {
-        const off = ctx.webui.registerRpc(method, handler);
-        if (typeof off === 'function') disposers.push(off);
-      }
-    }
-    if (ctx.webui?.registerSlot) {
-      const footer = ctx.webui.registerSlot({
-        slot: 'turn-footer', id: 'accremind-turn-receipt', title: '本轮使用的经验',
-        renderHtml: (owner) => {
-          if (!owner?.sessionId || !owner.turnId) return '';
-          const data = runtime.rpcHandlers['accremind.turn.list']!({ sessionId: owner.sessionId, turnId: owner.turnId }) as { receipts: { hits: { id: string; revision: number }[] }[] };
-          const refs = data.receipts[0]?.hits.map(hit => hit.id + '@r' + hit.revision).join('、') ?? '';
-          return refs ? '本轮使用的经验 · ' + refs.replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';') : '';
-        },
-      });
-      if (typeof footer === 'function') disposers.push(footer);
-      const offSlot = ctx.webui.registerSlot({
-        slot: 'sidebar-panel',
-        id: 'accremind-workbench',
-        title: 'AccreMind 经验基座',
-      });
-      if (typeof offSlot === 'function') disposers.push(offSlot);
-    }
-
-    return () => {
-      for (const off of disposers.reverse()) {
-        off();
-      }
-      runtime.dispose();
-    };
-  });
+  mountNativeHost(ctx, rawOptions, createAccreMindRuntime);
 }

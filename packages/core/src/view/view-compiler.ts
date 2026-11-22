@@ -24,6 +24,8 @@ export interface CompiledTurnView {
   radarBlock: string;
   surfacedIds: string[];
   residentRuleIds: string[];
+  /** Team rules that did not fit the resident budget; the agent is told how many and how to look them up. */
+  residentDroppedIds: string[];
 }
 
 function estimateTokens(text: string): number {
@@ -69,21 +71,27 @@ export class ViewCompiler {
     input: TurnCompilationInput,
     sessionSurfacedIds?: Set<string>,
   ): CompiledTurnView {
-    // 1. Tier 1: Deterministic byte-stable resident rules sorted by ID ASC
+    // 1. Tier 1: byte-stable resident rules, most severe first (P0 → P2, then id). Rules that do not fit
+    // the budget are never dropped silently: the block says how many were left out and how to find them.
     const rules = this.store.listResidentRules();
     const ruleLines: string[] = [];
     const residentRuleIds: string[] = [];
+    const residentDroppedIds: string[] = [];
     let ruleTokens = 0;
 
     for (const rule of rules) {
       const line = `[${rule.id}@r${rule.revision}] ${rule.title}: ${rule.claim}`;
       const cost = estimateTokens(line);
-      if (ruleLines.length > 0 && ruleTokens + cost > this.budgets.residentRulesTokens) {
-        break;
+      if (residentDroppedIds.length || (ruleLines.length > 0 && ruleTokens + cost > this.budgets.residentRulesTokens)) {
+        residentDroppedIds.push(rule.id);
+        continue;
       }
       ruleTokens += cost;
       ruleLines.push(line);
       residentRuleIds.push(rule.id);
+    }
+    if (residentDroppedIds.length) {
+      ruleLines.push(`（另有 ${residentDroppedIds.length} 条团队规范因篇幅未展开：${residentDroppedIds.join('、')}，需要时调 accremind_get 查看）`);
     }
 
     const residentPrefix =
@@ -166,6 +174,7 @@ export class ViewCompiler {
       radarBlock,
       surfacedIds,
       residentRuleIds,
+      residentDroppedIds,
     };
   }
 

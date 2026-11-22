@@ -1,3 +1,4 @@
+import { enforceCapturePayloadLimit, redactSensitiveText } from './secret-redactor.ts';
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -182,7 +183,8 @@ export class AutoCaptureCoordinator {
       sourceType: input.sourceType,
       sourceRef: input.sourceRef,
       touchedFiles: input.touchedFiles,
-      rawCandidateContext: input.rawCandidateContext,
+      // Redact before anything touches disk: queue files outlive the session for up to 7 days.
+      rawCandidateContext: enforceCapturePayloadLimit(redactSensitiveText(input.rawCandidateContext).redactedText).content,
       attempts: 0,
       lastError: null,
       nextRetryAtMs: 0,

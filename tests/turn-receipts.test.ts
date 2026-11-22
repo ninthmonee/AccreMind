@@ -27,7 +27,7 @@ async function setup(t: { after(cleanup: () => void): void }) {
   return { config, runtime, rpc, id, revision, compile };
 }
 
-it('keeps simulator read-only and defers third-exposure retirement until its real turn can receive feedback', async t => {
+it('keeps simulator read-only and, after three silent real exposures, asks for a decision instead of archiving', async t => {
   const { runtime, rpc, id, compile } = await setup(t);
   for (let i=0; i<5; i++) rpc('sim.compile', { userPrompt: 'invoiceretry', midTurnToolFile: 'src/invoice.ts' });
   assert.deepEqual(rpc('turn.list').receipts, []);
@@ -36,19 +36,36 @@ it('keeps simulator read-only and defers third-exposure retirement until its rea
     const session = 'session-' + i;
     compile(session, '1');
     compile(session, '1');
-    assert.equal(runtime.store.listEntriesForAdmin()[0]!.probationExposures, i);
-    if (i < 3) await runtime.handleTurnCompleted({ sessionId: session });
+    assert.equal(runtime.store.listEntriesForAdmin()[0]!.probationExposures, i, 'one exposure per real turn');
+    await runtime.handleTurnCompleted({ sessionId: session });
   }
-  const simultaneous = compile('concurrent', '1', false);
-  assert.deepEqual(simultaneous.surfacedIds, []);
-  assert.equal(rpc('kb.get', {id}).entry.status, 'probation');
-  assert.equal(rpc('turn.list',{sessionId:'session-3', turnId:'1'}).receipts[0].hits.length,1);
-  await runtime.handleTurnCompleted({sessionId:'session-3'});
-  compile('next-task', '1', false);
-  assert.equal(rpc('kb.get', {id}).entry.status, 'archived');
-  const hit = rpc('turn.list',{sessionId:'session-3'}).receipts[0].hits[0];
-  assert.equal(hit.status, 'probation');
-  assert.equal(hit.currentStatus, 'archived');
+  assert.equal(rpc('kb.get', {id}).entry.status, 'probation', 'silence never retires an entry');
+  assert.equal(compile('next-task', '1').surfacedIds.length, 1, 'it keeps being suggested meanwhile');
+  const overview = rpc('dashboard.overview');
+  assert.ok(overview.counts.governanceQueueCount >= 1, 'it shows up as something to decide');
+  assert.deepEqual(rpc('gov.scanStaleness').attentionItems.map((a: { entry_id: string }) => a.entry_id), [id]);
+  rpc('probation.decide', { id, action: 'promote' });
+  assert.deepEqual(rpc('gov.scanStaleness').attentionItems, []);
+});
+
+it('pauses an entry only after repeated "does not apply" reports, and never on one', async t => {
+  const { rpc, id, revision, compile } = await setup(t);
+  rpc('probation.decide', { id, action: 'promote' });
+  for (let i = 1; i <= 3; i++) {
+    compile('s' + i, '1');
+    const res = rpc('feedback.submit', { id, revision, sessionId: 's' + i, turnId: '1', kind: 'inapplicable' });
+    assert.equal(res.suspended, i === 3);
+  }
+  assert.equal(rpc('kb.get', {id}).entry.serving, 'suspended');
+  assert.equal(rpc('gov.scanStaleness').attentionItems[0].kind, 'inapplicable');
+});
+
+it('only asks for an explanation when someone reports the entry is wrong', async t => {
+  const { rpc, id, revision, compile } = await setup(t);
+  compile('other', '1');
+  assert.throws(() => rpc('feedback.submit', { id, revision, sessionId: 'other', turnId: '1', kind: 'suspected_error', detail: ' ' }), /哪里不对/);
+  const ok = rpc('feedback.submit', { id, revision, sessionId: 'other', turnId: '1', kind: 'verified_effective' });
+  assert.equal(ok.updatedEntry.status, 'active', 'a helpful trial entry is promoted');
 });
 
 it('deduplicates verified feedback by task, binds revision, and keeps suspension and freshness independent', async t => {

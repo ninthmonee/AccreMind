@@ -1,3 +1,4 @@
+import { ENTRY_ID_PATTERN as ID_PATTERN } from './ids.ts';
 import {
   DISCOVERABILITY_STATES,
   DISPOSITIONS,
@@ -14,7 +15,6 @@ import {
   type KnowledgeEntry,
 } from './types.ts';
 
-const ID_PATTERN = /^(K|R|P)-\d{4,6}$/;
 const WINDOWS_ABS_PATH = /^[A-Za-z]:[\\/]/;
 
 export interface ValidationIssue {
@@ -142,7 +142,7 @@ export function validateKnowledgeEntrySchema(entry: KnowledgeEntry): ValidationI
   const issues: ValidationIssue[] = [];
 
   if (!ID_PATTERN.test(entry.id)) {
-    issues.push({ field: 'id', message: `条目 ID 须匹配 K-/R-/P- 加数字编号，当前: ${entry.id}` });
+    issues.push({ field: 'id', message: `条目 ID 须为 K-/R-/P- 加 4–6 位数字或 14 位编号，当前: ${entry.id}` });
   }
   if (!Number.isInteger(entry.revision) || entry.revision < 1) {
     issues.push({ field: 'revision', message: 'revision 必须为正整数' });

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>工程经验工作台 · AccreMind</title>
+<script>
+  // 首帧前确定主题，避免闪烁。取值与 src/app/theme.ts 保持一致。
+  (function () {
+    var pref = 'system';
+    try { pref = localStorage.getItem('accremind_theme') || 'system'; } catch (e) {}
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = pref === 'system' ? (dark ? 'dark' : 'light') : pref;
+  })();
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

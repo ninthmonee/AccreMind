@@ -9,15 +9,21 @@
   },
   "scripts": {
     "build": "node scripts/build.ts",
+    "build:webui": "pnpm --filter @accremind/webui build",
     "pretest": "node scripts/build.ts",
     "test": "node --test tests/*.test.ts",
-    "verify": "node scripts/build.ts && node --test tests/*.test.ts",
+    "verify": "node scripts/build.ts && node --test tests/*.test.ts && node scripts/check-webui.ts",
     "ui": "node packages/dsh-plugin/src/cli.ts ui",
     "bootstrap": "node packages/dsh-plugin/src/cli.ts bootstrap",
-    "accremind": "node packages/dsh-plugin/src/cli.ts"
+    "accremind": "node packages/dsh-plugin/src/cli.ts",
+    "dev:webui": "pnpm --filter @accremind/webui dev",
+    "check:webui": "node scripts/check-webui.ts",
+    "typecheck:kernel": "pnpm --filter @accremind/webui exec tsc --noEmit -p ../core/tsconfig.json --typeRoots ./node_modules/@types --types node && pnpm --filter @accremind/webui exec tsc --noEmit -p ../dsh-plugin/tsconfig.json --typeRoots ./node_modules/@types --types node",
+    "typecheck": "pnpm typecheck:kernel && pnpm --filter @accremind/webui typecheck"
   },
   "devDependencies": {
     "@accremind/core": "workspace:*",
-    "@accremind/dsh-plugin": "workspace:*"
+    "@accremind/dsh-plugin": "workspace:*",
+    "@accremind/webui": "workspace:*"
   }
 }

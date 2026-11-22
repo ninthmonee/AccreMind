@@ -4,27 +4,27 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const labels = { rule: '常驻规范', radar: '回合前命中', jit: '文件提醒' };
+    const labels = { rule: '团队规范', radar: '按提问提醒', jit: '按文件提醒' };
 
     function stateLabel(hit) {
-      if (hit.currentRevision == null) return '条目已移除';
-      if (hit.currentRevision !== hit.revision) return '引用版本已有修订';
+      if (hit.currentRevision == null) return '已移除';
+      if (hit.currentRevision !== hit.revision) return '已有新版本';
       if (hit.currentStatus === 'withdrawn') return '已撤回';
       if (hit.currentStatus === 'archived') return '已归档';
-      if (hit.currentServing === 'suspended') return '已暂停检索';
-      if (hit.status === 'probation' && hit.currentStatus === 'active') return '已转正';
-      if (hit.feedback === 'success') return '本任务已验证';
+      if (hit.currentServing === 'suspended') return '已暂停推荐';
+      if (hit.status === 'probation' && hit.currentStatus === 'active') return '已转为正式';
+      if (hit.feedback === 'success') return '你已确认有用';
+      if (hit.feedback === 'failure') return '你已报告有误';
       return '';
     }
 
+    // Three one-tap answers; only "有错" asks for a sentence, because it pauses the entry for everyone.
     function availableActions(hit) {
       if (hit.currentRevision !== hit.revision || hit.currentServing !== 'enabled' ||
           !['active', 'probation'].includes(hit.currentStatus)) return [];
-      if (hit.feedback === 'success') return [['suspected_error', '补充反证']];
+      if (hit.feedback === 'success') return [['suspected_error', '其实有错']];
       if (stateLabel(hit)) return [];
-      return hit.status === 'probation'
-        ? [['promote', '有效转正'], ['dismiss', '淘汰']]
-        : [['verified_effective', '验证有效'], ['suspected_error', '疑似错误']];
+      return [['verified_effective', hit.status === 'probation' ? '有用，转为正式' : '有用'], ['inapplicable', '不适用'], ['suspected_error', '有错']];
     }
 
     function TurnFooter({ sessionId, turn, call }) {
@@ -54,9 +54,8 @@ window.__ModuleLoader__.load({
             throw new Error('条目状态已更新，请重新核对本轮回执');
           }
           const ref = { id: hit.id, revision: hit.revision, sessionId, turnId };
-          if (action === 'dismiss') await call('accremind.probation.decide', { ...ref, action });
-          else await call('accremind.feedback.submit', { ...ref, kind: action === 'promote' ? 'verified_effective' : action, detail });
-          setMessage(({ promote: '已转正并记录本任务的验证', dismiss: '已淘汰', verified_effective: '已记录本任务的验证', suspected_error: '已暂停检索' })[action]);
+          await call('accremind.feedback.submit', { ...ref, kind: action, detail: detail || '' });
+          setMessage(({ verified_effective: hit.status === 'probation' ? '已转为正式经验' : '已记录：有用', inapplicable: '已记录：这次不适用', suspected_error: '已暂停推荐，等待复核' })[action]);
           setActive(null); setNote('');
           const updated = await call('accremind.turn.list', { turnId });
           setHits(updated.receipts[0]?.hits || []);
@@ -65,17 +64,17 @@ window.__ModuleLoader__.load({
       }
       if (!hits.length && !message) return null;
       return h('section', { 'aria-label': '本轮经验回执', style: { fontSize: '0.88em', marginBlock: 8 } },
-        h('details', null, h('summary', null, '本轮使用的经验 · ' + hits.length + ' 条'),
+        h('details', null, h('summary', null, 'AI 这次参考了 ' + hits.length + ' 条经验'),
           hits.map(hit => h('div', { key: [hit.id, hit.source, hit.filePath].join('|'), style: { marginBlock: 6 } },
             h('span', null, labels[hit.source] + ' · ' + hit.id + '@r' + hit.revision + ' ' + hit.title + (hit.filePath ? ' · ' + hit.filePath : '') + ' '),
             stateLabel(hit),
             availableActions(hit).map(([kind, label]) => h('button', { key: kind, type: 'button', disabled: busy,
               onClick: () => {
-                if (kind === 'dismiss') return submit(hit, kind);
+                if (kind !== 'suspected_error') return submit(hit, kind);
                 setActive({ hit, kind }); setNote('');
               } }, label)))),
           active && h('form', { onSubmit: event => { event.preventDefault(); submit(active.hit, active.kind, note.trim()); } },
-            h('label', null, active.kind === 'suspected_error' ? '本次反证及复现结果 ' : '本次验证依据（测试结果或工单） ',
+            h('label', null, '哪里不对？怎么发现的 ',
               h('input', { value: note, required: true, onChange: event => setNote(event.target.value) })),
             h('button', { type: 'submit', disabled: busy || !note.trim() }, '提交')),
         ), h('div', { role: 'status' }, message));

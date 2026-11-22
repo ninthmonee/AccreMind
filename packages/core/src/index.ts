@@ -1,4 +1,5 @@
 export * from './contracts/types.ts';
+export * from './contracts/ids.ts';
 export * from './contracts/validator.ts';
 export * from './codec/frontmatter.ts';
 export * from './codec/atomic-fs.ts';
@@ -18,3 +19,11 @@ export * from './capture/triage-engine.ts';
 export * from './governance/git-staleness.ts';
 export * from './governance/git-archaeology.ts';
 export * from './governance/skill-exporter.ts';
+export * from './store/event-log.ts';
+export * from './governance/actor.ts';
+export * from './governance/turn-receipts.ts';
+export * from './governance/governance-service.ts';
+export * from './governance/lifecycle.ts';
+export * from './governance/candidate-review.ts';
+export * from './evidence/snapshots.ts';
+export * from './ledger/ledger.ts';

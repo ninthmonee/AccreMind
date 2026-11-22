@@ -214,6 +214,7 @@ export class TriageEngine {
             maturity: 'draft',
           };
           const saved = this.store.upsertEntry(probationEntry, 'probation', effectiveAssessment);
+          this.store.recordPublication?.(saved, 'AI 总结后自动进入本机试用');
           return {
             assessmentId: effectiveAssessment.id,
             duplicate: false,
@@ -233,6 +234,7 @@ export class TriageEngine {
               : 'project';
         const activeEntry: KnowledgeEntry = { ...sanitizedEntry, status: 'active' };
         const saved = this.store.upsertEntry(activeEntry, targetZone, effectiveAssessment);
+        this.store.recordPublication?.(saved, 'AI 总结后直接入库（未开启审核）');
         return {
           assessmentId: effectiveAssessment.id,
           duplicate: false,

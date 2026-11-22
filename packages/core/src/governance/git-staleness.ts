@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { redactSensitiveText } from '../capture/secret-redactor.ts';
 import { sha256Hex } from '../codec/atomic-fs.ts';
+import { transition } from './lifecycle.ts';
 import type { KnowledgeEntry } from '../contracts/types.ts';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 import { satisfiesSemverRange } from '../store/sqlite-schema.ts';
@@ -214,16 +215,9 @@ export class GitStalenessScanner {
           }
         : ev,
     );
-    const saved = this.store.updateExistingEntryDirect({
-      ...entry,
-      symbol_anchors,
-      evidence,
-      revision: entry.revision + 1,
-      serving: entry.freshness === 'stale' ? 'suspended' : entry.serving,
-      maturity: 'draft',
-      freshness: 'review_due',
-      updated_at: new Date().toISOString(),
-    });
+    const saved = this.store.updateExistingEntryDirect(
+      transition({ ...entry, symbol_anchors, evidence }, 'revise', { impact: 'substantive', needsReview: true }),
+    );
     const head = runGitSafe(this.store.paths.projectRoot, ['rev-parse', 'HEAD']);
     this.store.rawDb
       .prepare(
@@ -255,16 +249,20 @@ export class GitStalenessScanner {
       return { ...ev, locator: `${a.file_path}#L${a.start_line}-L${a.end_line}` };
     });
     const saved = this.store.updateExistingEntryDirect({
-      ...entry,
-      freshness: 'current',
+      ...transition(entry, 'confirm_fresh', { reviewDueAt: new Date(Date.now() + 90 * 86400000).toISOString() }),
       evidence,
       symbol_anchors: anchors,
-      updated_at: new Date().toISOString(),
-      review_due_at: new Date(Date.now() + 90 * 86400000).toISOString(),
     });
     this.store.rawDb
       .prepare('DELETE FROM freshness_reviews WHERE workspace_id = ? AND entry_id = ?')
       .run(this.store.workspaceId, entry.id);
+    // The code was checked by a person: record it and keep what the evidence says now, next to what it said before.
+    this.store.recordGovernanceDecision(saved, 'confirm_fresh', '核对代码变化后确认仍然成立');
+    try {
+      this.store.snapshots.capture(saved);
+    } catch (err) {
+      console.warn(`[accremind] snapshot skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return saved;
   }
 
@@ -366,11 +364,7 @@ export class GitStalenessScanner {
       }
 
       if (reviewDueReason) {
-        const updated: KnowledgeEntry = {
-          ...entry,
-          freshness: 'review_due',
-          updated_at: now,
-        };
+        const updated = transition(entry, 'flag_review_due', { now });
         const files = new Set(entry.symbol_anchors.map((a) => a.file_path));
         for (const file of changedFiles ?? []) {
           if (entry.watch_paths.some((glob) => path.matchesGlob(file, glob))) files.add(file);

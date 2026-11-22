@@ -242,5 +242,10 @@ export interface AccreMindConfig {
   };
   autoCapture: {
     enabled: boolean;
+    /**
+     * Whether queued conversation excerpts may be sent to the configured model in the background.
+     * Off by default: the user turns it on per workspace in settings (or the host passes its own adapter).
+     */
+    modelUpload?: boolean;
   };
 }

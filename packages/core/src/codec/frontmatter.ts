@@ -17,6 +17,22 @@ export class MarkdownCodecError extends Error {
   }
 }
 
+/**
+ * Version of the on-disk entry format. Bump it whenever a field is added, renamed or changes meaning.
+ * A plugin never parses (and therefore never rewrites) a file written in a newer format: the file is
+ * listed under “文件问题” with an upgrade hint, so an older teammate cannot silently drop new fields.
+ */
+export const ENTRY_FORMAT_VERSION = 1;
+
+export class NewerFormatError extends MarkdownCodecError {
+  readonly formatVersion: number;
+  constructor(formatVersion: number, filePath?: string) {
+    super(`该经验由更新版本的 AccreMind 写入（格式 v${formatVersion}，当前支持 v${ENTRY_FORMAT_VERSION}），请升级插件后再读取：${filePath ?? 'unknown'}`);
+    this.name = 'NewerFormatError';
+    this.formatVersion = formatVersion;
+  }
+}
+
 const CONFLICT_MARKER_REGEX = /^(<<<<<<< |=======$|>>>>>>> )/m;
 
 function formatScalar(val: unknown): string {
@@ -186,6 +202,7 @@ function extractSections(body: string): Record<string, string> {
  */
 export function serializeEntryMarkdown(entry: KnowledgeEntry): string {
   const frontmatterData: Record<string, unknown> = {
+    format_version: ENTRY_FORMAT_VERSION,
     id: entry.id,
     revision: entry.revision,
     type: entry.type,
@@ -258,6 +275,12 @@ export function parseEntryMarkdown(markdown: string, filePath?: string): Knowled
   const restAfterMarker = normalized.slice(endMarkerIdx + 4).replace(/^\r?\n/, '');
 
   const meta = parseFrontmatterBlock(yamlBlock);
+  // Files without the field predate versioning and are format 1.
+  const formatVersion = meta.format_version === undefined || meta.format_version === null ? 1 : Number(meta.format_version);
+  if (!Number.isInteger(formatVersion) || formatVersion < 1) {
+    throw new MarkdownCodecError(`无法识别的经验文件格式版本 ${String(meta.format_version)}: ${filePath ?? 'unknown'}`);
+  }
+  if (formatVersion > ENTRY_FORMAT_VERSION) throw new NewerFormatError(formatVersion, filePath);
   const sections = extractSections(restAfterMarker);
 
   const pickSection = (keys: string[], fallbackField?: string): string => {

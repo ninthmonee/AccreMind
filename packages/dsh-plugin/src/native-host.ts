@@ -25,17 +25,41 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
   const prompts = new Map<string, string>();
   const replies = new Map<string, string>();
   const agents = ctx.get!('agents');
+  // A broken workspace (unwritable folder, locked index…) must never break the agent itself:
+  // failures are reported once and retried after a cool-down instead of on every step.
+  const failedRoots = new Map<string, number>();
+  const RETRY_AFTER_MS = 60_000;
+  const report = (where: string, error: unknown) => {
+    console.warn(`[accremind] ${where} skipped: ${error instanceof Error ? error.message : String(error)}`);
+  };
   const runtimeFor = (agent: HostAgent) => {
     const cwd = options.projectRoot || agent.session.header.cwd;
     if (!cwd || !path.isAbsolute(cwd)) return;
     const root = path.resolve(cwd);
     let runtime = runtimes.get(root);
     if (!runtime) {
-      runtime = makeRuntime({ ...options, projectRoot: root });
+      const failedAt = failedRoots.get(root);
+      if (failedAt !== undefined && Date.now() - failedAt < RETRY_AFTER_MS) return;
+      try {
+        runtime = makeRuntime({ ...options, projectRoot: root });
+      } catch (error) {
+        failedRoots.set(root, Date.now());
+        report(`workspace ${root}`, error);
+        return;
+      }
+      failedRoots.delete(root);
       runtimes.set(root, runtime);
     }
     sessions.set(agent.session.id, runtime);
     return runtime;
+  };
+  /** Releases a repository runtime once no open session uses it any more. */
+  const release = (sessionId: string) => {
+    const runtime = sessions.get(sessionId);
+    sessions.delete(sessionId);
+    if (!runtime || [...sessions.values()].includes(runtime)) return;
+    for (const [root, r] of runtimes) if (r === runtime) runtimes.delete(root);
+    runtime.dispose();
   };
 
   function attach(agent: HostAgent) {
@@ -67,6 +91,7 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
     mounted.delete(agent);
     prompts.delete(agent.session.id);
     replies.delete(agent.session.id);
+    release(agent.session.id);
   }
 
   ctx.on!('agent/created', ({ agent }) => attach(agent));
@@ -76,42 +101,57 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
   ctx.on!('agent/pre-step', async (event: { agent: HostAgent; messages: HostMessage[]; turn: number; signal: AbortSignal }, next: () => Promise<Decision>) => {
     const decision = await next();
     if (decision.kind !== 'enter' || event.signal.aborted) return decision;
-    const runtime = runtimeFor(event.agent);
-    if (!runtime) return decision;
-    const sessionId = event.agent.session.id;
-    const prompt = plainText(event.messages.filter(m => m.role === 'user').at(-1));
-    if (prompt) prompts.set(sessionId, prompt);
-    const view = runtime.compileBeforeTurn({ sessionId, turnId: String(event.turn), userPrompt: prompt });
-    if (!view.radarBlock) return decision;
-    // The native pre-step waterfall admits immutable, identified user context messages.
-    const context = { id: randomUUID(), role: 'user', source: { kind: 'accremind', form: 'notice', summary: '本轮经验' },
-      content: [{ type: 'text', text: view.radarBlock }] };
-    return { ...decision, messages: [...decision.messages, context] };
+    try {
+      const runtime = runtimeFor(event.agent);
+      if (!runtime) return decision;
+      const sessionId = event.agent.session.id;
+      const prompt = plainText(event.messages.filter(m => m.role === 'user').at(-1));
+      if (prompt) prompts.set(sessionId, prompt);
+      const view = runtime.compileBeforeTurn({ sessionId, turnId: String(event.turn), userPrompt: prompt });
+      if (!view.radarBlock) return decision;
+      // The native pre-step waterfall admits immutable, identified user context messages.
+      const context = { id: randomUUID(), role: 'user', source: { kind: 'accremind', form: 'notice', summary: '本轮经验' },
+        content: [{ type: 'text', text: view.radarBlock }] };
+      return { ...decision, messages: [...decision.messages, context] };
+    } catch (error) {
+      report('pre-step reminder', error);
+      return decision;
+    }
   });
 
   ctx.on!('tools/post-execute', async (exec, result, next) => {
     const decision = await next();
     if (!exec.agent || decision.kind !== 'accept') return decision;
-    const runtime = runtimeFor(exec.agent);
-    if (!runtime) return decision;
-    const sessionId = exec.agent.session.id;
-    const names: Record<string, string> = { read: 'read_file', edit: 'edit_file', write: 'write_file' };
-    const input: DshToolResult = { isError: result.isError, content: (result.content ?? []).filter((b: { type: string }) => b.type === 'text') };
-    const guarded = runtime.handleAfterTool({
-      sessionId, turnId: String(agents.turnBoundaryOf(exec.agent.session).lastTurn),
-      toolName: names[exec.name] ?? exec.name, args: exec.arguments ?? {}, result: input,
-    });
-    const extra = guarded.content.slice(input.content.length);
-    if (!extra.length) return decision;
-    return { ...decision, additionalContexts: [...(decision.additionalContexts ?? []), {
-      id: randomUUID(), role: 'user', source: { kind: 'accremind', form: 'notice', summary: '文件经验提醒' }, content: extra,
-    }] };
+    try {
+      const runtime = runtimeFor(exec.agent);
+      if (!runtime) return decision;
+      const sessionId = exec.agent.session.id;
+      const names: Record<string, string> = { read: 'read_file', edit: 'edit_file', write: 'write_file' };
+      const input: DshToolResult = { isError: result.isError, content: (result.content ?? []).filter((b: { type: string }) => b.type === 'text') };
+      const guarded = runtime.handleAfterTool({
+        sessionId, turnId: String(agents.turnBoundaryOf(exec.agent.session).lastTurn),
+        toolName: names[exec.name] ?? exec.name, args: exec.arguments ?? {}, result: input,
+      });
+      const extra = guarded.content.slice(input.content.length);
+      if (!extra.length) return decision;
+      return { ...decision, additionalContexts: [...(decision.additionalContexts ?? []), {
+        id: randomUUID(), role: 'user', source: { kind: 'accremind', form: 'notice', summary: '文件经验提醒' }, content: extra,
+      }] };
+    } catch (error) {
+      report('file reminder', error);
+      return decision;
+    }
   });
   ctx.on!('session/event', (session, event) => {
     if (event.type === 'assistant/message') replies.set(session.id, plainText(event.data.message));
     if (event.type !== 'turn/end') return;
     const runtime = sessions.get(session.id);
-    void runtime?.handleTurnCompleted({ sessionId: session.id, userPrompt: prompts.get(session.id), assistantReply: replies.get(session.id) });
+    try {
+      runtime?.handleTurnCompleted({ sessionId: session.id, userPrompt: prompts.get(session.id), assistantReply: replies.get(session.id) })
+        .catch(error => report('turn wrap-up', error));
+    } catch (error) {
+      report('turn wrap-up', error);
+    }
     prompts.delete(session.id);
     replies.delete(session.id);
   });

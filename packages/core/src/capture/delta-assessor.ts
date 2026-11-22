@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sha256Hex } from '../codec/atomic-fs.ts';
 import { isRepositoryKnowledgeLayer } from '../contracts/types.ts';
+import { generateEntryId } from '../contracts/ids.ts';
 import type {
   CaptureAssessment,
   Discoverability,
@@ -232,10 +233,9 @@ export class DeltaAssessor {
     let candidateEntry: KnowledgeEntry | null = null;
     const cand = parsed.candidate;
     if ((assessment.disposition === 'knowledge_candidate' || assessment.disposition === 'needs_confirmation') && cand?.title && cand?.claim) {
-      const numericId = String(Math.floor(1000 + Math.random() * 9000));
       const entryType: KnowledgeType = cand.type ?? 'pitfall';
       candidateEntry = {
-        id: `K-${numericId}`,
+        id: generateEntryId('K'),
         revision: 1,
         type: entryType,
         ...(entryType === 'guideline'
@@ -274,7 +274,7 @@ export class DeltaAssessor {
         supersedes: null,
         evidence: [
           {
-            id: `EV-${numericId}`,
+            id: `EV-${randomUUID().slice(0, 8)}`,
             source_type: bundle.sourceType === 'git_commit' ? 'git_commit' : 'session_turn',
             source_ref: bundle.sourceRef,
             locator:

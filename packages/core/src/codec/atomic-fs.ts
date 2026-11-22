@@ -8,6 +8,8 @@ export interface StoreLayoutPaths {
   workspaceId: string;
   globalRoot: string;
   sqlitePath: string;
+  legacySqlitePath: string;
+  eventsDir: string;
   probationDir: string;
   personalDir: string;
   sharedTechDir: string;
@@ -17,6 +19,14 @@ export interface StoreLayoutPaths {
   projectRulesDir: string;
   projectEntriesDir: string;
   navigationFilePath: string;
+  /** Evidence snapshots of repository entries (shared with the repository). */
+  evidenceDir: string;
+  /** Evidence snapshots of local-only entries (trials, personal). */
+  localEvidenceDir: string;
+  /** Validation ledger when sharing is on (in the repository). */
+  ledgerDir: string;
+  /** Validation ledger when sharing is off (this machine only). */
+  localLedgerDir: string;
 }
 
 export function expandHomeDir(inputPath: string): string {
@@ -53,7 +63,10 @@ export function resolveStorePaths(options: {
   return {
     workspaceId,
     globalRoot,
-    sqlitePath: path.join(globalRoot, 'accremind.sqlite'),
+    sqlitePath: path.join(globalRoot, 'workspaces', workspaceId, 'index.sqlite'),
+    legacySqlitePath: path.join(globalRoot, 'accremind.sqlite'),
+    // Kept apart from the disposable index so deleting or rebuilding the index never loses history.
+    eventsDir: path.join(globalRoot, 'events', workspaceId),
     probationDir: path.join(globalRoot, 'probation', workspaceId),
     personalDir: path.join(globalRoot, 'personal'),
     sharedTechDir: path.join(globalRoot, 'shared-tech'),
@@ -63,12 +76,17 @@ export function resolveStorePaths(options: {
     projectRulesDir: path.join(projectAccreMindDir, 'rules'),
     projectEntriesDir: path.join(projectAccreMindDir, 'entries'),
     navigationFilePath: path.join(projectAccreMindDir, 'navigation.json'),
+    evidenceDir: path.join(projectAccreMindDir, 'evidence'),
+    localEvidenceDir: path.join(globalRoot, 'evidence', workspaceId),
+    ledgerDir: path.join(projectAccreMindDir, 'ledger'),
+    localLedgerDir: path.join(globalRoot, 'ledger', workspaceId),
   };
 }
 
 export function ensureStoreDirectoriesSync(paths: StoreLayoutPaths): void {
   const dirs = [
     paths.globalRoot,
+    path.dirname(paths.sqlitePath),
     paths.probationDir,
     paths.personalDir,
     paths.sharedTechDir,
@@ -117,6 +135,7 @@ export function writeFileAtomicSync(targetPath: string, content: string): void {
     fs.closeSync(fd);
     fd = null;
     fs.renameSync(tempPath, targetPath);
+    fsyncDirectoryBestEffort(parentDir);
   } catch (err) {
     if (fd !== null) {
       try {
@@ -133,5 +152,24 @@ export function writeFileAtomicSync(targetPath: string, content: string): void {
       }
     }
     throw err;
+  }
+}
+
+/** Persist the rename itself; not supported on every platform (e.g. Windows), so failures are ignored. */
+function fsyncDirectoryBestEffort(dir: string): void {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch {
+    // best effort
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
   }
 }

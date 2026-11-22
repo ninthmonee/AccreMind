@@ -241,7 +241,7 @@ describe('M0 PRD §11.5 Deterministic Delta Gate & Shadow Probation Lifecycle', 
     store.close();
   });
 
-  it('manages Shadow Probation: keeps repo clean during trial, promotes to active on validation, and auto-archives after 3 ignored exposures', () => {
+  it('manages Shadow Probation: keeps repo clean during trial, promotes to active on validation, and asks for a decision (never auto-archives) after 3 silent exposures', () => {
     const { store } = createSandboxStore();
     const triage = new TriageEngine(store, 'probation');
 
@@ -332,16 +332,21 @@ describe('M0 PRD §11.5 Deterministic Delta Gate & Shadow Probation Lifecycle', 
     });
     assert.equal(val2.updatedEntry.maturity, 'proven');
 
-    // Candidate 0502 -> ignored across 3 radar exposures -> automatically archived!
+    // Candidate 0502 -> shown 3 times with no feedback: silence is not evidence against it,
+    // so it keeps serving and is put in front of the user to decide.
     const c2 = makeValidCandidate('0502');
     triage.processCandidate({ assessment: c2.assessment, candidateEntry: c2.entry });
-    assert.equal(store.recordProbationExposure('K-0502').autoArchived, false);
-    assert.equal(store.recordProbationExposure('K-0502').autoArchived, false);
-    assert.equal(store.recordProbationExposure('K-0502').autoArchived, true);
+    assert.equal(store.recordProbationExposure('K-0502').needsDecision, false);
+    assert.equal(store.recordProbationExposure('K-0502').needsDecision, false);
+    const third = store.recordProbationExposure('K-0502');
+    assert.equal(third.needsDecision, true);
+    assert.equal(third.autoArchived, false);
 
-    const afterArchive = store.getEntry('K-0502', { recordUsage: false });
-    assert.ok(afterArchive.found && !afterArchive.servable);
-    assert.equal(afterArchive.reason, 'archived');
+    const stillServing = store.getEntry('K-0502', { recordUsage: false });
+    assert.ok(stillServing.found && stillServing.servable && stillServing.entry.status === 'probation');
+    assert.deepEqual(store.listAttentionItems().map((a) => [a.entry_id, a.kind]), [['K-0502', 'probation_silent']]);
+    store.dismissProbation('K-0502');
+    assert.deepEqual(store.listAttentionItems(), [], 'deciding clears the reminder');
 
     store.close();
   });

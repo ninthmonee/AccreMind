@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="graphite">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AccreMind · 知识工作台</title>
+  <style>
+    /* OD-LAYOUT-PRIMITIVES v1 */
+    @layer od-layout {
+      [hidden]:not([hidden="until-found" i]), dialog:not([open]) {display:none!important}
+      :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile)>:where(*){min-width:0}
+      .od-stack{display:flex;flex-direction:column;gap:var(--od-gap,8px)}
+      .od-row,.od-row-top,.od-cluster{display:flex;align-items:center;gap:var(--od-gap,8px)}
+      .od-row-top{align-items:flex-start}.od-cluster{flex-wrap:wrap}
+      .od-fill{flex:1 1 0;min-width:0}.od-fixed{flex:none}
+      .od-grid{display:grid;gap:var(--od-gap,12px);grid-template-columns:repeat(var(--od-cols,3),minmax(0,1fr))}
+      .od-stat,.od-field,.od-cell{display:grid;gap:var(--od-gap,2px)}
+      :where(.od-stat,.od-field,.od-cell,.od-tile)>:where(*){display:block}
+      .od-tile{display:grid;grid-template-rows:auto 1fr}
+      .od-media{display:block;width:100%;height:auto;aspect-ratio:var(--od-ratio,auto)}.od-media-cover{object-fit:cover}
+      .od-icon{display:inline-block;inline-size:var(--od-icon-size,1em);block-size:var(--od-icon-size,1em);flex:none}
+      .od-truncate{display:block;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+      .od-clamp-2,.od-clamp-3{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+      .od-clamp-2{-webkit-line-clamp:2}.od-clamp-3{-webkit-line-clamp:3}.od-lines-2{min-height:calc(2 * 1.4em)}
+      .od-nowrap{white-space:nowrap}.od-keep{word-break:keep-all;overflow-wrap:anywhere}
+      .od-screen{display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:100%}
+      .od-scroll{overflow-y:auto;overscroll-behavior:contain;min-height:0}
+      .od-rail{display:flex;gap:var(--od-gap,8px);overflow-x:auto;scroll-snap-type:x proximity;scrollbar-width:none;padding-inline:var(--od-rail-pad,16px);scroll-padding-inline:var(--od-rail-pad,16px)}
+      .od-rail::-webkit-scrollbar{display:none}.od-rail>:where(*){flex:none;scroll-snap-align:start}
+      .od-rail>:where(:last-child){margin-inline-end:var(--od-rail-pad,16px)}
+      .od-spacer{flex:none;visibility:hidden;pointer-events:none}.od-touch{min-width:44px;min-height:44px}
+    }
+    :root [hidden]:where(:not([hidden="until-found" i])){display:none}
+    /* /OD-LAYOUT-PRIMITIVES v1 */
+  </style>
+  <link rel="stylesheet" href="knowledge.css">
+  <script defer src="git-snapshot.js"></script>
+  <script defer src="git-diffs.js"></script>
+  <script defer src="knowledge-data.js"></script>
+  <script defer src="knowledge.js"></script>
+</head>
+<body>
+  <header class="chrome">
+    <div class="frame head">
+      <div class="od-row identity"><button class="brand" data-nav="library"><svg class="brand-mark" width="32" height="32" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M7 23 15.9 7 25 23m-13.3-5h8.6M15.9 12v1" fill="none" stroke="var(--accent-ink)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>AccreMind</span></button><span class="workname">AccreMind 仓库</span></div>
+      <nav class="od-row main-nav" aria-label="工作台菜单">
+        <button data-nav="library" aria-current="page">知识库</button><button data-nav="radar">Git 雷达</button><button data-nav="review">候选审核</button><button data-nav="governance">治理</button><button data-nav="receipts">回合记录</button>
+      </nav>
+      <div class="od-row header-tools"><button data-act="search" class="square" aria-label="全局搜索" title="全局搜索"></button><select id="theme" aria-label="界面主题"><option value="graphite">石墨</option><option value="paper">纸白</option><option value="contrast">高对比</option></select><button data-act="new" class="primary">＋ 录入经验</button></div>
+    </div>
+  </header>
+  <main class="frame" id="screen" tabindex="-1">
+  </main>
+  <footer class="frame footer"><span>AccreMind · 研发知识工作台</span><span>V3.2 设计原型 <i></i> 仓库快照与演示数据</span></footer>
+  <dialog id="drawer" aria-labelledby="drawer-title"><div class="drawer-head"><h2 id="drawer-title">详情</h2><button class="square" data-act="close" aria-label="关闭详情">×</button></div><div id="drawer-body" class="drawer-body"></div></dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
