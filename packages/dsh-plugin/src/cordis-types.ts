@@ -28,6 +28,10 @@ export interface DshTurnHookPayload {
   assistantReply?: string;
   activeFiles?: string[];
   errorOutput?: string;
+  /** Topic tags of the question (set by prepareTurn). */
+  tags?: string[];
+  /** Extra words describing the task (e.g. from the branch name), used for matching only. */
+  contextHint?: string;
   injectSystemStablePrefix?: (prefix: string) => void;
   injectTurnEphemeralContext?: (block: string) => void;
 }

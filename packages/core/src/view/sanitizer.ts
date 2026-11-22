@@ -29,7 +29,7 @@ export function sanitizeKnowledgeText(raw: string): string {
 }
 
 export function wrapReadOnlyXmlBlock(
-  tagName: 'accremind-rules' | 'accremind-radar' | 'accremind-guard' | 'accremind-entry',
+  tagName: 'accremind-rules' | 'accremind-radar' | 'accremind-guard' | 'accremind-entry' | 'accremind-profile' | 'accremind-doc',
   body: string,
 ): string {
   const safeBody = sanitizeKnowledgeText(body).trim();

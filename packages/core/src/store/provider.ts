@@ -19,6 +19,17 @@ export interface SemanticReranker {
   rerank(query: string, candidates: SearchHit[]): Promise<SearchHit[]> | SearchHit[];
 }
 
+export interface DocHitLike {
+  ref: string;
+  docTitle: string;
+  heading: string;
+  category: string;
+  snippet: string;
+  score: number;
+  originRepo: string | null;
+  matchedTags: string[];
+}
+
 export type GetEntryOutcome =
   | { found: true; servable: true; entry: KnowledgeEntry; storageZone: StorageZone }
   | {
@@ -63,5 +74,15 @@ export interface KnowledgeStoreProvider {
   promoteProbationToActive(entryId: string): KnowledgeEntry;
   dismissProbation(entryId: string, reason?: string): KnowledgeEntry;
   listCorruptedFiles(): CorruptedFileRecord[];
+  /** Near-identical entries anywhere in the index (other layers and repositories included). */
+  findSimilarEntries?(entry: KnowledgeEntry): Array<{ id: string; layer: KnowledgeEntry['layer']; originRepo: string | null; similarity: number }>;
+  /** Rule-document sections relevant to a question (see DocLibrary.search). */
+  searchDocs?(input: { query: string; tags?: string[]; activeFiles?: string[]; errorText?: string; limit?: number }): DocHitLike[];
+  /** The project profile (basic business attributes) as resident context. */
+  residentProfile?(maxTokens?: number): string;
+  /** This repository's documented exceptions to team rules. */
+  listRuleWaivers?(): Map<string, { entryId: string; reason: string; expiresAt: string }>;
+  /** Project knowledge contradicting a team rule without an exception is taken out of reminders and flagged. */
+  reportRuleConflict?(entry: KnowledgeEntry, rule: KnowledgeEntry): void;
   close(): void;
 }

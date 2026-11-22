@@ -11,3 +11,7 @@ coverage/
 .workbuddy/
 logs/
 *.tsbuildinfo
+
+# AccreMind 在本仓库运行时生成的本地数据（不随仓库分发）
+.accremind/
+.dsh/

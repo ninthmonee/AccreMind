@@ -28,9 +28,10 @@ import { EvidenceCompareView } from '@/components/evidence-ledger';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle, Segmented, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/overlays';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton, Switch } from '@/components/ui/primitives';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Skeleton, Switch } from '@/components/ui/primitives';
+import { ATTENTION } from '@/lib/labels';
 import { rpc } from '@/lib/rpc';
-import type { GovernanceQueue, KnowledgeEntry, LedgerStatus, ReviewDetails, Settings, SimResult, StalenessScan } from '@/lib/types';
+import type { GovernanceQueue, KnowledgeEntry, LedgerStatus, RepoProfile, ReviewDetails, Settings, SimResult, StalenessScan } from '@/lib/types';
 import { useAsync } from '@/lib/use-async';
 import { cn, formatDate, shortSha } from '@/lib/utils';
 
@@ -143,6 +144,23 @@ export function GovernancePage() {
               />
             ))
           )}
+          {s?.sharedReviews && s.sharedReviews.length > 0 && (
+            <Card className="p-5">
+              <CardTitle>共享经验在本仓库待核对</CardTitle>
+              <CardDescription>这些经验来自本机共享库或其他仓库，卡片不会被这里改写；核对后在本仓库确认即可。</CardDescription>
+              <ul className="mt-3 grid gap-2">
+                {s.sharedReviews.map((r) => (
+                  <li key={r.entryId} className="flex flex-wrap items-center gap-3 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{r.entry.title}</span>
+                    <span className="text-xs text-muted-foreground">{r.reason}</span>
+                    <Button size="sm" variant="outline" onClick={() => void act(() => rpc('accremind.gov.clearSharedReview', { id: r.entryId }), '已确认在本仓库仍然适用').catch(() => undefined)}>
+                      仍然适用
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="suspended" className="mt-4 grid gap-3">
@@ -157,7 +175,7 @@ export function GovernancePage() {
               <ul className="mt-3 grid gap-2">
                 {s.attentionItems.map((a) => (
                   <li key={a.entry_id + a.kind} className="flex items-center gap-3 text-sm">
-                    <Badge tone="warning">{a.kind === 'probation_silent' ? '试用期满' : '不适用'}</Badge>
+                    <Badge tone="warning">{ATTENTION[a.kind]?.label ?? a.kind}</Badge>
                     <span className="min-w-0 flex-1 truncate">{a.entry?.title ?? a.entry_id}</span>
                     <span className="text-xs text-muted-foreground">{a.reason}</span>
                   </li>
@@ -173,8 +191,9 @@ export function GovernancePage() {
           <RuleBudgetCard />
         </TabsContent>
 
-        <TabsContent value="settings" className="mt-4">
+        <TabsContent value="settings" className="mt-4 grid gap-4">
           <SettingsCard settings={settings.data} loading={settings.loading} onChanged={settings.reload} />
+          <RepoScopeCard />
         </TabsContent>
       </Tabs>
 
@@ -412,6 +431,80 @@ function QueueCard() {
         >
           <Cpu />立即提炼
         </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * 仓库身份与业务领域：领域决定哪些其他仓库的领域知识会提醒到这里。保存写入 .accremind/repo.json，提交后所有克隆一致。
+ */
+function RepoScopeCard() {
+  const { revision, refresh } = useApp();
+  const profile = useAsync(() => rpc<RepoProfile>('accremind.repo.profile'), [revision]);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const p = profile.data;
+  if (profile.loading && !p) return <Skeleton className="h-48 rounded-xl" />;
+  if (!p) return null;
+  const value = draft ?? p.domains.join(', ');
+  const idSource = { 'repo.json': '已提交的 repo.json', remote: 'Git 远端地址', path: '本机目录路径（建议设置领域后提交 repo.json）' }[p.idSource];
+  const save = async () => {
+    setSaving(true);
+    try {
+      const domains = value.split(/[,，\s]+/).map((d) => d.trim()).filter(Boolean);
+      await rpc('accremind.repo.setDomains', { domains });
+      toast.success('业务领域已保存，请提交 .accremind/repo.json');
+      setDraft(null);
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const others = p.knownRepositories.filter((r) => r.repoId !== p.repoId);
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>仓库与业务领域</CardTitle>
+          <CardDescription>经验在本机所有仓库共享，按相关性命中：同领域的领域知识、同技术栈的通用经验会提醒到这里，其他仓库的项目知识不会。</CardDescription>
+        </div>
+        <IconTile icon={Users} tone="primary" />
+      </CardHeader>
+      <CardContent className="grid gap-4 text-sm">
+        <div className="grid gap-1">
+          <span className="font-mono text-xs">{p.repoId}</span>
+          <span className="text-xs text-muted-foreground">标识来源：{idSource}{p.remote ? ` · ${p.remote}` : ''}</span>
+          <span className="text-xs text-muted-foreground">
+            技术栈：{p.languages.length ? p.languages.join('、') : '检测中'} · {p.dependencies} 个依赖
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            aria-label="业务领域"
+            className="max-w-sm"
+            value={value}
+            placeholder="例如：payment, settlement"
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <Button variant="outline" disabled={saving || draft === null} onClick={() => void save()}>保存领域</Button>
+        </div>
+        {others.length > 0 && (
+          <div className="grid gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">本机共享经验的其他仓库（{others.length}）</span>
+            <ul className="flex flex-wrap gap-1.5">
+              {others.slice(0, 20).map((r) => (
+                <li key={r.repoId}>
+                  <Badge tone={r.domains.some((d) => p.domains.includes(d)) ? 'primary' : 'neutral'} title={r.repoId}>
+                    {r.name}{r.domains.length ? ` · ${r.domains.join('/')}` : ''}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

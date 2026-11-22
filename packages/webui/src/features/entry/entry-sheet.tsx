@@ -120,6 +120,29 @@ function FreshnessTimeline({ entry }: { entry: KnowledgeEntry }) {
   );
 }
 
+/** Where the entry is shared and under which conditions it is served in other repositories. */
+function ScopeLine({ entry: e }: { entry: KnowledgeEntry }) {
+  const parts: string[] = [];
+  if (e.origin_repo) parts.push(`来自仓库 ${e.origin_repo}`);
+  if (e.domains?.length) parts.push(`业务领域 ${e.domains.join('、')}`);
+  const deps = e.applies_to?.dependencies ?? [];
+  if (e.applies_to?.languages?.length) parts.push(`适用语言 ${e.applies_to.languages.join('、')}`);
+  if (deps.length) parts.push(`适用依赖 ${deps.map((d) => `${d.name}@${d.range}`).join('、')}`);
+  if (e.portable_patterns?.length) parts.push(`跨仓库路径 ${e.portable_patterns.join('、')}`);
+  if (e.layer === 'personal') parts.push('仅你本人可见');
+  if (e.layer === 'shared_tech' && !deps.length && !e.applies_to?.languages?.length) parts.push('未声明适用技术栈：其他仓库只作参考');
+  const waivers = e.overrides ?? [];
+  if (!parts.length && !waivers.length) return null;
+  return (
+    <div className="mt-3 grid gap-1 text-xs text-muted-foreground">
+      {parts.length > 0 && <p>{parts.join(' · ')}</p>}
+      {waivers.map((o) => (
+        <p key={o.rule_id}>豁免团队规范 {o.rule_id}：{o.reason}（{o.approver} 批准，至 {o.expires_at.slice(0, 10)}）</p>
+      ))}
+    </div>
+  );
+}
+
 function EntryBody({ data }: { data: Extract<KbGetResult, { servable: true }> }) {
   const { entry: e, assessment: a, validations, rawMarkdown, storageZone, snapshots = [], ledger } = data;
   const latestSnap = new Map<string, (typeof snapshots)[number]>();
@@ -138,6 +161,7 @@ function EntryBody({ data }: { data: Extract<KbGetResult, { servable: true }> })
         <div className="mt-3">
           <GovernanceBadges entry={e} full />
         </div>
+        <ScopeLine entry={e} />
         <EntryStepper entry={e} />
       </div>
 

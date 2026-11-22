@@ -26,6 +26,30 @@ export function isRepositoryKnowledgeLayer(value: unknown): value is (typeof REP
 }
 export type KnowledgeLayer = (typeof KNOWLEDGE_LAYERS)[number];
 
+/**
+ * Layers a capture (tool, auto-capture, review) may write directly. Team rules are normative and are
+ * only ever proposed for a human decision, never written by capture.
+ */
+export const CAPTURABLE_LAYERS = ['project', 'domain', 'shared_tech', 'personal'] as const;
+export type CapturableLayer = (typeof CAPTURABLE_LAYERS)[number];
+export function isCapturableLayer(value: unknown): value is CapturableLayer {
+  return value === 'project' || value === 'domain' || value === 'shared_tech' || value === 'personal';
+}
+
+/** Where a layer is shared and served: one repository, an organisation, a business domain, every repository, one person. */
+export type KnowledgeScope = 'repo' | 'org' | 'domain' | 'global' | 'user';
+export const LAYER_SCOPE: Record<KnowledgeLayer, KnowledgeScope> = {
+  team_rule: 'org',
+  project: 'repo',
+  domain: 'domain',
+  shared_tech: 'global',
+  personal: 'user',
+};
+/** Layers that may be served outside the repository they were captured in. */
+export function isCrossRepoLayer(layer: KnowledgeLayer): boolean {
+  return layer === 'domain' || layer === 'shared_tech' || layer === 'personal';
+}
+
 export const PRIORITIES = ['P0', 'P1', 'P2'] as const;
 export type Priority = (typeof PRIORITIES)[number];
 
@@ -52,6 +76,8 @@ export const STORAGE_ZONES = [
   'probation',
   'personal',
   'shared_tech',
+  /** Domain knowledge without a home repository (`~/.dsh/accremind/domain/`). */
+  'domain',
 ] as const;
 export type StorageZone = (typeof STORAGE_ZONES)[number];
 
@@ -88,6 +114,26 @@ export interface EnforcementSpec {
   ref: string | null;
 }
 
+/** Technology-stack conditions under which a cross-repository entry applies. Empty means "not stated". */
+export interface ApplicabilitySpec {
+  languages?: string[];
+  dependencies?: DependencyConstraint[];
+  /** Explicit allow-list of repository IDs. */
+  repos?: string[];
+  /** Repositories where the entry must never be served. */
+  exclude_repos?: string[];
+}
+
+/** A repository's documented exception to a team rule. */
+export interface RuleOverride {
+  rule_id: string;
+  reason: string;
+  approver: string;
+  expires_at: string;
+}
+
+export type Visibility = 'private' | 'team' | 'org';
+
 export interface KnowledgeEntry {
   id: string;
   revision: number;
@@ -121,6 +167,23 @@ export interface KnowledgeEntry {
   updated_at: string;
   last_validated_at: string | null;
   review_due_at: string;
+  // ---- format v2 (all optional; absent on v1 cards) ----
+  /** Repository the entry was captured in; its paths and anchors only mean something there. */
+  origin_repo?: string | null;
+  /** Business domains (domain layer). */
+  domains?: string[];
+  applies_to?: ApplicabilitySpec;
+  /** Path patterns that stay meaningful in other repositories (e.g. `**\/migrations/*.sql`). */
+  portable_patterns?: string[];
+  /** Owner of a personal entry (hashed Git e-mail). */
+  owner?: string | null;
+  visibility?: Visibility;
+  /** Team rules this (project) entry is a documented exception to. */
+  overrides?: RuleOverride[];
+  /** Shared-tech entry this domain entry refines; the two are never served together. */
+  specializes?: string | null;
+  /** Topic tags (controlled vocabulary IDs) set by people; derived tags are added at index time. */
+  tags?: string[];
 }
 
 export interface ClaimEvidenceMapping {
@@ -201,8 +264,36 @@ export type ZeroResultReason =
   | 'suspended_conflict'
   | 'insufficient_query';
 
+/** Who is asking, in which repository, about what: the signals cross-repository relevance is judged on. */
+export interface SessionContext {
+  repoId: string;
+  orgId?: string | null;
+  userId?: string | null;
+  /** Other owner IDs of the same person (linked accounts, legacy e-mail hashes). */
+  userAliases?: string[];
+  /** Topic tags of the question (controlled vocabulary IDs). */
+  tags?: string[];
+  domains: string[];
+  languages: string[];
+  dependencies: Record<string, string>;
+  activeFiles?: string[];
+  errorText?: string;
+}
+
+/**
+ * How an entry relates to the current session:
+ * own_repo — captured here (or explicitly allowed here); domain_match — shares a business domain;
+ * stack_match — its stack conditions hold here; owner_match — the asker's own personal entry;
+ * cross_ref — none of the above, shown only on strong evidence and labelled as a reference.
+ */
+export type ScopeVerdict = 'own_repo' | 'domain_match' | 'stack_match' | 'owner_match' | 'cross_ref';
+
 export interface SearchQuery {
+  /** @deprecated alias of `context.repoId`; still honoured. */
   workspaceId: string;
+  context?: Partial<SessionContext>;
+  /** auto (default): applicability gates; repo: this repository only; all: also other repositories' project knowledge. */
+  scope?: 'auto' | 'repo' | 'all';
   query?: string;
   type?: KnowledgeType;
   layer?: KnowledgeLayer;
@@ -220,6 +311,9 @@ export interface SearchHit {
   score: number;
   matchReasons: string[];
   truncated: boolean;
+  /** Repository the entry comes from (null for machine-wide layers). */
+  originRepo?: string | null;
+  scopeVerdict?: ScopeVerdict;
 }
 
 export interface SearchResult {

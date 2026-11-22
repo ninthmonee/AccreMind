@@ -47,7 +47,7 @@ export class FakeDshHost {
   /** The root plugin context handed to `apply()`. */
   readonly ctx: any;
 
-  constructor() {
+  constructor(options: { llm?: unknown } = {}) {
     const agentsService = {
       list: () => [...this.agentsById.values()].filter((a) => !a.disposed),
       get: (id: string) => this.agentsById.get(id),
@@ -55,7 +55,7 @@ export class FakeDshHost {
     };
     this.ctx = {
       reflect: { provide() {} },
-      get: (name: string) => (name === 'agents' ? agentsService : undefined),
+      get: (name: string) => (name === 'agents' ? agentsService : name === 'llm' ? options.llm : undefined),
       on: (event: string, listener: Listener) => {
         const list = this.listeners.get(event) ?? [];
         list.push(listener);

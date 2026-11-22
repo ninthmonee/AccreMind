@@ -102,54 +102,111 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function Workbench({ call, sessionId }) {
+    // The sandboxed workbench has no filesystem, Node APIs or access to the host document.
+
+    const PANEL_ID = 'accremind';
+    const PANEL_TITLE = 'AccreMind';
+    const NS = 'accremind';
+    // Slots under conversation.* hand us their session; the main panel is workspace-wide, so it
+    // remembers the most recent conversation and falls back to the host's session list.
+    let lastSessionId = null;
+    function rememberSession(sessionId) {
+      if (typeof sessionId === 'string' && sessionId) lastSessionId = sessionId;
+      return sessionId;
+    }
+
+    function useSessionSnapshot(sessions) {
+      const read = () => sessions?.list?.getSnapshot?.() ?? { ids: [], byId: {} };
+      const [snapshot, setSnapshot] = React.useState(read);
+      React.useEffect(() => {
+        const store = sessions?.list;
+        if (typeof store?.subscribe !== 'function') return undefined;
+        const sync = () => setSnapshot(store.getSnapshot());
+        sync();
+        return store.subscribe(sync);
+      }, [sessions]);
+      return snapshot ?? { ids: [], byId: {} };
+    }
+
+    // The sidebar renders panellist entries through renderSlot, so size/active arrive as props.
+    function PanelIcon({ size = 18, active = false }) {
+      return h('svg', { viewBox: '0 0 24 24', width: size, height: size, fill: 'none', stroke: 'currentColor',
+          strokeWidth: active ? 2 : 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M4 7.2 12 3.4l8 3.8v9.6L12 20.6l-8-3.8z' }),
+        h('path', { d: 'M4 7.2 12 11l8-3.8M12 11v9.6' }));
+    }
+
+    // The knowledge base is scoped to the repository, never to one conversation, so the panel does
+    // not ask which session to use: it follows the session the host has open in the main view, then
+    // the conversation that just talked to us, then any session of the same repository.
+    function openSessionId(snapshot) {
+      for (const id of snapshot?.ids ?? []) {
+        if ((snapshot.byId?.[id]?.retainedBy?.mainView ?? 0) > 0) return id;
+      }
+      return '';
+    }
+
+    function WorkbenchPanel({ sessions, rpcFor }) {
       const frame = React.useRef(null);
-      const dialog = React.useRef(null);
       const [html, setHtml] = React.useState('');
       const [error, setError] = React.useState('');
+      const snapshot = useSessionSnapshot(sessions);
+      const sessionId = openSessionId(snapshot) || lastSessionId || snapshot.ids?.[0] || '';
+
       React.useEffect(() => {
-        setHtml(''); setError(''); dialog.current?.close();
         function onMessage(event) {
-          if (!frame.current || event.source !== frame.current.contentWindow || event.data?.channel !== 'accremind-call') return;
+          if (!frame.current || event.source !== frame.current.contentWindow) return;
+          if (event.data?.channel !== 'accremind-call') return;
           const { id, method, params } = event.data;
           const target = event.source;
           const reply = data => target.postMessage({ channel: 'accremind-reply', id, ...data }, '*');
-          call(method, params).then(value => reply({ value }), error => reply({ error: error.message }));
+          rpcFor(sessionId)(method, params).then(value => reply({ value }), failure => reply({ error: failure.message }));
         }
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
-      }, [sessionId]);
-      async function open() {
-        dialog.current?.showModal();
-        try {
-          const source = await call('workbench', {});
-          setHtml(source.replace('<head>', () => '<head><script>(' + frameBridge.toString() + ')()<\/script>'));
-        } catch (failure) { setError(failure.message); }
-      }
-      return h(React.Fragment, null,
-        h('button', { type: 'button', onClick: open }, 'AccreMind 经验工作台'),
-        h('dialog', { ref: dialog, onClose: () => { setHtml(''); setError(''); }, 'aria-label': 'AccreMind 经验工作台',
-          style: { width: '94vw', maxWidth: 1440, height: '92vh', padding: 8, borderRadius: 8 } },
-          h('button', { type: 'button', onClick: () => dialog.current?.close() }, '关闭工作台'),
-          error ? h('p', { role: 'alert' }, error) : html
-            ? h('iframe', { ref: frame, srcDoc: html, sandbox: 'allow-scripts', title: 'AccreMind 工作台',
-                style: { display: 'block', width: '100%', height: 'calc(100% - 2em)', border: 0 } })
-            : h('p', null, '正在打开工作台…')));
+      }, [sessionId, rpcFor]);
+
+      React.useEffect(() => {
+        let live = true;
+        setError('');
+        if (!sessionId) { setHtml(''); return undefined; }
+        rpcFor(sessionId)('workbench', {}).then(source => {
+          if (live) setHtml(source.replace('<head>', () => '<head><script>(' + frameBridge.toString() + ')()<\/script>'));
+        }).catch(failure => { if (live) setError(failure.message); });
+        return () => { live = false; };
+      }, [sessionId, rpcFor]);
+
+      return h('section', { 'aria-label': PANEL_TITLE,
+          style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: '70vh', boxSizing: 'border-box', gap: 8 } },
+        !sessionId
+          ? h('p', { role: 'alert' }, '请先在对话中打开一个会话，工作台需要会话上下文来定位项目知识库。')
+          : html
+            ? h('iframe', { ref: frame, srcDoc: html, sandbox: 'allow-scripts', title: PANEL_TITLE,
+                style: { flex: 1, minHeight: 0, width: '100%', border: 0, borderRadius: 8, background: '#fff' } })
+            : h('p', null, error || '正在载入经验工作台…'));
     }
 
-    return { inject: ['slots', 'connection'], apply(ctx) {
-      function register(name, id, component) {
-        ctx.slots.inject(name, () => ctx.slots.register({
-          name, id, order: 60,
-          inject: sessionId => ({ sessionId, call: async (method, params) => {
-            const response = await ctx.connection.rpc.call('/api', 'accremind/invoke', { sessionId, method, params });
-            if (!response.ok) throw new Error(response.error.message);
-            return response.value;
-          } }),
-        }, component));
-      }
-      register('conversation.chat.turnTail', 'accremind-receipt', TurnFooter);
-      register('conversation.composer.dock', 'accremind-workbench', Workbench);
+    return { inject: ['slots', 'connection', 'sessions', 'locale'], apply(ctx) {
+      ctx.effect(() => ctx.locale.register(NS, { zh: { panel: PANEL_TITLE }, en: { panel: PANEL_TITLE } }), 'accremind: dictionaries');
+      const t = ctx.locale.bind(NS);
+      const callFor = sessionId => async (method, params) => {
+        const response = await ctx.connection.rpc.call('/api', 'accremind/invoke', { sessionId, method, params });
+        if (!response.ok) throw new Error(response.error.message);
+        return response.value;
+      };
+      // Sidebar entry plus the main-area page it selects: the host keys the "main" slot by the
+      // panellist id, so both registrations must share PANEL_ID.
+      ctx.slots.inject('main', () => ctx.slots.register({
+        name: 'main', key: PANEL_ID,
+        inject: () => ({ sessions: ctx.sessions, rpcFor: sessionId => callFor(sessionId) }),
+      }, WorkbenchPanel));
+      ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+        name: 'sidebar.panellist', id: PANEL_ID, order: 40, locale: NS, label: () => t('panel'),
+      }, PanelIcon));
+      ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
+        name: 'conversation.chat.turnTail', id: 'accremind-receipt', order: 60,
+        inject: sessionId => ({ sessionId: rememberSession(sessionId), call: callFor(sessionId) }),
+      }, TurnFooter));
     } };
   },
 });

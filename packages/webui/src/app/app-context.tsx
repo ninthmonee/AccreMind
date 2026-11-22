@@ -5,7 +5,7 @@ import type { EntryStatus, Freshness, KnowledgeLayer, KnowledgeType, Overview } 
 import { type AsyncState, useAsync } from '@/lib/use-async';
 import { type ThemePref, useTheme } from './theme';
 
-export type View = 'home' | 'library' | 'radar' | 'review' | 'governance' | 'receipts';
+export type View = 'home' | 'library' | 'radar' | 'review' | 'governance' | 'receipts' | 'docs';
 
 /** 从别的页面跳到知识库时预置的筛选（例如总览里点“试用中”）。 */
 export interface LibraryPreset {

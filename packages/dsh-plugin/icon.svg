@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="AccreMind">
+  <g fill="none" stroke="#4d6bfe" stroke-width="26" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256 96 L400 180 L256 264 L112 180 Z"/>
+    <path d="M112 180 L112 348 L256 432 L400 348 L400 180"/>
+    <path d="M256 264 L256 432"/>
+  </g>
+  <path fill="#4d6bfe" d="M256 158 L286 206 L226 206 Z"/>
+</svg>

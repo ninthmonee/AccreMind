@@ -8,6 +8,7 @@ import type {
 } from '../contracts/types.ts';
 import { enforceHardPublishGate, validateCaptureAssessment } from '../contracts/validator.ts';
 import type { KnowledgeStoreProvider } from '../store/provider.ts';
+import { targetZoneForLayer } from '../store/local-store.ts';
 import { isSensitiveFilePath, redactSensitiveText } from './secret-redactor.ts';
 
 export interface TriageCandidateInput {
@@ -28,6 +29,10 @@ export interface SingleTriageOutcome {
   persistedZone: StorageZone | null;
   navigationItem: NavigationItem | null;
   downgradedReason?: string;
+  /** Near-identical entries already known on this machine (any repository or layer): link or generalize instead of duplicating. */
+  similarExisting?: Array<{ id: string; layer: KnowledgeEntry['layer']; originRepo: string | null; similarity: number }>;
+  /** Set when the candidate was a team-rule proposal: it waits for a human decision and is never written directly. */
+  proposedTeamRule?: boolean;
 }
 
 export interface BatchTriageReport {
@@ -174,6 +179,19 @@ export class TriageEngine {
           rationale: redactSensitiveText(input.candidateEntry.rationale).redactedText,
         };
 
+        // Team rules are normative: a capture can only propose one for a human decision.
+        if (sanitizedEntry.layer === 'team_rule') {
+          const proposal: CaptureAssessment = { ...effectiveAssessment, disposition: 'needs_confirmation' };
+          this.store.recordAssessment(proposal, { ...sanitizedEntry, status: 'candidate' });
+          return {
+            assessmentId: proposal.id, duplicate: false, finalDisposition: 'needs_confirmation',
+            persistedEntry: null, persistedZone: null, navigationItem: null, proposedTeamRule: true,
+            downgradedReason: '团队规范需要人工审核后才会生效',
+          };
+        }
+        const similarExisting = this.store.findSimilarEntries?.(sanitizedEntry) ?? [];
+        const withSimilar = <T extends SingleTriageOutcome>(o: T): T => (similarExisting.length ? { ...o, similarExisting } : o);
+
         const gate = enforceHardPublishGate(sanitizedEntry, effectiveAssessment);
         if (!gate.ok) {
           const downgraded: CaptureAssessment = {
@@ -196,14 +214,14 @@ export class TriageEngine {
         if (writeGate === 'review') {
           const candidateOnly: KnowledgeEntry = { ...sanitizedEntry, status: 'candidate' };
           this.store.recordAssessment(effectiveAssessment, candidateOnly);
-          return {
+          return withSimilar({
             assessmentId: effectiveAssessment.id,
             duplicate: false,
             finalDisposition: 'knowledge_candidate',
             persistedEntry: null,
             persistedZone: null,
             navigationItem: null,
-          };
+          });
         }
 
         // Default V3.1 `probation` mode: enters ~/.dsh/accremind/probation/ for zero-friction trial
@@ -215,34 +233,29 @@ export class TriageEngine {
           };
           const saved = this.store.upsertEntry(probationEntry, 'probation', effectiveAssessment);
           this.store.recordPublication?.(saved, 'AI 总结后自动进入本机试用');
-          return {
+          return withSimilar({
             assessmentId: effectiveAssessment.id,
             duplicate: false,
             finalDisposition: 'knowledge_candidate',
             persistedEntry: saved,
             persistedZone: 'probation',
             navigationItem: null,
-          };
+          });
         }
 
         // `off` mode: writes directly to target active zone (still strictly gated by S03 above!)
-        const targetZone: StorageZone =
-          sanitizedEntry.layer === 'shared_tech'
-            ? 'shared_tech'
-            : sanitizedEntry.layer === 'personal'
-              ? 'personal'
-              : 'project';
+        const targetZone: StorageZone = targetZoneForLayer(sanitizedEntry.layer);
         const activeEntry: KnowledgeEntry = { ...sanitizedEntry, status: 'active' };
         const saved = this.store.upsertEntry(activeEntry, targetZone, effectiveAssessment);
         this.store.recordPublication?.(saved, 'AI 总结后直接入库（未开启审核）');
-        return {
+        return withSimilar({
           assessmentId: effectiveAssessment.id,
           duplicate: false,
           finalDisposition: 'knowledge_candidate',
           persistedEntry: saved,
           persistedZone: targetZone,
           navigationItem: null,
-        };
+        });
       }
     }
   }

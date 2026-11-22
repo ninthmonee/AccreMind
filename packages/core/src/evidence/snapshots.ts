@@ -90,19 +90,23 @@ export class EvidenceSnapshots {
   private readonly projectRoot: string;
   private readonly repoDir: string;
   private readonly localDir: string;
+  private readonly globalDir: string;
   private readonly actor: () => string;
 
-  constructor(options: { projectRoot: string; repoDir: string; localDir: string; actor: () => string }) {
+  constructor(options: { projectRoot: string; repoDir: string; localDir: string; globalDir?: string; actor: () => string }) {
     this.projectRoot = options.projectRoot;
     this.repoDir = options.repoDir;
     this.localDir = options.localDir;
+    this.globalDir = options.globalDir ?? options.localDir;
     this.actor = options.actor;
   }
 
   /** Repository entries keep snapshots in the repository; trials and personal entries stay on this machine. */
   dirFor(entry: Pick<KnowledgeEntry, 'id' | 'status' | 'layer'>): string {
-    const local = entry.status === 'probation' || entry.layer === 'personal' || entry.layer === 'shared_tech';
-    return path.join(local ? this.localDir : this.repoDir, entry.id);
+    if (entry.status === 'probation') return path.join(this.localDir, entry.id);
+    // Machine-wide entries are read from every repository, so their snapshots are kept machine-wide too.
+    if (entry.layer === 'personal' || entry.layer === 'shared_tech') return path.join(this.globalDir, entry.id);
+    return path.join(this.repoDir, entry.id);
   }
 
   /** Reads one piece of evidence as it stands now, without writing anything. */
@@ -163,7 +167,7 @@ export class EvidenceSnapshots {
 
   /** All snapshots of an entry, newest revision first. */
   list(entry: Pick<KnowledgeEntry, 'id' | 'status' | 'layer'>): EvidenceSnapshot[] {
-    const dirs = [...new Set([this.dirFor(entry), path.join(this.repoDir, entry.id), path.join(this.localDir, entry.id)])];
+    const dirs = [...new Set([this.dirFor(entry), path.join(this.repoDir, entry.id), path.join(this.localDir, entry.id), path.join(this.globalDir, entry.id)])];
     const seen = new Set<string>();
     const out: EvidenceSnapshot[] = [];
     for (const dir of dirs) {

@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, SimpleSelect } f
 import { Input, Label, Textarea } from '@/components/ui/primitives';
 import { LAYERS, PRIORITY, TYPES } from '@/lib/labels';
 import { rpc } from '@/lib/rpc';
-import type { CaptureResult, Disposition, KnowledgeType, Priority } from '@/lib/types';
+import type { CapturableLayer, CaptureResult, Disposition, KnowledgeType, Priority } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { useApp } from './app-context';
 
@@ -24,7 +24,7 @@ const DESTINATION: Record<string, string> = {
 };
 
 const empty = {
-  layer: 'project' as 'project' | 'domain', question: '', baseline: '', delta: '', title: '', type: 'pitfall' as KnowledgeType,
+  layer: 'project' as CapturableLayer, question: '', baseline: '', delta: '', title: '', type: 'pitfall' as KnowledgeType,
   priority: 'P1' as Priority, polarity: 'recommend' as 'recommend' | 'avoid', aliases: '', claim: '', pre: '', inv: '',
   method: '', note: '', loc: '',
 };
@@ -159,9 +159,9 @@ export function CaptureDialog() {
               <SimpleSelect
                 ariaLabel="知识范围"
                 value={f.layer}
-                onValueChange={(v) => set('layer', (v || 'project') as 'project' | 'domain')}
+                onValueChange={(v) => set('layer', (v || 'project') as CapturableLayer)}
                 placeholder="项目知识"
-                options={LAYERS.filter((l) => l.value === 'project' || l.value === 'domain').map((l) => ({ value: l.value as 'project' | 'domain', label: l.label, hint: l.hint }))}
+                options={LAYERS.filter((l) => l.value !== 'team_rule').map((l) => ({ value: l.value as CapturableLayer, label: l.label, hint: l.hint }))}
               />
             </Field>
             <Field label="遇到了什么问题？" required>

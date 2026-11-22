@@ -6,7 +6,7 @@ import { IconTile, stagger } from '@/components/display';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton } from '@/components/ui/primitives';
-import type { Tone } from '@/lib/labels';
+import { ATTENTION, type Tone } from '@/lib/labels';
 import { rpc } from '@/lib/rpc';
 import type { AttentionItem, ReviewItem } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -71,12 +71,12 @@ export function InboxCard({
       ),
     })),
     ...attention.map<Row>((a) => ({
-      key: `att-${a.entry_id}`,
+      key: `att-${a.entry_id}-${a.kind}`,
       icon: a.kind === 'probation_silent' ? FlaskConical : BellOff,
       tone: 'warning',
       title: a.title,
-      hint: a.kind === 'probation_silent' ? '试用期满仍没有人反馈，决定是否保留' : '多次被标记为“不适用”，已暂停提醒',
-      tag: a.kind === 'probation_silent' ? '试用期满' : '不适用',
+      hint: ATTENTION[a.kind]?.hint ?? a.reason,
+      tag: ATTENTION[a.kind]?.label ?? a.kind,
       actions:
         a.kind === 'probation_silent' ? (
           <div className="flex gap-1.5">

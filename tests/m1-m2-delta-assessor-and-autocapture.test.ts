@@ -142,12 +142,23 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
       workspaceId: store.workspaceId,
       llm: {async completeJson() { return {
         tokenUsed: 10, content: JSON.stringify({disposition:'needs_confirmation',
-          candidate:{layer:'shared_tech',type:'model',title:'缓冲区实体关系',claim:'证据不足，仍需复查'}}),
+          candidate:{layer:'team_rule',type:'model',title:'缓冲区实体关系',claim:'证据不足，仍需复查'}}),
       }; }},
     });
     const legacy = await invalidLayer.assess(bundle);
     assert.equal(legacy.candidateEntry?.type,'model');
+    // Team rules are never produced by a model: an unknown or normative layer falls back to project.
     assert.equal(legacy.candidateEntry?.layer,'project');
+    const sharedTech = await new DeltaAssessor({
+      workspaceId: store.workspaceId,
+      llm: {async completeJson() { return {
+        tokenUsed: 10, content: JSON.stringify({disposition:'knowledge_candidate',
+          candidate:{layer:'shared_tech',type:'pitfall',title:'连接池在 fork 之后必须重建',claim:'fork 子进程继承的连接会被父进程关闭'}}),
+      }; }},
+    }).assess(bundle);
+    assert.equal(sharedTech.candidateEntry?.layer,'shared_tech');
+    assert.equal(sharedTech.candidateEntry?.symbol_anchors.length, 0, 'machine-wide knowledge never carries repository anchors');
+    assert.equal(sharedTech.candidateEntry?.origin_repo, store.workspaceId);
 
 
     const triage = new TriageEngine(store, 'probation');

@@ -96,13 +96,16 @@ export function deriveStanding(entry: KnowledgeEntry, records: LedgerRecord[], o
 export class ValidationLedger {
   private readonly repoDir: string;
   private readonly localDir: string;
+  /** Machine-wide entries (personal, shared tech) keep one ledger for every repository on this machine. */
+  private readonly globalDir: string;
   private readonly shared: () => boolean;
   private readonly actor: () => string;
   private readonly tool: string;
 
-  constructor(options: { repoDir: string; localDir: string; shared: () => boolean; actor: () => string; tool?: string }) {
+  constructor(options: { repoDir: string; localDir: string; globalDir?: string; shared: () => boolean; actor: () => string; tool?: string }) {
     this.repoDir = options.repoDir;
     this.localDir = options.localDir;
+    this.globalDir = options.globalDir ?? options.localDir;
     this.shared = options.shared;
     this.actor = options.actor;
     this.tool = options.tool ?? 'accremind';
@@ -132,8 +135,9 @@ export class ValidationLedger {
       note: redactSensitiveText((input.note ?? '').trim()).redactedText.slice(0, NOTE_MAX),
       tool: this.tool,
     };
-    const local = !this.shared() || entry.status === 'probation' || entry.layer === 'personal' || entry.layer === 'shared_tech';
-    const dir = path.join(local ? this.localDir : this.repoDir, entry.id);
+    const machineWide = entry.status !== 'probation' && (entry.layer === 'personal' || entry.layer === 'shared_tech');
+    const local = !this.shared() || entry.status === 'probation';
+    const dir = path.join(machineWide ? this.globalDir : local ? this.localDir : this.repoDir, entry.id);
     fs.mkdirSync(dir, { recursive: true });
     writeFileAtomicSync(path.join(dir, `${at.replace(/[:.]/g, '')}-${record.id.slice(3)}.json`), `${JSON.stringify(record, null, 2)}\n`);
     return record;
@@ -142,7 +146,7 @@ export class ValidationLedger {
   /** Every record of an entry from both places, oldest first, de-duplicated by id. */
   read(entryId: string): LedgerRecord[] {
     const byId = new Map<string, LedgerRecord>();
-    for (const root of [this.repoDir, this.localDir]) {
+    for (const root of new Set([this.repoDir, this.localDir, this.globalDir])) {
       const dir = path.join(root, entryId);
       if (!fs.existsSync(dir)) continue;
       for (const name of fs.readdirSync(dir)) {
@@ -161,7 +165,7 @@ export class ValidationLedger {
   /** Entry ids that have records anywhere. */
   entryIds(): string[] {
     const ids = new Set<string>();
-    for (const root of [this.repoDir, this.localDir]) {
+    for (const root of new Set([this.repoDir, this.localDir, this.globalDir])) {
       if (fs.existsSync(root)) for (const d of fs.readdirSync(root, { withFileTypes: true })) if (d.isDirectory()) ids.add(d.name);
     }
     return [...ids];

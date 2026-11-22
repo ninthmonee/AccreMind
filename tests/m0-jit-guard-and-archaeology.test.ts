@@ -40,7 +40,7 @@ describe('M0 DSH Cordis Plugin, JIT Tool Guard, Skill Exporter & Git Archaeology
     host.mount({ globalDir, writeGate: 'off', llmAdapter: null, autoCapture: { enabled: false } });
     const agent = host.createAgent('session-jit-1', repoRoot);
     assert.deepEqual([...agent.tools.keys()].sort(), [
-      'accremind_capture', 'accremind_export_skill', 'accremind_get', 'accremind_search', 'accremind_validate',
+      'accremind_capture', 'accremind_export_skill', 'accremind_get', 'accremind_propose_doc_change', 'accremind_search', 'accremind_validate',
     ]);
 
     // Capture a P0 billing webhook pitfall that also contains a malicious prompt-injection string

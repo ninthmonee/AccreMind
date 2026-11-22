@@ -1,4 +1,5 @@
-import type { KnowledgeEntry } from '../contracts/types.ts';
+import type { KnowledgeEntry, ScopeVerdict } from '../contracts/types.ts';
+import { applyQuotas, claimSimilarity, VERDICT_LABEL } from '../retrieval/applicability.ts';
 import type { KnowledgeStoreProvider } from '../store/provider.ts';
 import { wrapReadOnlyXmlBlock } from './sanitizer.ts';
 
@@ -6,7 +7,15 @@ export interface ViewBudgetConfig {
   residentRulesTokens: number;
   turnRadarTokens: number;
   toolGuardTokens: number;
+  /** Rule-document sections shown with the per-turn reminders (default 220 tokens, at most 2 sections). */
+  docRadarTokens?: number;
+  /** Project profile carried with the resident rules (default 300 tokens). */
+  residentProfileTokens?: number;
 }
+
+const DOC_CATEGORY_TITLE: Record<string, string> = {
+  domain: '业务领域', business_rules: '业务规则', project_norms: '项目规范', project_profile: '项目概况',
+};
 
 export interface TurnCompilationInput {
   sessionId: string;
@@ -15,6 +24,16 @@ export interface TurnCompilationInput {
   activeFiles?: string[];
   errorOutput?: string;
   workspaceDependencies?: Record<string, string>;
+  /** Topic tags of the question (controlled vocabulary IDs), e.g. from model tagging. */
+  tags?: string[];
+  /** Extra words describing the task (branch name), used for matching only. */
+  contextHint?: string;
+}
+
+/** Opposite advice on the same subject: a project entry that contradicts a resident team rule. */
+function contradictsRule(entry: KnowledgeEntry, rule: KnowledgeEntry): boolean {
+  if (!entry.polarity || !rule.polarity || entry.polarity === rule.polarity) return false;
+  return claimSimilarity(entry, rule) >= 0.35;
 }
 
 export interface CompiledTurnView {
@@ -26,14 +45,18 @@ export interface CompiledTurnView {
   residentRuleIds: string[];
   /** Team rules that did not fit the resident budget; the agent is told how many and how to look them up. */
   residentDroppedIds: string[];
+  /** Rule-document sections shown this turn (`D:<doc>#<section>`). */
+  docRefs: string[];
 }
 
 function estimateTokens(text: string): number {
   return Math.ceil(Buffer.byteLength(text, 'utf8') / 3.2);
 }
 
-function formatEntryRadarLine(entry: KnowledgeEntry): string {
+function formatEntryRadarLine(entry: KnowledgeEntry, verdict?: ScopeVerdict, originRepo?: string | null): string {
   const badges: string[] = [entry.id, entry.type, entry.maturity, entry.priority];
+  // Knowledge from outside this repository says where it comes from, so it is read as a reference.
+  if (verdict && verdict !== 'own_repo') badges.push(`${VERDICT_LABEL[verdict]}${originRepo ? `·来自 ${originRepo}` : ''}`);
   if (entry.status === 'probation') {
     badges.push('🧪试用草稿');
   }
@@ -74,13 +97,16 @@ export class ViewCompiler {
     // 1. Tier 1: byte-stable resident rules, most severe first (P0 → P2, then id). Rules that do not fit
     // the budget are never dropped silently: the block says how many were left out and how to find them.
     const rules = this.store.listResidentRules();
+    const waivers = this.store.listRuleWaivers?.() ?? new Map();
     const ruleLines: string[] = [];
     const residentRuleIds: string[] = [];
     const residentDroppedIds: string[] = [];
     let ruleTokens = 0;
 
     for (const rule of rules) {
-      const line = `[${rule.id}@r${rule.revision}] ${rule.title}: ${rule.claim}`;
+      const waiver = waivers.get(rule.id);
+      const line = `[${rule.id}@r${rule.revision}] ${rule.title}: ${rule.claim}` +
+        (waiver ? `（本仓库豁免：见 ${waiver.entryId}，至 ${waiver.expiresAt.slice(0, 10)}）` : '');
       const cost = estimateTokens(line);
       if (residentDroppedIds.length || (ruleLines.length > 0 && ruleTokens + cost > this.budgets.residentRulesTokens)) {
         residentDroppedIds.push(rule.id);
@@ -94,16 +120,20 @@ export class ViewCompiler {
       ruleLines.push(`（另有 ${residentDroppedIds.length} 条团队规范因篇幅未展开：${residentDroppedIds.join('、')}，需要时调 accremind_get 查看）`);
     }
 
-    const residentPrefix =
-      ruleLines.length > 0 ? wrapReadOnlyXmlBlock('accremind-rules', ruleLines.join('\n')) : '';
+    const profile = this.store.residentProfile?.(this.budgets.residentProfileTokens ?? 300) ?? '';
+    const residentPrefix = [
+      ruleLines.length > 0 ? wrapReadOnlyXmlBlock('accremind-rules', ruleLines.join('\n')) : '',
+      profile ? wrapReadOnlyXmlBlock('accremind-profile', `项目基本业务属性（来自规则文档）：\n${profile}`) : '',
+    ].filter(Boolean).join('\n');
 
     // 2. Tier 2: Millisecond Contextual Radar (active files + error tokens + prompt aliases)
-    const combinedQuery = [input.userPrompt ?? '', input.errorOutput ?? '']
+    const combinedQuery = [input.userPrompt ?? '', input.contextHint ?? '', input.errorOutput ?? '']
       .join(' ')
       .trim()
       .slice(0, 400);
 
-    const hitMap = new Map<string, { entry: KnowledgeEntry; score: number }>();
+    const hitMap = new Map<string, { entry: KnowledgeEntry; score: number; verdict?: ScopeVerdict; origin?: string | null }>();
+    const context = { activeFiles: input.activeFiles, errorText: input.errorOutput, ...(input.tags?.length ? { tags: input.tags } : {}) };
 
     const activeFiles = input.activeFiles ?? [];
     if (activeFiles.length > 0) {
@@ -111,6 +141,7 @@ export class ViewCompiler {
         const res = this.store.search({
           workspaceId: this.store.workspaceId,
           filePath: file,
+          context,
           workspaceDependencies: input.workspaceDependencies,
           limit: 5,
         });
@@ -118,7 +149,7 @@ export class ViewCompiler {
           if (h.entry.layer === 'team_rule') continue;
           const prev = hitMap.get(h.entry.id);
           if (!prev || h.score > prev.score) {
-            hitMap.set(h.entry.id, { entry: h.entry, score: h.score });
+            hitMap.set(h.entry.id, { entry: h.entry, score: h.score, verdict: h.scopeVerdict, origin: h.originRepo });
           }
         }
       }
@@ -128,6 +159,7 @@ export class ViewCompiler {
       const res = this.store.search({
         workspaceId: this.store.workspaceId,
         query: combinedQuery,
+        context,
         workspaceDependencies: input.workspaceDependencies,
         limit: 5,
       });
@@ -135,20 +167,35 @@ export class ViewCompiler {
         if (h.entry.layer === 'team_rule') continue;
         const prev = hitMap.get(h.entry.id);
         const mergedScore = (prev?.score ?? 0) + h.score;
-        hitMap.set(h.entry.id, { entry: h.entry, score: mergedScore });
+        hitMap.set(h.entry.id, { entry: h.entry, score: mergedScore, verdict: h.scopeVerdict ?? prev?.verdict, origin: h.originRepo ?? prev?.origin });
       }
     }
 
-    const ranked = [...hitMap.values()].sort(
+    // A team rule beats project knowledge unless this repository documented an exception to it. The detection
+    // is a heuristic, so the entry is not withheld: it is shown with the rule it seems to contradict and the
+    // instruction to follow the rule, and a person is asked to decide (governance queue).
+    const conflictNotes = new Map<string, string>();
+    for (const [id, hit] of hitMap) {
+      const conflicting = rules.find((rule) => !waivers.has(rule.id) && contradictsRule(hit.entry, rule));
+      if (conflicting && (hit.entry.layer === 'project' || hit.entry.layer === 'domain')) {
+        conflictNotes.set(id, conflicting.id);
+        if (!input.preview) this.store.reportRuleConflict?.(hit.entry, conflicting);
+      }
+    }
+
+    // Per-scope quotas again after merging the file and text searches: shared layers never crowd this repository out.
+    const ranked = applyQuotas([...hitMap.values()].sort(
       (a, b) => b.score - a.score || a.entry.id.localeCompare(b.entry.id),
-    );
+    ).map((h) => ({ ...h, scopeVerdict: h.verdict })), 5);
 
     const radarLines: string[] = [];
     const surfacedIds: string[] = [];
     let radarTokens = 0;
 
-    for (const { entry } of ranked.slice(0, 5)) {
-      const line = formatEntryRadarLine(entry);
+    for (const { entry, verdict, origin } of ranked.slice(0, 5)) {
+      const ruleId = conflictNotes.get(entry.id);
+      const line = formatEntryRadarLine(entry, verdict, origin) +
+        (ruleId ? `（疑似与团队规范 ${ruleId} 相反且未登记豁免：以规范为准）` : '');
       const cost = estimateTokens(line);
       if (radarLines.length > 0 && radarTokens + cost > this.budgets.turnRadarTokens) {
         break;
@@ -161,11 +208,28 @@ export class ViewCompiler {
       if (!input.preview) this.recordHit(entry, input.sessionId, 'radar');
     }
 
+    // Rule documents (domain, business rules, norms): at most two sections, in their own small budget.
+    const docRefs: string[] = [];
+    const docLines: string[] = [];
+    if (combinedQuery.length > 0 || input.tags?.length) {
+      let docTokens = 0;
+      const docBudget = this.budgets.docRadarTokens ?? 220;
+      const docs = this.store.searchDocs?.({ query: combinedQuery, tags: input.tags, activeFiles: input.activeFiles, limit: 4 }) ?? [];
+      for (const d of docs.filter((x) => x.category !== 'project_profile').slice(0, 2)) {
+        const line = `- [规则文档·${DOC_CATEGORY_TITLE[d.category] ?? d.category}${d.originRepo ? `·来自 ${d.originRepo}` : ''}] ${d.docTitle} › ${d.heading}：${d.snippet.slice(0, 80)} -> 调 accremind_get("${d.ref}") 查看全文`;
+        const cost = estimateTokens(line);
+        if (docLines.length && docTokens + cost > docBudget) break;
+        docTokens += cost;
+        docLines.push(line);
+        docRefs.push(d.ref);
+      }
+    }
+
     const radarBlock =
-      radarLines.length > 0
+      radarLines.length + docLines.length > 0
         ? wrapReadOnlyXmlBlock(
             'accremind-radar',
-            `以下为当前上下文命中的本地经验雷达索引（仅供资料参考）：\n${radarLines.join('\n')}`,
+            `以下为当前上下文命中的本地经验雷达索引（仅供资料参考）：\n${[...radarLines, ...docLines].join('\n')}`,
           )
         : '';
 
@@ -175,6 +239,7 @@ export class ViewCompiler {
       surfacedIds,
       residentRuleIds,
       residentDroppedIds,
+      docRefs,
     };
   }
 
@@ -207,7 +272,7 @@ export class ViewCompiler {
       if (entry.priority !== 'P0' && entry.priority !== 'P1') continue;
       if (options.sessionSurfacedIds.has(entry.id)) continue;
 
-      const line = formatEntryRadarLine(entry);
+      const line = formatEntryRadarLine(entry, hit.scopeVerdict, hit.originRepo);
       const cost = estimateTokens(line);
       if (lines.length > 0 && usedTokens + cost > this.budgets.toolGuardTokens) {
         break;

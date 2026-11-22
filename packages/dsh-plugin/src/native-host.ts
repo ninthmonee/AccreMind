@@ -25,6 +25,7 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
   const prompts = new Map<string, string>();
   const replies = new Map<string, string>();
   const agents = ctx.get!('agents');
+  if (!agents) throw new Error('AccreMind 需要宿主提供 agents 服务（会话投影与轮次边界）');
   // A broken workspace (unwritable folder, locked index…) must never break the agent itself:
   // failures are reported once and retried after a cool-down instead of on every step.
   const failedRoots = new Map<string, number>();
@@ -107,7 +108,7 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
       const sessionId = event.agent.session.id;
       const prompt = plainText(event.messages.filter(m => m.role === 'user').at(-1));
       if (prompt) prompts.set(sessionId, prompt);
-      const view = runtime.compileBeforeTurn({ sessionId, turnId: String(event.turn), userPrompt: prompt });
+      const view = await runtime.compileBeforeTurnAsync({ sessionId, turnId: String(event.turn), userPrompt: prompt });
       if (!view.radarBlock) return decision;
       // The native pre-step waterfall admits immutable, identified user context messages.
       const context = { id: randomUUID(), role: 'user', source: { kind: 'accremind', form: 'notice', summary: '本轮经验' },
@@ -129,7 +130,7 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
       const names: Record<string, string> = { read: 'read_file', edit: 'edit_file', write: 'write_file' };
       const input: DshToolResult = { isError: result.isError, content: (result.content ?? []).filter((b: { type: string }) => b.type === 'text') };
       const guarded = runtime.handleAfterTool({
-        sessionId, turnId: String(agents.turnBoundaryOf(exec.agent.session).lastTurn),
+        sessionId, turnId: String(agents.turnBoundaryOf?.(exec.agent.session)?.lastTurn ?? 0),
         toolName: names[exec.name] ?? exec.name, args: exec.arguments ?? {}, result: input,
       });
       const extra = guarded.content.slice(input.content.length);
@@ -156,8 +157,14 @@ export function mountNativeHost(ctx: CordisContext, options: DshPluginRuntimeOpt
     replies.delete(session.id);
   });
   ctx.inject!(['connection'], (inner) => {
-    // Exact routes on the host's shared /api carrier are authenticated and owner-only.
-    inner.get!('connection').fetch.register({
+    // Exact routes on the host's shared /api carrier are authenticated and owner-only. The carrier
+    // is probed instead of assumed: an older host degrades to "no workbench", never a crash.
+    const carrier = inner.get?.('connection')?.fetch;
+    if (typeof carrier?.register !== 'function') {
+      report('workbench RPC', new Error('宿主未提供 connection.fetch.register，工作台路由未注册'));
+      return;
+    }
+    carrier.register({
       path: '/api/accremind/invoke', methods: ['POST'], requestBody: 'buffered',
       fetch: async (request: Request) => {
         const body = await request.json();

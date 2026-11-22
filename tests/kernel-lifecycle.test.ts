@@ -112,9 +112,18 @@ describe('Entry format version', () => {
     const store = new LocalMarkdownSqliteStore(ws());
     const { authPitfall, authAssessment } = authFixtures(store.workspaceId);
     const md = serializeEntryMarkdown(authPitfall);
-    assert.match(md, new RegExp(`format_version: ${ENTRY_FORMAT_VERSION}`));
+    // A card without any v2 field keeps the v1 format, so plugins that predate v2 still read it.
+    assert.match(md, /format_version: 1\n/);
     assert.equal(parseEntryMarkdown(md).id, authPitfall.id);
-    const newer = md.replace(`format_version: ${ENTRY_FORMAT_VERSION}`, 'format_version: 99');
+    const v2 = serializeEntryMarkdown({ ...authPitfall, layer: 'shared_tech', origin_repo: 'pay-0123456789',
+      applies_to: { languages: ['typescript'], dependencies: [{ name: 'pg', range: '^8' }] }, portable_patterns: ['**/*.sql'] });
+    assert.match(v2, new RegExp(`format_version: ${ENTRY_FORMAT_VERSION}`));
+    const back = parseEntryMarkdown(v2);
+    assert.equal(back.origin_repo, 'pay-0123456789');
+    assert.deepEqual(back.applies_to, { languages: ['typescript'], dependencies: [{ name: 'pg', range: '^8' }] });
+    assert.deepEqual(back.portable_patterns, ['**/*.sql']);
+    assert.equal(serializeEntryMarkdown(back), v2, 'v2 round-trips byte for byte');
+    const newer = md.replace('format_version: 1', 'format_version: 99');
     assert.throws(() => parseEntryMarkdown(newer, 'x.md'), NewerFormatError);
 
     store.upsertEntry(authPitfall, 'project', authAssessment);

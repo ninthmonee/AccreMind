@@ -38,7 +38,7 @@ describe('M1-B & M3: candidate review and workbench RPC end to end', () => {
         runtime.rpcHandlers['accremind.review.decide']!({assessmentId:assessment.id, ...params});
       const blocked = await decide({decision:'approve_probation'}) as {ok:boolean};
       assert.equal(blocked.ok,false);
-      const wrongScope = await decide({decision:'supplement', editedEntry:{layer:'shared_tech'}}) as {ok:boolean};
+      const wrongScope = await decide({decision:'supplement', editedEntry:{layer:'team_rule'}}) as {ok:boolean};
       assert.equal(wrongScope.ok,false);
       await decide({decision:'supplement', editedEntry:{layer:'domain'}, knowledgeDelta:delta, evidenceLocator:'tests/pay.ts#L13',
         evidenceNote:'重复回调回归用例中出现两笔扣款'});

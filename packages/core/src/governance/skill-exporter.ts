@@ -15,6 +15,8 @@ export function exportEntryToDshSkill(options: {
   store: LocalMarkdownSqliteStore;
   entryId: string;
   skillSlug: string;
+  /** Shared-tech entries are machine-wide; writing one into this repository must be confirmed explicitly. */
+  confirmRepositoryCopy?: boolean;
 }): { skillRelPath: string; updatedEntry: KnowledgeEntry } {
   if (!SAFE_SLUG_REGEX.test(options.skillSlug)) {
     throw new Error(
@@ -28,6 +30,16 @@ export function exportEntryToDshSkill(options: {
   }
 
   const entry = outcome.entry;
+  if (entry.layer === 'personal') {
+    throw new Error('个人经验只属于你自己，不能导出为仓库技能（导出的文件会随 Git 分享给团队）');
+  }
+  if (entry.layer === 'shared_tech' && options.confirmRepositoryCopy !== true) {
+    throw new Error('这是本机所有仓库共用的通用技术经验，导出会把一份副本写进当前仓库并随 Git 分享。确认后请带上 confirm_repository_copy=true 再导出');
+  }
+  const owner = options.store.findOwner(entry.id);
+  if (owner && !options.store.isOwnedSource(owner)) {
+    throw new Error(`该经验属于仓库 ${owner}，请在该仓库中导出技能`);
+  }
   if (entry.status !== 'active' || entry.freshness !== 'current' || entry.serving !== 'enabled') {
     throw new Error('请先确认条目已转正、仍然适用且已启用检索，再导出技能');
   }

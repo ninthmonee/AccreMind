@@ -1,4 +1,4 @@
-import type { KnowledgeEntry } from '../contracts/types.ts';
+import type { ApplicabilitySpec, KnowledgeEntry } from '../contracts/types.ts';
 
 export class MergeConflictError extends Error {
   readonly filePath?: string;
@@ -22,7 +22,24 @@ export class MarkdownCodecError extends Error {
  * A plugin never parses (and therefore never rewrites) a file written in a newer format: the file is
  * listed under “文件问题” with an upgrade hint, so an older teammate cannot silently drop new fields.
  */
-export const ENTRY_FORMAT_VERSION = 1;
+export const ENTRY_FORMAT_VERSION = 2;
+
+/** Cards that carry none of the v2 fields are still written as v1, so older plugins keep reading them. */
+export function entryUsesV2Fields(entry: KnowledgeEntry): boolean {
+  const a = entry.applies_to ?? {};
+  return Boolean(
+    entry.origin_repo || entry.domains?.length || a.languages?.length || a.dependencies?.length ||
+    a.repos?.length || a.exclude_repos?.length || entry.portable_patterns?.length || entry.owner ||
+    entry.visibility || entry.overrides?.length || entry.specializes || entry.tags?.length,
+  );
+}
+
+/** Drops every v2 field (used by the rollback that downgrades cards to the v1 format). */
+export function stripV2Fields(entry: KnowledgeEntry): KnowledgeEntry {
+  const { origin_repo: _o, domains: _d, applies_to: _a, portable_patterns: _p, owner: _w, visibility: _v,
+    overrides: _r, specializes: _s, tags: _t, ...rest } = entry;
+  return rest;
+}
 
 export class NewerFormatError extends MarkdownCodecError {
   readonly formatVersion: number;
@@ -201,8 +218,26 @@ function extractSections(body: string): Record<string, string> {
  * Body holds Claim, Knowledge Delta, Rationale, and Verification for human readability in PRs.
  */
 export function serializeEntryMarkdown(entry: KnowledgeEntry): string {
+  const v2 = entryUsesV2Fields(entry);
+  const a = entry.applies_to ?? {};
+  const nonEmpty = <T>(list: T[] | undefined) => (list && list.length ? list : undefined);
+  // Flat keys only: the frontmatter codec nests one level (lists of flat objects).
+  const v2Data: Record<string, unknown> = v2 ? {
+    origin_repo: entry.origin_repo || undefined,
+    domains: nonEmpty(entry.domains),
+    applies_languages: nonEmpty(a.languages),
+    applies_dependencies: nonEmpty(a.dependencies),
+    applies_repos: nonEmpty(a.repos),
+    exclude_repos: nonEmpty(a.exclude_repos),
+    portable_patterns: nonEmpty(entry.portable_patterns),
+    owner: entry.owner || undefined,
+    visibility: entry.visibility || undefined,
+    overrides: nonEmpty(entry.overrides),
+    specializes: entry.specializes || undefined,
+    tags: nonEmpty(entry.tags),
+  } : {};
   const frontmatterData: Record<string, unknown> = {
-    format_version: ENTRY_FORMAT_VERSION,
+    format_version: v2 ? 2 : 1,
     id: entry.id,
     revision: entry.revision,
     type: entry.type,
@@ -231,6 +266,7 @@ export function serializeEntryMarkdown(entry: KnowledgeEntry): string {
     updated_at: entry.updated_at,
     last_validated_at: entry.last_validated_at,
     review_due_at: entry.review_due_at,
+    ...v2Data,
   };
 
   const fm = serializeFrontmatterObject(frontmatterData);
@@ -358,6 +394,33 @@ export function parseEntryMarkdown(markdown: string, filePath?: string): Knowled
         : String(meta.last_validated_at),
     review_due_at: String(meta.review_due_at ?? new Date().toISOString()),
   };
+
+  const strList = (v: unknown) => (Array.isArray(v) ? v.map(String).filter(Boolean) : undefined);
+  const str = (v: unknown) => (v === null || v === undefined || v === '' ? undefined : String(v));
+  if (str(meta.origin_repo)) entry.origin_repo = str(meta.origin_repo)!;
+  if (strList(meta.domains)?.length) entry.domains = strList(meta.domains);
+  const applies: ApplicabilitySpec = {};
+  if (strList(meta.applies_languages)?.length) applies.languages = strList(meta.applies_languages);
+  if (Array.isArray(meta.applies_dependencies) && meta.applies_dependencies.length) {
+    applies.dependencies = (meta.applies_dependencies as Array<Record<string, unknown>>)
+      .map((d) => ({ name: String(d.name ?? ''), range: String(d.range ?? '*') }))
+      .filter((d) => d.name);
+  }
+  if (strList(meta.applies_repos)?.length) applies.repos = strList(meta.applies_repos);
+  if (strList(meta.exclude_repos)?.length) applies.exclude_repos = strList(meta.exclude_repos);
+  if (Object.keys(applies).length) entry.applies_to = applies;
+  if (strList(meta.portable_patterns)?.length) entry.portable_patterns = strList(meta.portable_patterns);
+  if (str(meta.owner)) entry.owner = str(meta.owner)!;
+  const visibility = str(meta.visibility);
+  if (visibility === 'private' || visibility === 'team' || visibility === 'org') entry.visibility = visibility;
+  if (Array.isArray(meta.overrides) && meta.overrides.length) {
+    entry.overrides = (meta.overrides as Array<Record<string, unknown>>).map((o) => ({
+      rule_id: String(o.rule_id ?? ''), reason: String(o.reason ?? ''),
+      approver: String(o.approver ?? ''), expires_at: String(o.expires_at ?? ''),
+    })).filter((o) => o.rule_id);
+  }
+  if (str(meta.specializes)) entry.specializes = str(meta.specializes)!;
+  if (strList(meta.tags)?.length) entry.tags = strList(meta.tags);
 
   return entry;
 }

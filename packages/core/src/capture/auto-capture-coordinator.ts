@@ -253,6 +253,7 @@ export class AutoCaptureCoordinator {
       const assessor = new DeltaAssessor({
         llm: this.llm,
         workspaceId: this.store.workspaceId,
+        domains: this.store.identity?.domains ?? [],
       });
 
       const jobs = this.listQueuedJobs();
@@ -333,6 +334,7 @@ export async function runArchaeologyBootstrap(options: {
   const assessor = new DeltaAssessor({
     llm: options.llm,
     workspaceId: options.store.workspaceId,
+    domains: options.store.identity?.domains ?? [],
   });
 
   const candidateInputs = [];

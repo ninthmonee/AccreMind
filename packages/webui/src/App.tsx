@@ -6,6 +6,7 @@ import { CommandPalette } from './app/command-palette';
 import { Header } from './app/header';
 import { TooltipProvider } from './components/ui/overlays';
 import { EntrySheet } from './features/entry/entry-sheet';
+import { DocsPage } from './features/docs/docs-page';
 import { GovernancePage } from './features/governance/governance-page';
 import { HomePage } from './features/home/home-page';
 import { LibraryPage } from './features/library/library-page';
@@ -48,6 +49,7 @@ function Shell() {
           {view === 'governance' && <GovernancePage />}
           {view === 'receipts' && <ReceiptsPage />}
           {view === 'radar' && <RadarPage />}
+          {view === 'docs' && <DocsPage />}
         </div>
       </main>
       <footer className="mx-auto flex max-w-[1440px] flex-wrap justify-between gap-2 border-t px-4 py-6 text-xs text-muted-foreground md:px-8">

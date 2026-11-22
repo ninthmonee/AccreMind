@@ -1,6 +1,9 @@
 import { createDemoSessions } from './demo-workspace.ts';
 import { repositoryLedgerSharing, workspaceGate, workspaceModelConsent } from './workspace-settings.ts';
 import {
+  QueryTagger,
+  WorkspaceSignalReader,
+  detectLanguages,
   AutoCaptureCoordinator,
   GitStalenessScanner,
   LocalMarkdownSqliteStore,
@@ -20,6 +23,7 @@ import type {
 } from './cordis-types.ts';
 import { TurnReceipts } from './turn-receipts.ts';
 import { mountNativeHost } from './native-host.ts';
+import { createHostLlmAdapter, describeModelChannel, isHostLlmAdapter } from './host-llm-adapter.ts';
 import { createWebuiRpcHandlers, type RpcHandlerMap } from './rpc-handlers.ts';
 import { extractTargetRelativePath, interceptFileToolResult } from './tool-guard.ts';
 import { createAccreMindTools } from './tools.ts';
@@ -70,6 +74,11 @@ export interface AccreMindPluginInstance {
   whenReady(): Promise<void>;
   compileResidentSystemSection(): string;
   compileBeforeTurn(payload: DshTurnHookPayload): CompiledTurnView;
+  /**
+   * Gathers what the host does not send — the working tree's changed files and branch, and the question's topic
+   * tags (vocabulary terms it names; a model on the first turn and on topic changes) — then compiles the turn.
+   */
+  compileBeforeTurnAsync(payload: DshTurnHookPayload): Promise<CompiledTurnView>;
   handleAfterTool(payload: DshToolAfterHookPayload): DshToolAfterHookPayload['result'];
   handleTurnCompleted(payload: {
     sessionId: string;
@@ -136,6 +145,13 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         console.warn(`[accremind] freshness scan skipped: ${error instanceof Error ? error.message : String(error)}`);
       }
       try {
+        // Languages feed cross-repository relevance (stack match); detecting them lists tracked files, so it
+        // runs here, off the session's critical path. Until then the last known languages are used.
+        if (!disposed) store.updateRepoProfile({ languages: detectLanguages(projectRoot) });
+      } catch (error) {
+        console.warn(`[accremind] language detection skipped: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
         if (!disposed) store.runMaintenance();
       } catch (error) {
         console.warn(`[accremind] maintenance skipped: ${error instanceof Error ? error.message : String(error)}`);
@@ -188,15 +204,23 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     createWorkspaceRuntime({ projectRoot, globalDir, llmAdapter: null, autoCapture: { enabled: false } }, true),
   );
   Object.assign(rpcHandlers, demoSessions?.handlers);
+  // Three distinct model sources must stay distinguishable in the workbench: the host's own model
+  // service (no key needed), an adapter injected by the caller, and a self-configured HTTP endpoint.
+  const modelChannel = (): 'host' | 'injected' | 'env' | 'none' => {
+    if (isHostLlmAdapter(llmAdapter)) return 'host';
+    if (llmAdapter) return 'injected';
+    return 'none';
+  };
   const modelEndpoint = () => {
     if (!llmAdapter) return '未配置模型';
-    if (rawOptions.llmAdapter) return '宿主模型适配器';
+    if (modelChannel() !== 'env') return describeModelChannel(llmAdapter);
     const resolved = resolveLlmEndpoint(process.env);
     try { return new URL(resolved.baseUrl).origin; }
     catch { return '自定义推理端点'; }
   };
   rpcHandlers['accremind.settings.get'] = () => ({
     writeGate: gate.read(), modelEndpoint: modelEndpoint(), modelAvailable: Boolean(llmAdapter),
+    modelChannel: modelChannel(),
     autoCapture: config.autoCapture.enabled, modelUpload: consent.read(), shareLedger: ledgerSharing.read(),
   });
   // Turning sharing on moves this machine's records of repository entries into `.accremind/ledger`
@@ -232,6 +256,31 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     return { writeGate: gate.read() };
   };
 
+  // Per-session relevance signals the host does not send on each turn: files the agent touched and the
+  // last failing command output. They let the next turn's reminders match the actual work, not only the prompt.
+  const sessionSignals = new Map<string, { files: string[]; lastError: string | null }>();
+  const signalsFor = (sessionId: string) => {
+    let sig = sessionSignals.get(sessionId);
+    if (!sig) {
+      sig = { files: [], lastError: null };
+      sessionSignals.set(sessionId, sig);
+      if (sessionSignals.size > 200) sessionSignals.delete(sessionSignals.keys().next().value!);
+    }
+    return sig;
+  };
+  const workspaceSignals = new WorkspaceSignalReader(projectRoot);
+  const tagger = new QueryTagger({
+    vocabulary: () => store.docs.vocabulary(),
+    llm: () => llmAdapter,
+    consent: () => consent.read(),
+    onProposals: (items) => {
+      try {
+        store.docs.proposeTags(items);
+      } catch {
+        // proposals are best-effort
+      }
+    },
+  });
   const sessionSurfacedMap = new Map<string, Set<string>>();
   const MAX_TRACKED_SESSIONS = 200;
   const getSessionSet = (sessionId: string): Set<string> => {
@@ -275,15 +324,35 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       if (payload.userPrompt) {
         autoCapture.recordTurnConversation(payload.sessionId, payload.userPrompt, undefined);
       }
+      const sig = signalsFor(payload.sessionId);
+      // Files: what the host says, else what the agent touched this session, else the working tree's changes
+      // (the first turn of a session has nothing else to go on).
+      let activeFiles = payload.activeFiles ?? (sig.files.length ? sig.files.slice(-3) : undefined);
+      let contextHint = payload.contextHint;
+      if (!activeFiles || contextHint === undefined) {
+        try {
+          const ws = workspaceSignals.read();
+          if (!activeFiles && ws.changedFiles.length) activeFiles = ws.changedFiles.slice(0, 5);
+          if (contextHint === undefined && ws.branchHint) contextHint = ws.branchHint;
+        } catch {
+          // not a Git repository
+        }
+      }
+      const tags = payload.tags ?? (payload.userPrompt ? tagger.lexical([payload.userPrompt, contextHint ?? '', ...(activeFiles ?? [])].join(' ')) : []);
       const compiled = viewCompiler.compileTurnView(
         {
           sessionId: payload.sessionId,
           userPrompt: payload.userPrompt,
-          activeFiles: payload.activeFiles,
-          errorOutput: payload.errorOutput,
+          activeFiles,
+          errorOutput: payload.errorOutput ?? sig.lastError ?? undefined,
+          ...(tags.length ? { tags } : {}),
+          ...(contextHint ? { contextHint } : {}),
         },
         surfaced,
       );
+      receipts.setQuery(payload.sessionId, { text: payload.userPrompt, tags, activeFiles });
+      // An error is relevant to the turn right after it, not forever.
+      sig.lastError = null;
       if (compiled.residentPrefix && payload.injectSystemStablePrefix) {
         payload.injectSystemStablePrefix(compiled.residentPrefix);
       }
@@ -295,6 +364,26 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         payload.injectTurnEphemeralContext(compiled.radarBlock);
       }
       return compiled;
+    },
+
+    async compileBeforeTurnAsync(payload: DshTurnHookPayload): Promise<CompiledTurnView> {
+      if (payload.tags || !payload.userPrompt) return this.compileBeforeTurn(payload);
+      let files = payload.activeFiles;
+      let hint = payload.contextHint;
+      try {
+        const ws = workspaceSignals.read();
+        files ??= signalsFor(payload.sessionId).files.length ? signalsFor(payload.sessionId).files.slice(-3) : ws.changedFiles.slice(0, 5);
+        hint ??= ws.branchHint || undefined;
+      } catch {
+        // not a Git repository
+      }
+      let tags: string[] | undefined;
+      try {
+        tags = (await tagger.tagTurn(payload.sessionId, payload.userPrompt, { files, branchHint: hint })).tags;
+      } catch {
+        tags = undefined;
+      }
+      return this.compileBeforeTurn({ ...payload, ...(files ? { activeFiles: files } : {}), ...(hint ? { contextHint: hint } : {}), ...(tags ? { tags } : {}) });
     },
 
     handleAfterTool(payload: DshToolAfterHookPayload) {
@@ -313,6 +402,10 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         Boolean(payload.result.isError) ||
         /(?:Command exited with code|exit(?:ed)? (?:with )?code|exit status)[:\s]+[1-9]\d*/i.test(outputJoined) ||
         (isCmd && /^\s*(?:FAIL|✗|not ok)\b/m.test(outputJoined));
+
+      const sig = signalsFor(payload.sessionId);
+      if (editedRelPath) sig.files = [...sig.files.filter((f) => f !== editedRelPath), editedRelPath].slice(-10);
+      if (cmdFailed && outputJoined.trim()) sig.lastError = outputJoined.trim().slice(-600);
 
       if (config.autoCapture.enabled) {
         autoCapture.recordToolActivity({
@@ -358,6 +451,8 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       disposed = true;
       demoSessions?.dispose();
       sessionSurfacedMap.clear();
+      sessionSignals.clear();
+      for (const id of sessionSurfacedMap.keys()) tagger.forget(id);
       store.close();
     },
   };
@@ -372,6 +467,14 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
 export function apply(ctx: CordisContext, rawOptions: DshPluginRuntimeOptions = {}): void {
   if (!ctx.get || !ctx.reflect || !ctx.on || !ctx.inject) {
     throw new Error('AccreMind 需要支持 agents 服务的 DeepSeek Harness 版本，请升级 dsh 后重试。');
+  }
+  // Prefer the host's own model service: it needs no API key, and every per-repository runtime
+  // inherits it because `mountNativeHost` spreads these options into each workspace runtime.
+  // An explicit `llmAdapter: null` still means "no model", and an injected adapter always wins.
+  const hostAdapter = rawOptions.llmAdapter === undefined ? createHostLlmAdapter(ctx) : null;
+  if (hostAdapter) {
+    mountNativeHost(ctx, { ...rawOptions, llmAdapter: hostAdapter }, createAccreMindRuntime);
+    return;
   }
   mountNativeHost(ctx, rawOptions, createAccreMindRuntime);
 }

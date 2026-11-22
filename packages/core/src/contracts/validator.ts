@@ -159,6 +159,21 @@ export function validateKnowledgeEntrySchema(entry: KnowledgeEntry): ValidationI
   if (!ENTRY_STATUSES.includes(entry.status)) {
     issues.push({ field: 'status', message: `非法状态枚举: ${String(entry.status)}` });
   }
+  // Machine-wide entries are served in other repositories: nothing in them may only make sense in one.
+  if ((entry.layer === 'shared_tech' || entry.layer === 'personal') && entry.symbol_anchors.length > 0) {
+    issues.push({ field: 'symbol_anchors', message: '通用技术和个人经验会在其他仓库使用，不能绑定某个仓库的代码符号；请改为项目知识或去掉锚点' });
+  }
+  if (entry.layer === 'personal' && entry.visibility && entry.visibility !== 'private') {
+    issues.push({ field: 'visibility', message: '个人经验只能是 private' });
+  }
+  for (const o of entry.overrides ?? []) {
+    if (!o.rule_id || !o.reason?.trim() || !o.approver?.trim() || !Number.isFinite(Date.parse(o.expires_at))) {
+      issues.push({ field: 'overrides', message: '豁免团队规范需要写明规范编号、理由、批准人和到期日' });
+    }
+  }
+  if (entry.overrides?.length && entry.layer !== 'project') {
+    issues.push({ field: 'overrides', message: '只有项目知识可以登记对团队规范的豁免' });
+  }
   if (!MATURITY_LEVELS.includes(entry.maturity)) {
     issues.push({ field: 'maturity', message: `非法成熟度枚举: ${String(entry.maturity)}` });
   }

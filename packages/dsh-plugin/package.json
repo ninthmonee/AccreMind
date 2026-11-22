@@ -2,7 +2,8 @@
   "name": "@accremind/dsh-plugin",
   "version": "0.1.0",
   "type": "module",
-  "description": "DeepSeek Harness (Cordis) native plugin for AccreMind local engineering experience engine",
+  "description": "AccreMind for DeepSeek Harness: capture the engineering experience that code and docs cannot recover, then hand it back at the moment it matters.",
+  "icon": "icon.svg",
   "engines": {
     "node": ">=24.0.0"
   },
@@ -17,19 +18,62 @@
       "default": "./dist/index.js"
     },
     "./client": "./client.js",
-    "./webui": "./dist/webui/ui-bundle.js"
+    "./webui": "./dist/webui/ui-bundle.js",
+    "./icon.svg": "./icon.svg",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
   },
   "dsh": {
+    "engines": {
+      "dsh": ">=0.2.2-rc.5"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-chat", "@deepseek-ai/dsh-client-ui-conversation"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection"
+      ]
     },
     "bundle": {
       "patch": "cordis.patch.yml"
     }
   },
+  "files": [
+    "dist/**/*.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "src"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "accremind",
+    "knowledge-base",
+    "engineering-experience",
+    "local-first",
+    "sqlite-fts5"
+  ],
+  "homepage": "https://github.com/ninthmonee/AccreMind",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ninthmonee/AccreMind.git",
+    "directory": "packages/dsh-plugin"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@accremind/core": "workspace:*"
+  },
+  "scripts": {
+    "pack:check": "node scripts/check-publishable.mjs"
   }
 }

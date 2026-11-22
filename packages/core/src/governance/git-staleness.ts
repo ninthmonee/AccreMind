@@ -406,6 +406,13 @@ export class GitStalenessScanner {
       }
     }
 
+    // Shared entries are not rewritten from this repository; dependency upgrades here flag them locally.
+    try {
+      for (const flagged of this.store.reviewSharedEntriesForDependencyChanges()) markedReviewDue.push(flagged);
+    } catch (err) {
+      console.warn(`[accremind] shared-entry review skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     if (currentHead) {
       this.store.rawDb
         .prepare(

@@ -1,102 +1,190 @@
-# AccreMind（AI 研发知识基座 · V3.1 本地 DSH 插件版）
+# AccreMind
 
-AccreMind 是面向 **DeepSeek Harness (`@deepseek-ai/dsh` / Cordis)** 的本地优先（Local-First）研发经验增量引擎。它只沉淀**“仅凭当前代码与现有仓库文档难以在合理成本内恢复”**的隐性业务约束、架构否决依据、外部依赖陷阱与排障失败路径（`knowledge_delta`）。
+> 把代码和文档里推不出来的工程经验沉淀成本地知识，并在下一次改动前递到模型和开发者手边。
 
----
+AccreMind 是面向 [DeepSeek Harness](https://github.com/deepseek-ai)（下称 DSH）的本地插件与独立工作台。它只收一件事：**这次踩的坑、试过但放弃的方案、最后为什么选它**——也就是读代码、翻文档都还原不出来的那层增量（`knowledge_delta`）。
 
-## 一、核心架构与已实现能力（M0 ~ M3 全量就绪）
-
-1. **零外部运行时依赖双包架构（Node `>= 24`）**：
-   - [`packages/core`](./packages/core)：纯 Node 24 标准库构建（内置 `node:sqlite` WAL + FTS5 `trigram`、崩溃安全原子文件替换、零 `node-gyp` C++ 编译、零 Python 子进程）。
-   - [`packages/dsh-plugin`](./packages/dsh-plugin)：原生 Cordis 可逆插件壳（`ctx.effect`），对接 `ctx.tools`、`ctx.systemPrompt.section`、`ctx.sessions.registerMessageProjection`、`tools/post-execute` 瀑布流及 WebUI 安全 RPC。
-2. **双重上下文唤醒（保护 KV Cache + 零盲区防踩坑）**：
-   - **Tier 1 常驻强规范**：字节级稳定前缀挂载 `<repo>/.accremind/rules/*.md`，零抖动保护 DeepSeek KV Cache。
-   - **Tier 2 回合前雷达 + 双语别名（`search_aliases`）**：口语提问（如“怎么防止重复扣款/被踢下线”）通过滑动 CJK N-gram + BM25 精准召回底层代码术语条目。
-   - **JIT Tool Guard（回合中工具级即时护栏）**：Agent 中途 `read_file` / `edit_file` 触碰高危锚定文件时自动在工具输出尾部追加 `<accremind-guard>` 警示（同会话防重复打扰）。
-3. **代码外增量评估（`DeltaAssessor`）与 `probation` 影子试用流**：
-   - 支持省 Token `single_pass` 与严格无记忆盲测双检 `isolated_p0`（Pass 1 物理隔离排障答案，仅看源码与文档生成基线）；
-   - S03 硬门禁代码级拦截空增量、未证实猜测与本机绝对路径；
-   - 合格草稿默认进入 `~/.dsh/accremind/probation/` 影子试用（不污染项目 Git），独立验证有效自动迁入 `<repo>/.accremind/entries/`，连续 3 次曝光无反馈自动归档。
-4. **函数符号级逻辑指纹（`symbol_anchors`）、自动信号捕获与 `bootstrap` 历史考古**：
-   - 格式化代码、改注释或同文件增删无关函数自动修正行号**零误报**；仅目标函数内部逻辑变更或依赖越界精准标记 `review_due`。
-   - 内置后台非阻塞信号检测与持久化重试队列（`~/.dsh/accremind/queue/`，指数退避 + 7 天自动过期清理）。
-   - 内置 `bootstrap` Git 历史考古器，支持零 Token 信号挖掘与一键 LLM 提炼冷启动。
-5. **经验治理工作台**提供知识库、候选审核、回合回执、治理与设置四个视图。DSH 对话底部可直接处理本轮命中的经验，在工作台内可根据证据复核并导出已验证经验的 `.dsh/skills/<slug>/SKILL.md`。
+所有数据留在本机：Markdown 是事实来源，`node:sqlite`（WAL + FTS5 trigram）只做索引，没有后台服务和外部向量库。
 
 ---
 
-## 二、完整测试与使用指南
+## 目录
 
-### 1. 编译与运行自动化验收套件
+- [为什么需要它](#为什么需要它)
+- [三层复用](#三层复用)
+- [核心能力](#核心能力)
+- [仓库结构](#仓库结构)
+- [快速开始](#快速开始)
+- [在 DSH 中使用](#在-dsh-中使用)
+- [独立工作台](#独立工作台)
+- [数据放在哪](#数据放在哪)
+- [命令行](#命令行)
+- [模型配置（可选）](#模型配置可选)
+- [开发与验证](#开发与验证)
+- [文档](#文档)
 
-```bash
-pnpm install --offline
-pnpm verify
+## 为什么需要它
+
+模型的上下文会滚走，人的记忆会衰减，文档只留下结论。团队真正花过代价的知识——"这个接口重试会重复扣款"、"这个库 3.x 之后 SSR 下不能动态导入"——通常以口头、聊天记录或某次事故复盘的形式存在，下一次改动时没人想得起来。
+
+AccreMind 在三个时刻把这些知识递回来：
+
+| 场景 | 发生什么 |
+| --- | --- |
+| 改之前 | 检索命中的经验以条目 id 和一句摘要进入上下文，标记为参考、不执行 |
+| 改之中 | 读写到同一文件时，按需展开完整条目：前置条件、反例、验证方法、证据定位 |
+| 改之后 | 对话尾部回执记录本轮用到哪些经验，一键反馈"有用 / 没用 / 不准" |
+
+## 三层复用
+
+| 层 | 注入时机 | 默认预算 | 作用 |
+| --- | --- | --- | --- |
+| 常驻规则 | 每轮对话开头 | 500 tokens | 团队硬约束，字节稳定以保住 KV cache |
+| 回合雷达 | 每轮按提问检索 | 300 tokens | 相关经验按 id 提示，标注为参考材料 |
+| 工具护栏 | 读/写目标文件时 | 240 / 1500 tokens | 命中同一文件时展开完整条目 |
+
+三层都只是参考材料，不覆盖宿主规则，也没有命令执行权。
+
+## 核心能力
+
+1. **本地优先的双层存储**：正式经验落在仓库 `.accremind/`（可随 Git 提交供全队共享），试用稿、队列、索引、按用户划分的检索记录落在 `~/.dsh/accremind/`。Markdown 卡片 + `node:sqlite` FTS5 索引，索引可随时从文件重建。
+2. **五路分流**：提交的候选按 `index_only / link_existing / knowledge_candidate / needs_confirmation / discard` 判定；代码或文档已能还原的输入不会污染知识库。
+3. **影子试用与转正**：新条目先进 `probation`，被检索命中并拿到独立验证后才转 `verified`；连续多次曝光无反馈自动归档。
+4. **时效与符号复核**：条目记录 `watch_paths` 和符号锚点哈希；代码改动或复核周期到期后进入待复核队列，反证会让条目立即暂停服务。
+5. **规则文档集**：`domain` / `business_rules` / `project_norms` / `project_profile` 四类文档按 `##` 章节建索引，支持导入、修改提议、接受/拒绝与变更记录，写入 `.accremind/docs/` 随 Git 评审。
+6. **跨仓库知识**：仓库身份取自 `.accremind/repo.json`，其次 `origin`，最后才是路径哈希；`domain` 与 `shared_tech` 层的经验可在同领域仓库间互相提醒。
+7. **回执与离线评测**：每轮对话回执保留脱敏问题文本，`accremind eval` 用真实反馈与手写用例回放提醒效果，`--grid` 试参数，`--apply` 只在更好时写回。
+8. **经验治理工作台**：七个视图覆盖总览、知识库、候选审核、规则文档、治理、回合记录与 Git 雷达；已验证经验可一键导出为 `.dsh/skills/<slug>/SKILL.md`。
+
+## 仓库结构
+
+```
+.
+├── packages/
+│   ├── core/          # @accremind/core：存储、检索、增量评估、治理、评测（宿主无关）
+│   ├── dsh-plugin/    # @accremind/dsh-plugin：DSH 工具、上下文注入、面板、CLI、内嵌 WebUI
+│   └── webui/         # @accremind/webui：React + Vite 工作台，构建为单文件内联进插件
+├── scripts/           # 构建、WebUI 产物一致性校验
+├── tests/             # node:test 端到端用例
+├── docs/              # 产品设计与技术实现方案、市场发布说明
+└── market/            # 插件市场索引
 ```
 
-### 2. 启动本地可视化经验工作台（WebUI 独立预览模式）
+## 快速开始
+
+要求 Node.js ≥ 24（`node:sqlite` 的 FTS5 trigram 分词）与 pnpm 10。
 
 ```bash
-# 默认监听 http://127.0.0.1:3180 ，也可通过 --repo 指定任意目标业务仓库路径
-pnpm ui
-# 或指定目标仓库与端口：
-pnpm ui -- --repo /path/to/your-project --port 3180
+pnpm install
+pnpm build          # 构建 core / plugin / webui，并生成内联的工作台产物
+pnpm verify         # 构建 + 全部测试 + WebUI 产物指纹校验
 ```
 
-工作台界面源码在 [`packages/webui`](./packages/webui)（React + shadcn/ui），修改界面后执行 `pnpm build:webui` 重新生成内联产物；开发时可用 `pnpm dev:webui` 热更新预览。
+CI 跑的就是 `pnpm verify`（见 `.github/workflows/ci.yml`）。
 
-访问 `http://127.0.0.1:3180`，在知识库首页选择「扫描仓库历史」。扫描在本机执行；配置模型后可勾选提交提炼候选。要先体验完整操作，选择「体验示例」可进入独立的临时项目。
+## 在 DSH 中使用
 
-- 在「候选审核」核对基线、增量和证据。可直接补证，也可将选中的候选送入本机试用。
-- 在「知识库」选择领域知识、项目知识、通用技术、团队规范或个人知识，再按内容类型和治理状态筛选。卡片用于阅读单条经验，表格用于比较结论和适用条件，总结会按范围汇总当前结果，可点修订编号查证。
-- 在 DSH 真实任务中使用经验后，可在该回合底部转正、淘汰或反馈。独立预览中的「回合回执」读取当前工作区的回执，「命中模拟」可重复预览匹配效果。
-- 在「治理与设置」查看触发复核的变更。核对时效与处理反证各有独立操作；新经验可按工作区配置为先试用或先人工审核。
-
-
-### 安全与隐私（默认值）
-
-- 独立工作台只监听 `127.0.0.1`，每次启动生成一次性令牌；跨站请求、非本机主机名和无令牌请求一律拒绝。
-- 对话结束后的自动提炼**默认关闭**，需在「维护与设置 → 偏好设置」中按项目开启；开启后发送的是脱敏后的片段，排队文件在写盘前同样脱敏。
-- 模型密钥只发给与之配对的服务（见 `.env.example`），对 401/400 等不可重试错误不会重复请求。
-- 每个仓库使用独立的索引库 `~/.dsh/accremind/workspaces/<id>/index.sqlite`；旧版共享库会在首次打开时自动复制迁移。只有确认损坏时才会把索引移到 `.corrupt.*.bak` 并从 Markdown 重建，锁冲突等错误会直接报出而不是清库。
-- 新条目编号为 `K-` 加 14 位时间+随机编码，多人多分支并行也不会撞号；写入时如发现编号已被另一条经验占用会拒绝写入。旧的 4–6 位编号继续有效。
-
-### 3. CLI 常用命令
+本地开发时把包软链进 DSH profile，改代码后重启 DSH 即可生效：
 
 ```bash
-# 查看工作区经验状态与执行本地 Git / 依赖时效巡检
-pnpm accremind status -- --repo /path/to/your-project
-
-# 零 Token 扫描目标仓库 Git 历史中的高信号排障/回滚/竞态提交
-pnpm bootstrap -- --repo /path/to/your-project --top 10
-
-# 配合 DeepSeek/OpenAI API Key 自动从历史高信号提交提炼经验卡片并五路分流落盘
-DEEPSEEK_API_KEY=sk-xxx pnpm bootstrap -- --repo /path/to/your-project --top 10 --extract --mode isolated_p0
-
-# 命令行检索与按 ID 查看详情
-pnpm accremind search "重复扣款" -- --repo /path/to/your-project
-pnpm accremind get K-1001 -- --repo /path/to/your-project
-
-# 从双层 Markdown 真源一键无损重建 SQLite FTS5 索引
-pnpm accremind rebuild -- --repo /path/to/your-project
+pnpm install:dsh                      # 默认 desktop profile
+pnpm install:dsh -- --profile web     # 或指定 profile
 ```
 
-### 4. 挂载到 DeepSeek Harness (`dsh`)
-
-在本仓库根目录执行以下命令，将插件链接到 DSH 的 `web` 配置。若桌面版尚未将 `dsh` 加入 PATH，可在插件管理器选择「添加插件」并选中本仓库的 `packages/dsh-plugin` 目录。
+也可以手动登记：
 
 ```bash
-pnpm build
-dsh plugin --profile web add "link:$PWD/packages/dsh-plugin"
-dsh web
+dsh plugin --profile web add "link:$(pwd)/packages/dsh-plugin"
+dsh plugin --profile web enable accremind
 ```
 
-在 DSH 中打开目标仓库的会话，可从输入区的「AccreMind 经验工作台」进入。已完成的回合会显示本轮提示过的经验与反馈操作。
+安装后左侧栏出现 `AccreMind` 面板，对话中会按需注入经验、在回合尾部给回执；对话内可用的工具：
 
----
+- `accremind_capture`：提交经验候选并执行五路分流
+- `accremind_search`：按关键词、类型、层、文件路径检索
+- `accremind_get`：取完整正文、前置条件、验证方法与证据定位
+- `accremind_validate`：登记本次使用的成败，`failure` 会立即暂停条目
+- `accremind_export_skill`：把已验证条目固化为 DSH 技能文档
 
-## 三、方案文档索引
+## 独立工作台
 
-- [产品设计 V3.2](./AI%20研发知识基座%20DSH本地插件产品设计方案%20V3.md)覆盖知识条目、改前检索、改后沉淀和审核交互。
-- [技术实现设计 V3.2](./AI%20研发知识基座%20DSH本地插件技术实现方案%20V3.md)定义原文保存、旧库接入、修订治理和验收用例。R1–R3 为规划中的交付阶段。
-- [AI 研发知识基座 PRD V2 修订版.md](./AI%20研发知识基座%20PRD%20V2%20修订版.md)（V2.1 上游规则基线）
+不开 DSH 也能起同一套界面（默认 3180 端口，仅监听本机）：
+
+```bash
+pnpm ui -- --port 3180
+```
+
+修改界面时用 Vite 热更新：
+
+```bash
+pnpm dev:webui
+```
+
+发版前务必跑 `pnpm verify`：`check:webui` 会比对 `packages/webui` 源码与插件内联产物的指纹，避免界面改动漏进发布包。
+
+## 数据放在哪
+
+| 路径 | 内容 |
+| --- | --- |
+| `<repo>/.accremind/entries/` | 正式经验卡片（Markdown，含版本与证据引用） |
+| `<repo>/.accremind/evidence/` | 条目证据附件 |
+| `<repo>/.accremind/rules/` | 常驻规则 |
+| `<repo>/.accremind/docs/` | 四类规则文档与变更记录 |
+| `<repo>/.accremind/repo.json` | 仓库身份与业务领域（建议提交） |
+| `~/.dsh/accremind/probation/` | 试用稿（不写入项目 Git） |
+| `~/.dsh/accremind/queue/` | 自动捕获与评估队列 |
+| `~/.dsh/accremind/index/` | 可重建的 SQLite 索引 |
+| `~/.dsh/accremind/{personal,domain,shared-tech}/` | 跨仓库的经验层 |
+| `~/.dsh/accremind/{registry,users,workspaces}/` | 仓库注册表、用户身份、按仓库划分的检索记录 |
+
+## 命令行
+
+```bash
+pnpm accremind status                     # 概览 + 时效巡检
+pnpm accremind search "订单 重试" --scope auto --file packages/core/src/store/local-store.ts
+pnpm accremind get K-XXXX                 # 完整条目
+pnpm accremind rebuild                    # 从 Markdown 重建索引
+pnpm accremind bootstrap --top 10         # 扫描 Git 历史找高信号提交
+pnpm accremind bootstrap --extract        # 再交给模型做代码对照与五路分流
+pnpm accremind migrate                    # 跨仓库迁移预演，--apply 执行，--rollback 回退
+pnpm accremind repo --domains payments,ledger
+pnpm accremind docs import ./adr --category business_rules
+pnpm accremind docs proposals             # 待审修改提议与词表提议
+pnpm accremind docs accept <提议编号>
+pnpm accremind eval --grid --apply        # 回放反馈，调参并只在更好时落盘
+pnpm accremind ui --port 3180
+```
+
+所有命令都接受 `--repo` 与 `--global-dir`，默认分别是当前目录与 `~/.dsh/accremind`。
+
+## 模型配置（可选）
+
+检索、提醒、文件护栏和时效巡检全部在本机完成，不需要任何 Key。只有"提炼经验"（`bootstrap --extract`、工作台里的提炼、开启后的自动提炼）会调用模型；插件默认复用宿主 `llm` 服务，也可以用环境变量指定外部端点：
+
+```bash
+cp .env.example .env
+# ACCREMIND_LLM_BASE_URL / ACCREMIND_LLM_MODEL / ACCREMIND_LLM_API_KEY
+# 或 DEEPSEEK_API_KEY / OPENAI_API_KEY
+```
+
+密钥只会发给与之配对的服务；自定义 `ACCREMIND_LLM_BASE_URL` 指向其他主机时不会附带 DeepSeek / OpenAI 的 Key。
+
+## 开发与验证
+
+```bash
+pnpm build          # 构建 core、plugin 与 WebUI 产物
+pnpm build:webui    # 只重建 WebUI 并写回内联产物
+pnpm test           # node:test（会先构建）
+pnpm verify         # 构建 + 测试 + 产物指纹校验，提交前跑这个
+pnpm typecheck      # 内核与 WebUI 类型检查
+pnpm pack:check     # 检查发布包内容
+pnpm market:index   # 重新生成 market/index.json
+```
+
+## 文档
+
+- [产品设计方案 V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>)：产品边界、数据模型、验收口径
+- [技术实现方案 V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>)：模块契约、检索与治理实现
+- [插件市场发布说明](docs/market-publishing.md)
+
+许可证尚未指定；对外分发前请先补充 `LICENSE`。

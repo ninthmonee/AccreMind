@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { redactSensitiveText } from '../capture/secret-redactor.ts';
 import { generateEntryId } from '../contracts/ids.ts';
-import { isRepositoryKnowledgeLayer, type CaptureAssessment, type KnowledgeEntry } from '../contracts/types.ts';
+import { isCapturableLayer, type CaptureAssessment, type KnowledgeEntry } from '../contracts/types.ts';
+import { shapeEntryForLayer } from '../capture/layer-shaping.ts';
 import { enforceHardPublishGate, isAbsoluteMachinePath } from '../contracts/validator.ts';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 
@@ -115,10 +116,16 @@ export function decideReview(store: LocalMarkdownSqliteStore, params: Record<str
   if (patch || delta || locator) {
     draft = { ...(draft ?? createReviewDraft(store, assessment)) };
     if (patch?.layer !== undefined) {
-      if (!isRepositoryKnowledgeLayer(patch.layer) || !isRepositoryKnowledgeLayer(draft.layer)) {
-        return {ok:false, missingFields:['layer: 仅可在本仓库的领域知识和项目知识之间调整归属']};
+      if (!isCapturableLayer(patch.layer)) {
+        return {ok:false, missingFields:['layer: 团队规范只能经治理提案产生；请在项目、领域、通用技术和个人之间选择']};
       }
-      draft.layer = patch.layer;
+      // Team-rule proposals stay proposals; everything else may be re-scoped before approval.
+      if (draft.layer === 'team_rule') {
+        return {ok:false, missingFields:['layer: 这是团队规范提案，请批准或丢弃，不能改成其他范围']};
+      }
+      draft = shapeEntryForLayer({ ...draft, layer: patch.layer }, patch.layer, {
+        repoId: store.workspaceId, domains: store.identity?.domains ?? [], ownerId: store.currentUser().userId,
+      }).entry;
     }
     for (const key of ['title', 'claim', 'rationale', 'verification_method'] as const) {
       if (patch && key in patch) draft[key] = textValue(patch[key]);

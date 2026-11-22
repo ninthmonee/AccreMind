@@ -12,6 +12,20 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*.js",
+    "src"
+  ],
+  "homepage": "https://github.com/ninthmonee/AccreMind",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ninthmonee/AccreMind.git",
+    "directory": "packages/core"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

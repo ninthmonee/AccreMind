@@ -6,16 +6,16 @@ import {
   ScrollText,
   Workflow,
 } from 'lucide-react';
-import type { EntryStatus, Freshness, KnowledgeLayer, KnowledgeType, Maturity, Priority, Serving, StorageZone } from './types';
+import type { AttentionKind, EntryStatus, Freshness, KnowledgeLayer, KnowledgeType, Maturity, Priority, ScopeVerdict, Serving, StorageZone } from './types';
 
 export type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'neutral';
 
 export const LAYERS: { value: KnowledgeLayer; label: string; hint: string }[] = [
-  { value: 'domain', label: '领域知识', hint: '业务概念、规则与流程' },
-  { value: 'project', label: '项目知识', hint: '本项目的实现与约束' },
-  { value: 'shared_tech', label: '通用技术', hint: '跨项目可复用的技术经验' },
-  { value: 'team_rule', label: '团队规范', hint: '常驻提示的强约束' },
-  { value: 'personal', label: '个人技术', hint: '只在本机生效' },
+  { value: 'domain', label: '领域知识', hint: '业务规则，同业务领域的仓库共享' },
+  { value: 'project', label: '项目知识', hint: '只在本仓库生效的实现与约束' },
+  { value: 'shared_tech', label: '通用技术', hint: '语言/框架/依赖本身的经验，同技术栈仓库共享' },
+  { value: 'team_rule', label: '团队规范', hint: '常驻提示的强约束，只能经审核产生' },
+  { value: 'personal', label: '个人技术', hint: '只对你本人生效，跟随你到每个仓库' },
 ];
 export const layerLabel = (v: KnowledgeLayer) => LAYERS.find((l) => l.value === v)?.label ?? v;
 
@@ -60,6 +60,22 @@ export const ZONE: Record<StorageZone, string> = {
   probation: '本机试用池',
   personal: '个人知识',
   shared_tech: '通用技术库',
+  domain: '本机领域库',
+};
+
+/** Server-side applicability verdicts shown next to search hits and reminders. */
+export const SCOPE_VERDICT: Record<ScopeVerdict, { label: string; tone: Tone }> = {
+  own_repo: { label: '本仓库', tone: 'neutral' },
+  domain_match: { label: '同领域', tone: 'primary' },
+  stack_match: { label: '同技术栈', tone: 'info' },
+  owner_match: { label: '个人经验', tone: 'neutral' },
+  cross_ref: { label: '跨仓库参考', tone: 'warning' },
+};
+
+export const ATTENTION: Record<AttentionKind, { label: string; hint: string }> = {
+  probation_silent: { label: '试用期满', hint: '试用期满仍没有人反馈，决定是否保留' },
+  inapplicable: { label: '不适用', hint: '多次被标记为“不适用”，已暂停提醒' },
+  rule_conflict: { label: '与规范冲突', hint: '与团队规范相反且没有登记豁免，已停止提醒' },
 };
 export const EVIDENCE_SOURCE: Record<string, string> = {
   git_commit: 'Git 提交',

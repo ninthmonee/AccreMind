@@ -18,6 +18,9 @@
     "accremind": "node packages/dsh-plugin/src/cli.ts",
     "dev:webui": "pnpm --filter @accremind/webui dev",
     "check:webui": "node scripts/check-webui.ts",
+    "install:dsh": "node packages/dsh-plugin/scripts/install-to-dsh.mjs",
+    "pack:check": "node packages/dsh-plugin/scripts/check-publishable.mjs --pack",
+    "market:index": "node packages/dsh-plugin/scripts/market-index.mjs",
     "typecheck:kernel": "pnpm --filter @accremind/webui exec tsc --noEmit -p ../core/tsconfig.json --typeRoots ./node_modules/@types --types node && pnpm --filter @accremind/webui exec tsc --noEmit -p ../dsh-plugin/tsconfig.json --typeRoots ./node_modules/@types --types node",
     "typecheck": "pnpm typecheck:kernel && pnpm --filter @accremind/webui typecheck"
   },

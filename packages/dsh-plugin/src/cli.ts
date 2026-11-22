@@ -1,7 +1,12 @@
 #!/usr/bin/env node
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+  applyMigration,
+  runEvaluation,
   OpenAiCompatibleLlmClient,
+  planMigration,
+  rollbackMigration,
   runArchaeologyBootstrap,
   scanGitHistorySignals,
 } from '@accremind/core';
@@ -57,11 +62,13 @@ async function main(): Promise<void> {
       case 'search': {
         const positionalQuery = rest.find((a) => !a.startsWith('--')) ?? '';
         const query = getFlag(rest, '--query', positionalQuery) ?? '';
+        const scopeFlag = getFlag(rest, '--scope', 'auto');
         const res = runtime.store.search({
           workspaceId: runtime.store.workspaceId,
           query,
           filePath: getFlag(rest, '--file'),
           limit: Number.parseInt(getFlag(rest, '--limit', '5')!, 10),
+          scope: scopeFlag === 'repo' || scopeFlag === 'all' ? scopeFlag : 'auto',
         });
         console.log(JSON.stringify(res, null, 2));
         break;
@@ -144,9 +151,75 @@ async function main(): Promise<void> {
         break;
       }
 
+      // Cross-repository knowledge: `migrate` (default dry run) pins this repository's ID in .accremind/repo.json,
+      // tags its domain cards and lists near-duplicates across repositories; `--apply` does it, `--rollback` undoes it.
+      case 'migrate': {
+        const domainsFlag = getFlag(rest, '--domains');
+        const domains = domainsFlag ? domainsFlag.split(',').map((d) => d.trim()).filter(Boolean) : undefined;
+        if (hasFlag(rest, '--rollback')) {
+          const out = rollbackMigration(runtime.store, {
+            manifestFile: getFlag(rest, '--manifest'), force: hasFlag(rest, '--force'), downgradeCards: hasFlag(rest, '--downgrade-cards'),
+          });
+          console.log(JSON.stringify({ mode: 'rollback', ...out }, null, 2));
+        } else if (hasFlag(rest, '--apply')) {
+          const out = applyMigration(runtime.store, { domains });
+          console.log(JSON.stringify({ mode: 'apply', ...out, hint: '请提交 .accremind/repo.json 与被打标的卡片，让每个克隆使用同一仓库标识' }, null, 2));
+        } else {
+          console.log(JSON.stringify({ mode: 'dry_run', plan: planMigration(runtime.store, { domains }), hint: '确认后加 --apply 执行；可用 --domains a,b 指定业务领域' }, null, 2));
+        }
+        break;
+      }
+
+      // Replays recorded feedback (and .accremind/eval/cases.jsonl) through the reminder path; --grid tries
+      // variations of the retrieval settings, --apply saves the best to ~/.dsh/accremind/tuning.json.
+      case 'eval': {
+        const report = runEvaluation(runtime.store, { casesFile: getFlag(rest, '--cases'), grid: hasFlag(rest, '--grid'), apply: hasFlag(rest, '--apply') });
+        console.log(JSON.stringify(report, null, 2));
+        break;
+      }
+
+      // Rule document sets: list | import <file|dir> --category <c> [--domains a,b] | proposals | accept <id> | reject <id> | changes
+      case 'docs': {
+        const [action = 'list', target] = rest.filter((a) => !a.startsWith('--'));
+        const docs = runtime.store.docs;
+        if (action === 'import') {
+          if (!target) throw new Error('用法: accremind docs import <文件或目录> --category domain|business_rules|project_norms|project_profile');
+          const category = getFlag(rest, '--category') as never;
+          const domains = getFlag(rest, '--domains')?.split(',').map((d) => d.trim()).filter(Boolean);
+          const abs = path.resolve(target);
+          const files = fs.statSync(abs).isDirectory()
+            ? fs.readdirSync(abs).filter((f) => /\.(md|markdown)$/i.test(f)).map((f) => path.join(abs, f)) : [abs];
+          const out = files.map((f) => docs.importDoc({ content: fs.readFileSync(f, 'utf8'), fileName: path.basename(f), category, domains,
+            replace: hasFlag(rest, '--replace') }));
+          console.log(JSON.stringify({ imported: out }, null, 2));
+        } else if (action === 'proposals') {
+          console.log(JSON.stringify({ proposals: docs.listProposals('pending'), tagProposals: docs.listTagProposals('pending') }, null, 2));
+        } else if (action === 'accept' || action === 'reject') {
+          if (!target) throw new Error(`用法: accremind docs ${action} <提议编号>`);
+          const out = target.startsWith('VP-') ? docs.decideTag(target, action) : docs.decide(target, action, { note: getFlag(rest, '--note'), force: hasFlag(rest, '--force') });
+          console.log(JSON.stringify(out, null, 2));
+        } else if (action === 'changes') {
+          console.log(JSON.stringify({ changes: docs.listChanges({ docId: target, limit: 100 }) }, null, 2));
+        } else {
+          console.log(JSON.stringify({ docs: docs.listDocs() }, null, 2));
+        }
+        break;
+      }
+
+      case 'repo': {
+        const domainsFlag = getFlag(rest, '--domains');
+        if (domainsFlag !== undefined) {
+          const out = await runtime.rpcHandlers['accremind.repo.setDomains']!({ domains: domainsFlag.split(',') });
+          console.log(JSON.stringify(out, null, 2));
+        } else {
+          console.log(JSON.stringify(await runtime.rpcHandlers['accremind.repo.profile']!({}), null, 2));
+        }
+        break;
+      }
+
       default:
         throw new Error(
-          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | ui`,
+          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | eval | docs | ui`,
         );
     }
   } finally {

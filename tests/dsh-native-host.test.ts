@@ -44,7 +44,7 @@ describe('DSH native host integration (agents, waterfalls, connection route)', (
     const agent = host.createAgent('s-1', repoRoot);
 
     assert.deepEqual([...agent.tools.keys()].sort(), [
-      'accremind_capture', 'accremind_export_skill', 'accremind_get', 'accremind_search', 'accremind_validate',
+      'accremind_capture', 'accremind_export_skill', 'accremind_get', 'accremind_propose_doc_change', 'accremind_search', 'accremind_validate',
     ]);
     const section = agent.sections.find((s) => s.name === 'accremind-resident-rules');
     assert.ok(section);
@@ -130,7 +130,7 @@ describe('DSH native host integration (agents, waterfalls, connection route)', (
     host.disposeAgent(a);
     await new Promise((r) => setImmediate(r));
     assert.equal(a.tools.size, 0);
-    assert.equal(b.tools.size, 5);
+    assert.equal(b.tools.size, 6);
     host.dispose();
     await new Promise((r) => setImmediate(r));
     assert.equal(b.tools.size, 0);

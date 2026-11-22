@@ -7,7 +7,9 @@ import * as path from 'node:path';
 import {
   GovernanceService,
   KNOWLEDGE_LAYERS,
-  isRepositoryKnowledgeLayer,
+  isCapturableLayer,
+  runEvaluation,
+  writeRepoProfile,
   exportEntryToDshSkill,
   runArchaeologyBootstrap,
   scanGitHistorySignals,
@@ -88,6 +90,11 @@ export function createWebuiRpcHandlers(deps: {
       suspendedEntries: entries.filter(entry => entry.serving === 'suspended' && (entry.status === 'active' || entry.status === 'probation')),
       corruptedFiles: store.listCorruptedFiles(),
       attentionItems: store.listAttentionItems().map(item => ({ ...item, entry: byId.get(item.entry_id) ?? null })),
+      // Shared entries to re-check here (e.g. a dependency they rely on had a major upgrade in this repository).
+      sharedReviews: store.listSharedReviews().flatMap(r => {
+        const found = store.getEntry(r.entryId, { recordUsage: false, includeHistoryOrSuspended: true });
+        return found.found && found.servable && found.entry.revision === r.revision ? [{ ...r, entry: found.entry }] : [];
+      }),
     };
   }
 
@@ -267,9 +274,11 @@ export function createWebuiRpcHandlers(deps: {
       if (params.expectedRevision !== undefined) currentEntry({ id, revision: params.expectedRevision });
       const patch = (params.patch ?? {}) as Partial<KnowledgeEntry>;
       const editableStrings = ['title', 'claim', 'rationale', 'knowledge_delta'];
-      const editableLists = ['search_aliases', 'invalidation_triggers', 'preconditions'];
+      const editableLists = ['search_aliases', 'invalidation_triggers', 'preconditions', 'domains', 'portable_patterns'];
       for (const [name, value] of Object.entries(patch)) {
-        if (name === 'layer' && isRepositoryKnowledgeLayer(value)) continue;
+        if (name === 'layer' && isCapturableLayer(value)) continue;
+        if (name === 'applies_to' && value && typeof value === 'object' && !Array.isArray(value)) continue;
+        if (name === 'overrides' && Array.isArray(value) && value.every(v => v && typeof v === 'object')) continue;
         if (editableStrings.includes(name) && typeof value === 'string') continue;
         if (editableLists.includes(name) && Array.isArray(value) && value.every(v => typeof v === 'string')) continue;
         throw new Error(`无法通过正文修订修改字段 ${name}`);
@@ -367,6 +376,13 @@ export function createWebuiRpcHandlers(deps: {
 
     'accremind.gov.reviewQueue': () => governanceQueue(),
 
+    'accremind.gov.clearSharedReview': (params) => {
+      const id = String(params.id ?? '');
+      if (!store.listSharedReviews().some((r) => r.entryId === id)) throw new Error('这条经验在本仓库没有待核对项');
+      store.clearSharedReview(id);
+      return governanceQueue();
+    },
+
     // Diff plus, per piece of evidence, what it said when last approved/confirmed vs what it says now.
     'accremind.gov.reviewDetails': (params) => {
       const entry = currentEntry(params);
@@ -451,7 +467,68 @@ export function createWebuiRpcHandlers(deps: {
     'accremind.gov.exportSkill': (params) => {
       const id = String(params.id ?? '');
       const skillSlug = String(params.skillSlug ?? '');
-      return exportEntryToDshSkill({ store, entryId: id, skillSlug });
+      return exportEntryToDshSkill({ store, entryId: id, skillSlug, confirmRepositoryCopy: params.confirmRepositoryCopy === true });
+    },
+
+    // ---- rule document sets ----
+    'accremind.docs.list': () => ({ docs: store.docs.listDocs(), docsDir: store.docs.docsDir }),
+    'accremind.docs.get': (params) => {
+      const doc = store.docs.getDoc(String(params.id ?? ''));
+      if (!doc) throw new Error('未找到文档');
+      return { ...doc, file: path.relative(store.paths.projectRoot, doc.file), changes: store.docs.listChanges({ docId: doc.meta.id, limit: 50 }) };
+    },
+    'accremind.docs.import': (params) => store.docs.importDoc({
+      content: String(params.content ?? ''), fileName: String(params.fileName ?? 'doc.md'), category: params.category as never,
+      title: typeof params.title === 'string' ? params.title : undefined,
+      domains: Array.isArray(params.domains) ? params.domains.map(String) : undefined,
+      tags: Array.isArray(params.tags) ? params.tags.map(String) : undefined, replace: params.replace === true,
+    }),
+    'accremind.docs.search': (params) => ({ hits: store.searchDocs({ query: String(params.query ?? ''), limit: Number(params.limit ?? 10) }) }),
+    'accremind.docs.propose': (params) => store.docs.propose({
+      docId: typeof params.docId === 'string' ? params.docId : null, category: params.category as never,
+      docTitle: typeof params.docTitle === 'string' ? params.docTitle : undefined, section: String(params.section ?? ''),
+      op: params.op as never, content: String(params.content ?? ''), rationale: String(params.rationale ?? ''),
+      evidence: typeof params.evidence === 'string' ? params.evidence : undefined, source: 'human',
+    }),
+    'accremind.docs.proposals': (params) => ({
+      proposals: store.docs.listProposals((params.status as never) ?? 'pending'),
+      tagProposals: store.docs.listTagProposals('pending'),
+    }),
+    'accremind.docs.decide': (params) => store.docs.decide(String(params.id ?? ''), params.decision === 'accept' ? 'accept' : 'reject', {
+      content: typeof params.content === 'string' ? params.content : undefined, note: typeof params.note === 'string' ? params.note : undefined,
+      force: params.force === true,
+    }),
+    'accremind.docs.changes': (params) => ({ changes: store.docs.listChanges({
+      docId: typeof params.docId === 'string' ? params.docId : undefined, limit: Number(params.limit ?? 100) }) }),
+    'accremind.vocab.list': () => ({ tags: store.docs.vocabulary().tags, file: store.docs.vocabularyFile }),
+    'accremind.vocab.decide': (params) => store.docs.decideTag(String(params.id ?? ''), params.decision === 'accept' ? 'accept' : 'reject', {
+      label: typeof params.label === 'string' ? params.label : undefined,
+      aliases: Array.isArray(params.aliases) ? params.aliases.map(String) : undefined,
+    }),
+
+    'accremind.eval.run': (params) => runEvaluation(store, { grid: params.grid === true, apply: params.apply === true }),
+
+    // Repository identity and business domains: the domains decide which other repositories' domain
+    // knowledge is served here. Saving writes `.accremind/repo.json` (commit it so every clone agrees).
+    'accremind.repo.profile': () => {
+      const ctx = store.sessionContext();
+      return {
+        repoId: store.workspaceId, idSource: store.identity.source, name: store.identity.name, remote: store.identity.remote,
+        org: store.identity.org, domains: store.identity.domains, languages: ctx.languages,
+        dependencies: Object.keys(ctx.dependencies).length, profileFile: store.paths.repoProfileFile,
+        knownRepositories: store.registry.list().map((r) => ({ repoId: r.repo_id, name: r.name, domains: r.domains, lastSeen: r.last_seen })),
+      };
+    },
+    'accremind.repo.setDomains': (params) => {
+      const domains = Array.isArray(params.domains) ? params.domains.map(String).map((d) => d.trim()).filter(Boolean) : null;
+      if (!domains) throw new Error('请提供业务领域列表');
+      if (domains.some((d) => !/^[a-z0-9][a-z0-9_-]{0,40}$/.test(d))) throw new Error('领域标识只能使用小写字母、数字、连字符和下划线');
+      const written = writeRepoProfile(store.paths.projectRoot, path.basename(store.paths.projectAccreMindDir), {
+        repo_id: store.workspaceId, domains,
+        ...(store.identity.org ? { org: store.identity.org } : {}),
+      });
+      store.updateRepoProfile({ domains });
+      return { repoId: store.workspaceId, domains: written.domains ?? [], profileFile: store.paths.repoProfileFile };
     },
 
     'accremind.gov.rebuildIndex': () => {

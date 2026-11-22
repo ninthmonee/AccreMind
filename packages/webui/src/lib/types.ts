@@ -6,7 +6,10 @@ export type Freshness = 'current' | 'review_due' | 'stale';
 export type Serving = 'enabled' | 'suspended';
 export type KnowledgeLayer = 'personal' | 'team_rule' | 'shared_tech' | 'domain' | 'project';
 export type Priority = 'P0' | 'P1' | 'P2';
-export type StorageZone = 'project' | 'rules' | 'probation' | 'personal' | 'shared_tech';
+export type StorageZone = 'project' | 'rules' | 'probation' | 'personal' | 'shared_tech' | 'domain';
+export type CapturableLayer = 'project' | 'domain' | 'shared_tech' | 'personal';
+/** How an entry relates to the current repository (server-side applicability verdict). */
+export type ScopeVerdict = 'own_repo' | 'domain_match' | 'stack_match' | 'owner_match' | 'cross_ref';
 export type Disposition = 'index_only' | 'link_existing' | 'knowledge_candidate' | 'needs_confirmation' | 'discard';
 
 export interface Evidence {
@@ -58,6 +61,29 @@ export interface KnowledgeEntry {
   updated_at: string;
   last_validated_at: string | null;
   review_due_at: string;
+  // format v2 (optional)
+  origin_repo?: string | null;
+  domains?: string[];
+  applies_to?: { languages?: string[]; dependencies?: { name: string; range: string }[]; repos?: string[]; exclude_repos?: string[] };
+  portable_patterns?: string[];
+  owner?: string | null;
+  visibility?: 'private' | 'team' | 'org';
+  overrides?: { rule_id: string; reason: string; approver: string; expires_at: string }[];
+  specializes?: string | null;
+}
+
+/** `accremind.repo.profile`: this repository's identity, business domains and the repositories it shares with. */
+export interface RepoProfile {
+  repoId: string;
+  idSource: 'repo.json' | 'remote' | 'path';
+  name: string;
+  remote: string | null;
+  org: string | null;
+  domains: string[];
+  languages: string[];
+  dependencies: number;
+  profileFile: string;
+  knownRepositories: { repoId: string; name: string; domains: string[]; lastSeen: string }[];
 }
 
 export interface ListItem {
@@ -163,7 +189,7 @@ export interface Insights {
   attention: number;
 }
 
-export type AttentionKind = 'probation_silent' | 'inapplicable';
+export type AttentionKind = 'probation_silent' | 'inapplicable' | 'rule_conflict';
 export interface AttentionItem { entry_id: string; kind: AttentionKind; reason: string; revision: number; created_at: string; title: string; type: KnowledgeType | null }
 
 export interface ReviewItem {
@@ -191,6 +217,8 @@ export interface GovernanceQueue {
   suspendedEntries: KnowledgeEntry[];
   corruptedFiles: { file_path: string; reason: string; detected_at: string }[];
   attentionItems: (Omit<AttentionItem, 'title' | 'type'> & { entry: KnowledgeEntry | null })[];
+  /** Shared entries to re-check in this repository (never rewritten from here). */
+  sharedReviews?: { entryId: string; revision: number; reason: string; createdAt: string; entry: KnowledgeEntry }[];
 }
 export interface StalenessScan extends GovernanceQueue {
   scan: { skippedUnchanged: boolean; previousHead: string | null; currentHead: string | null; relocatedEntries: string[]; markedReviewDue: { entryId: string; reason: string }[] };
@@ -300,3 +328,24 @@ export interface LedgerStanding {
   counted: number;
 }
 export interface LedgerStatus { shared: boolean; sharedFile: string; pendingCount: number; preview: LedgerRecord[] }
+
+// ---- rule document sets ----
+export type DocCategory = 'domain' | 'business_rules' | 'project_norms' | 'project_profile';
+export interface DocListItem { docId: string; title: string; category: DocCategory; domains: string[]; tags: string[]; version: number; sections: number; file: string; originRepo: string | null }
+export interface DocSection { id: string; heading: string; body: string; sha: string }
+export interface DocChange {
+  id: string; at: string; actor: string; docId: string; docTitle: string; category: DocCategory;
+  op: 'create_doc' | 'add_section' | 'update_section' | 'delete_section' | 'import' | 'manual_edit' | 'delete_doc';
+  section: string | null; before: string | null; after: string | null; rationale: string; proposalId: string | null; version: number;
+}
+export interface DocDetail {
+  meta: { id: string; title: string; category: DocCategory; domains: string[]; tags: string[]; version: number; updated_at: string };
+  intro: string; sections: DocSection[]; file: string; originRepo: string | null; changes: DocChange[];
+}
+export interface DocProposal {
+  id: string; docId: string | null; category: DocCategory; docTitle: string | null; sectionHeading: string;
+  op: 'create_doc' | 'add_section' | 'update_section' | 'delete_section'; content: string; baseSha: string | null;
+  rationale: string; evidence: string | null; source: string; sessionId: string | null; status: 'pending' | 'accepted' | 'rejected';
+  createdAt: string; decidedAt: string | null; decidedBy: string | null; decisionNote: string | null;
+}
+export interface TagProposal { id: string; label: string; kind: string; count: number; example: string | null; status: string; createdAt: string }

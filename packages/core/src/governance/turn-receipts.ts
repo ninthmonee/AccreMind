@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { EntryStatus, KnowledgeEntry, ServingStatus } from '../contracts/types.ts';
+import { redactSensitiveText } from '../capture/secret-redactor.ts';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 
 export interface ReceiptHit {
@@ -44,6 +45,22 @@ export class TurnReceipts {
     );
     this.openTurns.set(sessionId, next);
     return next;
+  }
+
+  /**
+   * Stores what the turn asked (secrets redacted, at most 500 characters) with its topic tags and the files in
+   * play, so the turn can be replayed against changed retrieval settings. Stays on this machine.
+   */
+  setQuery(sessionId: string, query: { text?: string; tags?: string[]; activeFiles?: string[] }): void {
+    const turn = this.openTurns.get(sessionId);
+    if (!turn) return;
+    const text = query.text ? redactSensitiveText(query.text).redactedText.slice(0, 500) : null;
+    this.store.rawDb.prepare(`UPDATE turn_receipts SET query_text = COALESCE(?, query_text), query_tags = ?, active_files = ?
+      WHERE workspace_id = ? AND session_id = ? AND turn_id = ?`).run(
+      text, query.tags?.length ? JSON.stringify(query.tags) : null,
+      query.activeFiles?.length ? JSON.stringify(query.activeFiles.slice(0, 10)) : null,
+      this.store.workspaceId, sessionId, turn,
+    );
   }
 
   finish(sessionId: string) {

@@ -1,0 +1,102 @@
+{
+  "format": 1,
+  "title": {
+    "en": "AccreMind plugin index",
+    "zh": "AccreMind 插件源"
+  },
+  "description": {
+    "en": "Index sources for the AccreMind engineering experience engine and its DSH plugin.",
+    "zh": "AccreMind 研发经验引擎及其 DSH 插件的索引源。"
+  },
+  "metadata": {
+    "categories": {
+      "knowledge": {
+        "title": {
+          "en": "Knowledge & memory",
+          "zh": "知识与记忆"
+        }
+      }
+    },
+    "labels": {
+      "local-first": {
+        "title": {
+          "en": "Local-first",
+          "zh": "本地优先"
+        }
+      },
+      "zero-dependency": {
+        "title": {
+          "en": "Zero dependency",
+          "zh": "零依赖"
+        }
+      },
+      "sqlite": {
+        "title": {
+          "en": "SQLite index",
+          "zh": "SQLite 索引"
+        }
+      }
+    },
+    "sortKeys": {
+      "recommended": {
+        "title": {
+          "en": "Recommended",
+          "zh": "推荐度"
+        },
+        "order": "desc"
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "@accremind/dsh-plugin",
+      "title": {
+        "en": "AccreMind",
+        "zh": "AccreMind 经验引擎"
+      },
+      "description": {
+        "en": "Capture the engineering experience that code and docs cannot recover, then hand it back at the moment it matters. Markdown source of truth plus a node:sqlite FTS5 index, entirely on your machine.",
+        "zh": "把代码与文档无法反推的研发经验（隐性约束、排障陷阱、架构取舍）沉淀成本地知识，再在需要的那一刻交还给模型和开发者。Markdown 为事实来源，node:sqlite FTS5 只做索引，数据不出本机。"
+      },
+      "icon": "https://raw.githubusercontent.com/ninthmonee/AccreMind/main/packages/dsh-plugin/icon.svg",
+      "author": "ninthmonee",
+      "homepage": "https://github.com/ninthmonee/AccreMind",
+      "repository": {
+        "url": "https://github.com/ninthmonee/AccreMind",
+        "directory": "packages/dsh-plugin"
+      },
+      "metadata": {
+        "category": "knowledge",
+        "keywords": [
+          "experience",
+          "memory",
+          "knowledge-base",
+          "engineering",
+          "sqlite",
+          "local-first",
+          "capture"
+        ],
+        "labels": [
+          "local-first",
+          "zero-dependency",
+          "sqlite"
+        ],
+        "sortKeys": {
+          "recommended": 100
+        }
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1763900000,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.5"
+          }
+        }
+      ]
+    }
+  ]
+}
