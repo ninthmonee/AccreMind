@@ -65,12 +65,12 @@ export function ReasonDialog({
 }
 
 /** 统一 diff 展示：新增 / 删除 / 区块头分色，行号前缀不选中。 */
-export function DiffView({ diff, truncated, className }: { diff: string; truncated?: boolean; className?: string }) {
+export function DiffView({ diff, truncated, className, wrap = false }: { diff: string; truncated?: boolean; className?: string; wrap?: boolean }) {
   if (!diff.trim()) return <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">没有可对照的代码差异</p>;
   const lines = diff.split('\n').slice(0, 400);
   return (
     <div className={className}>
-      <pre className="max-h-80 overflow-auto rounded-lg border bg-background/60 py-2 font-mono text-[12px] leading-[1.6]">
+      <pre className={`max-h-80 min-w-0 max-w-full overflow-auto rounded-lg border bg-background/60 py-2 font-mono text-[12px] leading-[1.6] ${wrap ? 'whitespace-pre-wrap [overflow-wrap:anywhere]' : ''}`}>
         {lines.map((l, i) => {
           const cls = l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') || l.startsWith('index ')
             ? 'text-muted-foreground'

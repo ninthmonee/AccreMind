@@ -197,3 +197,43 @@ describe('client contribution: sidebar panel entry', () => {
     assert.deepEqual(host.selected, [], 'nothing may switch panels on its own');
   });
 });
+describe('client contribution: sidebar icon', () => {
+  const iconFile = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'packages', 'dsh-plugin', 'icon.svg');
+
+  function collect(node: any, type: string, acc: any[] = []): any[] {
+    if (node === null || node === undefined || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) { for (const child of node) collect(child, type, acc); return acc; }
+    if (node.type === type) acc.push(node);
+    collect(node.children, type, acc);
+    return acc;
+  }
+
+  it('draws the same mark as packages/dsh-plugin/icon.svg, so the sidebar matches the README', () => {
+    const host = fakeHost();
+    applyClient(host);
+    const registration = host.registrations.find(entry => entry.spec.name === 'sidebar.panellist');
+    assert.ok(registration, 'the sidebar entry must be registered');
+    const icon = registration!.component as (props: { size?: number; active?: boolean }) => unknown;
+    assert.equal(typeof icon, 'function', 'the sidebar entry must render a component');
+    const tree = renderTree({ type: icon, props: { size: 18, active: true }, children: [] });
+
+    const svg = collect(tree, 'svg')[0];
+    assert.ok(svg, 'the sidebar entry must render an svg');
+    assert.equal(svg.props.viewBox, '0 0 512 512', 'the full mark needs the whole 512 canvas');
+    assert.equal(svg.props.width, 18);
+
+    const rect = collect(tree, 'rect')[0];
+    assert.equal(rect.props.rx, 116, 'the rounded surface must keep the same corner radius');
+    assert.match(String(rect.props.fill), /^url\(#.+-surface\)$/, 'the surface must be the gradient, not currentColor');
+
+    const svgSource = fs.readFileSync(iconFile, 'utf8');
+    const expected = [...svgSource.matchAll(/<path d="([^"]+)"/g)].map(match => match[1]);
+    const drawn = collect(tree, 'path').map(path => path.props.d);
+    assert.deepEqual(drawn, expected, 'icon paths must stay byte-identical to icon.svg');
+
+    const stops = collect(tree, 'stop').map(stop => stop.props.stopColor);
+    const expectedStops = [...svgSource.matchAll(/stop-color="([^"]+)"/g)].map(match => match[1]);
+    assert.deepEqual(stops, expectedStops, 'gradient stops must match icon.svg');
+  });
+});
+

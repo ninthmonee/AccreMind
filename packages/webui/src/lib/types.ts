@@ -83,6 +83,9 @@ export interface RepoProfile {
   languages: string[];
   dependencies: number;
   profileFile: string;
+  /** 项目级开关：false = 不沉淀 / 不与其它仓库共享经验（写进 .accremind/repo.json）。 */
+  capture: boolean;
+  share: boolean;
   knownRepositories: { repoId: string; name: string; domains: string[]; lastSeen: string }[];
 }
 

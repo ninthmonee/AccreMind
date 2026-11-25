@@ -1,4 +1,4 @@
-import { ChevronDown, FlaskConical, GitCommitHorizontal, Radar, ScanSearch, Sparkles, TestTube, Wand2, Zap } from 'lucide-react';
+import { ChevronDown, FlaskConical, GitCommitHorizontal, Radar, ScanSearch, ShieldOff, Sparkles, TestTube, Wand2, Zap } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts';
 import { toast } from 'sonner';
@@ -7,10 +7,11 @@ import { EmptyState, PageHeader, StatCard, stagger } from '@/components/display'
 import { DiffView } from '@/components/reason-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Segmented } from '@/components/ui/overlays';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/primitives';
+import { Dialog, DialogContent, DialogDescription, DialogTitle, Segmented } from '@/components/ui/overlays';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, Switch } from '@/components/ui/primitives';
 import { rpc } from '@/lib/rpc';
-import type { MinedCommit, RadarResult } from '@/lib/types';
+import type { MinedCommit, RadarResult, RepoProfile } from '@/lib/types';
+import { useAsync } from '@/lib/use-async';
 import { cn, formatDate } from '@/lib/utils';
 
 const DISPOSITION: Record<string, string> = {
@@ -23,12 +24,31 @@ const DISPOSITION: Record<string, string> = {
 
 /** Git 雷达：零 Token 扫描提交历史，按信号强度排序；勾选后交给模型提炼为候选。 */
 export function RadarPage() {
-  const { refresh, setView, demo, switchDemo } = useApp();
+  const { refresh, setView, demo, switchDemo, revision } = useApp();
   const [depth, setDepth] = useState('150');
   const [result, setResult] = useState<RadarResult | null>(null);
   const [busy, setBusy] = useState<'scan' | 'extract' | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [savingFlag, setSavingFlag] = useState<'capture' | 'share' | null>(null);
+  const settings = useAsync(() => rpc<RepoProfile>('accremind.repo.profile'), [revision]);
+  const captureOn = settings.data?.capture !== false;
+  const shareOn = settings.data?.share !== false;
+
+  const setFlag = async (key: 'capture' | 'share', value: boolean) => {
+    setSavingFlag(key);
+    try {
+      await rpc('accremind.repo.setSettings', { [key]: value });
+      toast.success(value ? '已恢复' : '已排除', { description: '写入 .accremind/repo.json，提交后对整个仓库生效' });
+      settings.reload();
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingFlag(null);
+    }
+  };
 
   const scan = async () => {
     setBusy('scan');
@@ -93,7 +113,11 @@ export function RadarPage() {
                 { value: '400', label: '近 400' },
               ]}
             />
-            <Button onClick={() => void scan()} disabled={!!busy}>
+            <Button variant="outline" onClick={() => setSettingsOpen(true)}>
+              <ShieldOff className={cn(!captureOn && 'text-warning')} />
+              项目排除
+            </Button>
+            <Button onClick={() => void scan()} disabled={!!busy || !captureOn}>
               <ScanSearch className={cn(busy === 'scan' && 'animate-pulse')} />
               {result ? '重新扫描' : '开始扫描'}
             </Button>
@@ -101,7 +125,21 @@ export function RadarPage() {
         }
       />
 
-      {!result ? (
+      {!captureOn ? (
+        <Card className="relative overflow-hidden p-10">
+          <div className="relative flex flex-col items-center gap-4 text-center">
+            <span className="inline-flex size-16 items-center justify-center rounded-2xl bg-warning/12 text-warning ring-1 ring-inset ring-warning/25"><ShieldOff className="size-7" /></span>
+            <div>
+              <p className="text-lg font-semibold">本项目已排除沉淀</p>
+              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground"><code>.accremind/repo.json</code> 里写着 <code>capture: false</code>：雷达不扫描，手工与自动捕获也不写入；库里已有的经验照常服务。恢复后要重新扫描一次，才会看到新候选。</p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button size="lg" disabled={savingFlag !== null} onClick={() => void setFlag('capture', true)}><ShieldOff />恢复沉淀</Button>
+              <Button size="lg" variant="outline" onClick={() => setSettingsOpen(true)}>查看排除设置</Button>
+            </div>
+          </div>
+        </Card>
+      ) : !result ? (
         <Card className="relative overflow-hidden p-10">
           <div className="pointer-events-none absolute inset-x-0 top-[72px] flex justify-center">
             {[0, 1, 2].map((i) => (
@@ -199,14 +237,69 @@ export function RadarPage() {
           </ul>
         </>
       )}
+
+      <ExclusionDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        captureOn={captureOn}
+        shareOn={shareOn}
+        saving={savingFlag}
+        onToggle={(key, value) => void setFlag(key, value)}
+        profileFile={settings.data?.profileFile}
+      />
     </div>
+  );
+}
+
+/**
+ * 项目级排除：有的仓库（临时脚本、带客户数据的项目）既不需要沉淀经验，也不该和别的仓库共享。
+ * 两个开关都写进 .accremind/repo.json，随仓库提交，所有克隆一致。
+ */
+function ExclusionDialog({ open, onOpenChange, captureOn, shareOn, saving, onToggle, profileFile }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  captureOn: boolean;
+  shareOn: boolean;
+  saving: 'capture' | 'share' | null;
+  onToggle: (key: 'capture' | 'share', value: boolean) => void;
+  profileFile?: string;
+}) {
+  const rows: { key: 'capture' | 'share'; on: boolean; title: string; hint: string }[] = [
+    { key: 'capture', on: captureOn, title: '本项目沉淀经验', hint: '关掉后 Git 雷达不扫描，手工录入与自动捕获都不写入；已经在库里的经验照常提醒。' },
+    { key: 'share', on: shareOn, title: '与其它仓库共享经验', hint: '关掉后双向隔离：这里的领域知识与通用经验不提醒到别的仓库，也不读取别处的经验。' },
+  ];
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogTitle>项目排除</DialogTitle>
+        <DialogDescription>
+          有些项目不需要沉淀经验，也不该共享经验。开关写进 {profileFile ? <code className="break-all">{profileFile}</code> : '.accremind/repo.json'}，提交后整个仓库一致。
+        </DialogDescription>
+        <div className="mt-4 grid gap-4">
+          {rows.map((row) => (
+            <div key={row.key} className="flex items-start justify-between gap-4 rounded-lg border p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{row.title}</p>
+                <p className="mt-1 break-words text-xs text-muted-foreground">{row.hint}</p>
+              </div>
+              <Switch
+                checked={row.on}
+                disabled={saving !== null}
+                onCheckedChange={(v: boolean) => onToggle(row.key, v)}
+                aria-label={row.title}
+              />
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function CommitRow({ commit: c, index, maxScore, picked, onToggle, open, onOpen }: { commit: MinedCommit; index: number; maxScore: number; picked: boolean; onToggle: () => void; open: boolean; onOpen: () => void }) {
   return (
-    <li className="rise" style={stagger(index)}>
-      <Card className={cn('overflow-hidden transition', picked && 'border-primary/50 ring-1 ring-primary/30')}>
+    <li className="rise min-w-0" style={stagger(index)}>
+      <Card className={cn('min-w-0 overflow-hidden transition', picked && 'border-primary/50 ring-1 ring-primary/30')}>
         <div className="flex items-start gap-4 p-4">
           <button
             type="button"
@@ -226,7 +319,7 @@ function CommitRow({ commit: c, index, maxScore, picked, onToggle, open, onOpen 
               {c.hasCoModifiedTest && <Badge tone="success"><TestTube />含测试</Badge>}
               {c.rapidFixClusterFiles.length > 0 && <Badge tone="warning">短期内反复修改</Badge>}
             </div>
-            <p className="mt-1 font-medium leading-snug">{c.subject}</p>
+            <p className="mt-1 break-words font-medium leading-snug [overflow-wrap:anywhere]">{c.subject}</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {c.signalReasons.map((r) => <Badge key={r} tone="info">{r}</Badge>)}
             </div>
@@ -243,12 +336,14 @@ function CommitRow({ commit: c, index, maxScore, picked, onToggle, open, onOpen 
           </Button>
         </div>
         {open && (
-          <div className="grid gap-3 border-t bg-muted/20 p-4 animate-in fade-in-0">
-            {c.body && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{c.body}</p>}
-            <div className="flex flex-wrap gap-1.5">
-              {c.touchedFiles.slice(0, 12).map((f) => <code key={f} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{f}</code>)}
+          <div className="grid min-w-0 gap-3 border-t bg-muted/20 p-4 animate-in fade-in-0">
+            {c.body && (
+              <p className="min-w-0 whitespace-pre-wrap break-words text-sm text-muted-foreground [overflow-wrap:anywhere]">{c.body}</p>
+            )}
+            <div className="flex min-w-0 flex-wrap gap-1.5">
+              {c.touchedFiles.slice(0, 12).map((f) => <code key={f} className="max-w-full break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{f}</code>)}
             </div>
-            <DiffView diff={c.diffPreview} />
+            <DiffView diff={c.diffPreview} className="min-w-0 max-w-full" wrap />
           </div>
         )}
       </Card>
