@@ -194,6 +194,7 @@ pnpm market:index   # 重新生成 market/index.json
 - [架构与设计理念](docs/ARCHITECTURE.md)：愿景、七条原则、总体架构图、经验生命周期、检索流水线与自我改进（新同事建议先读）
 - [产品设计方案 V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>)：产品边界、数据模型、验收口径
 - [技术实现方案 V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>)：模块契约、检索与治理实现
+- [对外介绍稿](docs/blog/2026-11-23-accremind-introduction.md)：面向团队的一篇完整介绍，可作为对外发布底稿
 - [插件市场发布说明](docs/market-publishing.md)
 
 许可证尚未指定；对外分发前请先补充 `LICENSE`。
