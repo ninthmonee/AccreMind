@@ -130,10 +130,11 @@ window.__ModuleLoader__.load({
 
     // The sidebar renders panellist entries through renderSlot, so size/active arrive as props.
     function PanelIcon({ size = 18, active = false }) {
-      return h('svg', { viewBox: '0 0 24 24', width: size, height: size, fill: 'none', stroke: 'currentColor',
-          strokeWidth: active ? 2 : 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
-        h('path', { d: 'M4 7.2 12 3.4l8 3.8v9.6L12 20.6l-8-3.8z' }),
-        h('path', { d: 'M4 7.2 12 11l8-3.8M12 11v9.6' }));
+      return h('svg', { viewBox: '64 64 384 384', width: size, height: size, fill: 'currentColor',
+          opacity: active ? 1 : 0.9, 'aria-hidden': true },
+        h('path', { d: 'M234 132Q256 94 278 132L342 244H284L256 195L228 244H170Z' }),
+        h('path', { d: 'M159 268H353L378 310Q382 316 374 316H138Q130 316 134 310Z' }),
+        h('path', { d: 'M116 340H174L146 389Q142 396 134 396H104Q90 396 96 385ZM396 340H338L366 389Q370 396 378 396H408Q422 396 416 385Z' }));
     }
 
     // The knowledge base is scoped to the repository, never to one conversation, so the panel does

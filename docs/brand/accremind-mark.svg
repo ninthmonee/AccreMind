@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AccreMind">
+  <title>AccreMind — monochrome knowledge mark</title>
+  <g fill="#006766">
+    <path d="M234 132Q256 94 278 132L342 244H284L256 195L228 244H170Z"/>
+    <path d="M159 268H353L378 310Q382 316 374 316H138Q130 316 134 310Z"/>
+    <path d="M116 340H174L146 389Q142 396 134 396H104Q90 396 96 385ZM396 340H338L366 389Q370 396 378 396H408Q422 396 416 385Z"/>
+  </g>
+</svg>

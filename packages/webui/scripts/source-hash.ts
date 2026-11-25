@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const INPUTS = ['src', 'index.html', 'vite.config.ts', 'package.json', 'tsconfig.json', 'scripts/embed.ts', 'scripts/source-hash.ts'];
+const INPUTS = ['src', 'index.html', 'vite.config.ts', 'package.json', 'tsconfig.json', 'scripts/embed.ts', 'scripts/source-hash.ts', '../dsh-plugin/icon.svg'];
 
 function walk(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {

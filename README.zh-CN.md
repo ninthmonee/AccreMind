@@ -1,6 +1,6 @@
 <div align="center">
 
-# AccreMind
+# <img src="packages/dsh-plugin/icon.svg" alt="" width="40" height="40" align="middle" /> AccreMind
 
 **模型总会被下一代取代，知识不会。**
 

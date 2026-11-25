@@ -1,4 +1,5 @@
 import { Contrast, FlaskConical, LogOut, Monitor, Moon, Plus, Search, Sun } from 'lucide-react';
+import brandIcon from '../../../dsh-plugin/icon.svg?inline';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,23 +19,7 @@ import type { ThemePref } from './theme';
 
 function BrandMark() {
   return (
-    <svg viewBox="0 0 32 32" className="size-8 shrink-0" aria-hidden="true">
-      <defs>
-        <linearGradient id="am-brand" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="var(--primary)" />
-          <stop offset="1" stopColor="var(--chart-1)" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="9" fill="url(#am-brand)" />
-      <path
-        d="M8 23 16 8.5 24 23m-12.2-5h8.4"
-        fill="none"
-        stroke="var(--primary-foreground)"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <img src={brandIcon} width={32} height={32} className="size-8 shrink-0" alt="" aria-hidden="true" />
   );
 }
 

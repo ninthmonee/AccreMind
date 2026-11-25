@@ -8,9 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `docs/brand/` — SVG and PNG icon assets, monochrome variants, a size preview and a downloadable icon kit.
 - `docs/legacy/` — the V1 product thinking note and the V2 PRD revision, restored verbatim from history (blob-identical to their last committed revision). They were removed from the tree while the V3.1 design became authoritative and are now archived next to it instead of being reachable only through `git log`.
+
 ### Changed
 
+- Use a teal layered A icon across both README titles, the plugin marketplace, the DSH sidebar, the workbench header and the browser tab. The workbench header and favicon share the plugin's SVG, which is included in the workbench source fingerprint.
 - `scripts/release-npm.sh` now injects the npm token as `npm_config_//registry.npmjs.org/:_authToken` for the publish step. `pnpm publish` does not read the token from a userconfig or a project `.npmrc`, and the resulting failure is `403 ... two-factor authentication ... is required`, which reads like a token-permission problem even when the token already has Bypass 2FA. The marketplace guide documents both the symptom and the `npm stage publish` / `npm stage approve` fallback.
 - Repositioned the documentation: AccreMind is no longer described as "a plugin for DeepSeek Harness". The kernel `@accremind/core` has no host dependency; the DSH plugin is the first (and currently most complete) host integration, and `~/.dsh/accremind/` plus `.dsh/skills/` are adapter conventions rather than engine defaults. README (both languages), `packages/dsh-plugin/README.md`, `docs/ARCHITECTURE.md`, the introduction article, the publishing guide and the package `description` fields all follow that framing. A dedicated **Host model** section in the README maps the three front doors (DSH plugin, CLI, standalone workbench) onto the same public API.
 
