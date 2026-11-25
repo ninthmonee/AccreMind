@@ -77,6 +77,13 @@ export class ViewCompiler {
   private readonly store: KnowledgeStoreProvider;
   private readonly budgets: ViewBudgetConfig;
   private readonly onSurface?: (entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string, reasons?: string[]) => void;
+  /**
+   * Per-file guard lookups, valid while the served index does not change. A turn reads the same file several
+   * times (read, edit, verify); only the first lookup in that window pays for the search.
+   */
+  private readonly guardCache = new Map<string, { version: number; hits: ReturnType<KnowledgeStoreProvider['search']>['items'] }>();
+  /** Search accounting for tests and the workbench: repeated lookups should show up as cache hits. */
+  readonly guardStats = { searches: 0, cacheHits: 0 };
 
   constructor(store: KnowledgeStoreProvider, budgets: ViewBudgetConfig, onSurface?: ViewCompiler['onSurface']) {
     this.store = store;
@@ -267,18 +274,32 @@ export class ViewCompiler {
     sessionSurfacedIds: Set<string>;
     workspaceDependencies?: Record<string, string>;
   }): { guardBlock: string; newlySurfacedIds: string[] } {
-    const searchRes = this.store.search({
-      workspaceId: this.store.workspaceId,
-      filePath: options.filePath,
-      workspaceDependencies: options.workspaceDependencies,
-      limit: 5,
-    });
+    const version = this.store.dataVersion?.() ?? -1;
+    const cached = this.guardCache.get(options.filePath);
+    let hits: ReturnType<KnowledgeStoreProvider['search']>['items'];
+    if (cached && cached.version === version) {
+      hits = cached.hits;
+      this.guardStats.cacheHits += 1;
+    } else {
+      hits = this.store.search({
+        workspaceId: this.store.workspaceId,
+        filePath: options.filePath,
+        workspaceDependencies: options.workspaceDependencies,
+        limit: 5,
+      }).items;
+      this.guardStats.searches += 1;
+      this.guardCache.set(options.filePath, { version, hits });
+      if (this.guardCache.size > 200) {
+        const oldest = this.guardCache.keys().next().value;
+        if (oldest !== undefined) this.guardCache.delete(oldest);
+      }
+    }
 
     const lines: string[] = [];
     const newlySurfacedIds: string[] = [];
     let usedTokens = 0;
 
-    for (const hit of searchRes.items) {
+    for (const hit of hits) {
       const { entry } = hit;
       if (entry.layer === 'team_rule') continue;
       if (entry.priority !== 'P0' && entry.priority !== 'P1') continue;

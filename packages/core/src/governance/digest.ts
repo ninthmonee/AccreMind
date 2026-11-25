@@ -1,5 +1,7 @@
+import * as path from 'node:path';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 import { readTuningHistory } from '../retrieval/auto-tuning.ts';
+import { LlmUsageMeter } from '../observability/llm-usage.ts';
 
 /**
  * A periodic summary of what needs people and what changed by itself: pending decisions (the reader's own first),
@@ -25,6 +27,8 @@ export interface Digest {
     tuning: Array<{ action: string; reason: string; at: string }>;
   };
   usage: { reminders: number; helpful: number; inapplicable: number; wrong: number; helpfulRate: number | null; inapplicableRate: number | null };
+  /** What the automatic work cost: model calls and tokens spent on tagging and extraction in the window. */
+  models: { calls: number; tokens: number; byKind: Record<string, { calls: number; tokens: number }> };
   markdown: string;
 }
 
@@ -54,6 +58,8 @@ export function buildDigest(store: LocalMarkdownSqliteStore, options: { days?: n
     helpfulRate: rated ? helpful / rated : null,
     inapplicableRate: reminders ? inapplicable / reminders : null,
   };
+  const llm = new LlmUsageMeter(path.join(store.paths.globalRoot, 'usage', 'llm-usage.jsonl')).read(days, now);
+  const models = { calls: llm.calls, tokens: llm.tokens, byKind: llm.byKind };
   const pending = {
     candidates: store.countAssessments('pending'),
     attention: attention.length,
@@ -82,6 +88,13 @@ export function buildDigest(store: LocalMarkdownSqliteStore, options: { days?: n
     `- 提醒 ${reminders} 次；有用 ${helpful}、不适用 ${inapplicable}、有错 ${wrong}`,
     `- 有帮助率 ${pct(usage.helpfulRate)}（在有反馈的提醒中）；不适用率 ${pct(usage.inapplicableRate)}`,
     '',
+    '## 模型用量',
+    '',
+    `- 自动提炼与主题标注共 ${models.calls} 次调用、约 ${models.tokens} tokens` +
+      (Object.keys(models.byKind).length
+        ? `（${Object.entries(models.byKind).map(([kind, v]) => `${kind === 'capture' ? '提炼' : kind === 'tag' ? '标注' : kind} ${v.calls} 次 / ${v.tokens} tokens`).join('；')}）`
+        : ''),
+    '',
   ];
   if (autoDemotions.length) {
     lines.push('## 自动降级 / 归档', '');
@@ -99,7 +112,7 @@ export function buildDigest(store: LocalMarkdownSqliteStore, options: { days?: n
     lines.push('');
   }
   if (!autoDemotions.length && !docChanges.length && !tuning.length) lines.push('这段时间没有自动调整或文档变更。', '');
-  return { repo: store.workspaceId, since, until: now.toISOString(), user, pending, happened: { autoDemotions, docChanges, tuning }, usage,
+  return { repo: store.workspaceId, since, until: now.toISOString(), user, pending, happened: { autoDemotions, docChanges, tuning }, usage, models,
     markdown: lines.join('\n') };
 }
 

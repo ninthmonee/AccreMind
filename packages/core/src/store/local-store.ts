@@ -1013,6 +1013,12 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     return this.db;
   }
 
+  /** Served-index version: other connections' commits plus our own writes (both re-parse the snapshot). */
+  dataVersion(): number {
+    const shared = Number((this.stmt('PRAGMA g.data_version').get() as { data_version: number }).data_version);
+    return shared * 1_000_003 + this.localIndexVersion;
+  }
+
   /** Prepared statements are compiled once per connection and reused (reconcile runs thousands). */
   private stmt(sql: string): ReturnType<DatabaseSync['prepare']> {
     let st = this.statements.get(sql);

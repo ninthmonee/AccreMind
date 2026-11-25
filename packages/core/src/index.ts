@@ -44,4 +44,5 @@ export * from './governance/auto-demotion.ts';
 export * from './retrieval/auto-tuning.ts';
 export * from './registry/knowledge-base.ts';
 export * from './governance/digest.ts';
+export * from './observability/llm-usage.ts';
 export * from './registry/project-picker.ts';

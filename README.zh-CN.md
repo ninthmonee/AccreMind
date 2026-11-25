@@ -136,7 +136,7 @@ DSH 接入确实带了 DSH 形状的默认值：个人状态放在 `~/.dsh/accre
 - **规则文档集** —— `domain` / `business_rules` / `project_norms` / `project_profile` 四类，按 `##` 小节建索引，支持导入、变更提案、接受/驳回与变更日志，落在 `.accremind/docs/`，跟代码一起评审。
 - **跨仓库知识** —— 仓库身份依次取自 `.accremind/repo.json`、`origin`、路径哈希。`domain` 与 `shared_tech` 层的条目可在同域仓库之间共享。
 - **结构化的知识关联** —— 条目标明它 `supersedes`（替代）了谁、`specializes`（细化）了哪个共享技术条目、`overrides`（豁免）了哪条团队规则，并与相关知识共享受控词表的 `tags` 与 `domains`。这些关联在检索与注入时会被尊重——细化关系的一对条目不会同时下发——结构因此不会退化成散文里的链接。
-- **回执与离线评估** —— 每回合留存脱敏后的问题与反馈；`accremind eval` 可以用真实反馈和手写用例回放，`--grid` 扫参数，只有分数变好才 `--apply` 写回。
+- **回执与离线评估** —— 每回合留存脱敏后的问题与反馈；`accremind eval` 用真实反馈和 `.accremind/eval/cases.jsonl` 里手写的真实问题回放，报告同时给出三组对照：什么都不提醒（`off`）、只提醒常驻团队规范（`rulesOnly`）、以及完整提醒路径，`lift` 就是后者比前者多做的部分。`--grid` 扫参数，只有分数变好才 `--apply` 写回。
 - **工作台** —— 七个视图：总览、知识库、候选审核、规则文档、治理、回合记录、Git 雷达。已验证条目可以导出为 `.dsh/skills/<slug>/SKILL.md`。
 - **可审计、可回滚的自我改进** —— 由 `autoEvolve: { tune: false, demote: false }` 控制：
   - *自动调参*：会话打开一分钟后触发，每个仓库每周最多一次。只有在标注样本 ≥ 30、分数提升 ≥ 0.03、召回下降不超过 0.02、且被驳回条目没有更多曝光时才会生效；生效后进入观察窗，如果调整后的反馈或「实际不适用率」变差就自动回滚。每一步都记在 `~/.dsh/accremind/tuning-history.jsonl`，可以撤销。
@@ -304,13 +304,15 @@ pnpm accremind docs list --scope domain --domain payment   # 另支持 --categor
 pnpm accremind docs search partial refund
 pnpm accremind docs proposals             # 待处理的文档与词表提案
 pnpm accremind docs accept <proposal-id>
+pnpm accremind eval                       # 回放真实反馈 + cases.jsonl，附 off / rulesOnly 对照基线
 pnpm accremind eval --grid --apply        # 回放反馈并调参，只有更好才写回
 pnpm accremind eval auto                  # 立即执行一轮调参（含观察窗判定）
 pnpm accremind eval history               # 调参历史与观察状态
 pnpm accremind eval rollback              # 撤销上一次调参
+pnpm accremind usage [--days 7]           # 自动提炼/主题标注的调用次数与 token 用量
 pnpm accremind demotions [--all]          # 自动降级/归档记录
 pnpm accremind demotions restore K-XXXX   # 撤销某条降级或归档
-pnpm accremind digest [--days 7] [--json]   # 近 7 天摘要：待办、自动变更、文档变更、提醒效果
+pnpm accremind digest [--days 7] [--json]   # 近 7 天摘要：待办、自动变更、文档变更、提醒效果、模型用量
 pnpm accremind ui --port 3180
 ```
 

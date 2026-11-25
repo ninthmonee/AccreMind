@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { createDemoSessions } from './demo-workspace.ts';
 import { repositoryLedgerSharing, workspaceGate, workspaceModelConsent } from './workspace-settings.ts';
 import {
@@ -12,8 +13,12 @@ import {
   TriageEngine,
   ViewCompiler,
   runAutoTune,
+  LlmUsageMeter,
+  meterLlm,
+  wrapReadOnlyXmlBlock,
   type AccreMindConfig,
   type CompiledTurnView,
+  type LlmCallKind,
   type LlmInferenceAdapter,
 } from '@accremind/core';
 import type {
@@ -213,11 +218,15 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   const consent = workspaceModelConsent(store.paths, Boolean(config.autoCapture.modelUpload || rawOptions.llmAdapter));
   const triageEngine = new TriageEngine(store, gate.read);
   const llmAdapter = resolveDefaultLlmAdapter(rawOptions.llmAdapter);
+  // Every call the product makes on its own is counted here (calls + tokens), so a personal trial can see its cost.
+  const llmUsage = new LlmUsageMeter(path.join(store.paths.globalRoot, 'usage', 'llm-usage.jsonl'));
+  const meteredFor = (kind: LlmCallKind): LlmInferenceAdapter | null =>
+    llmAdapter ? meterLlm(llmAdapter, llmUsage, kind) : null;
 
   const autoCapture = new AutoCaptureCoordinator({
     store,
     triageEngine,
-    llm: llmAdapter,
+    llm: meteredFor('capture'),
     assessmentMode: config.assessmentMode,
   });
 
@@ -310,7 +319,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   const workspaceSignals = new WorkspaceSignalReader(projectRoot);
   const tagger = new QueryTagger({
     vocabulary: () => store.docs.vocabulary(),
-    llm: () => llmAdapter,
+    llm: () => meteredFor('tag'),
     consent: () => consent.read(),
     onProposals: (items) => {
       try {
@@ -322,6 +331,20 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   });
   const sessionSurfacedMap = new Map<string, Set<string>>();
   const MAX_TRACKED_SESSIONS = 200;
+  /**
+   * The system prefix is what the model caches. A rule accepted mid-conversation used to rewrite it and pay one
+   * cache rebuild. The prefix is pinned per session instead: the change is delivered as an ephemeral note in the
+   * turn that needs it and the pinned prefix is refreshed when a new session starts.
+   */
+  const sessionPrefixPins = new Map<string, { text: string; ids: string[] }>();
+  const pinPrefix = (sessionId: string, text: string, ids: string[]): void => {
+    sessionPrefixPins.set(sessionId, { text, ids: [...ids] });
+    while (sessionPrefixPins.size > MAX_TRACKED_SESSIONS) {
+      const oldest = sessionPrefixPins.keys().next().value;
+      if (oldest === undefined) break;
+      sessionPrefixPins.delete(oldest);
+    }
+  };
   const getSessionSet = (sessionId: string): Set<string> => {
     let set = sessionSurfacedMap.get(sessionId);
     if (set) {
@@ -392,15 +415,41 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       receipts.setQuery(payload.sessionId, { text: payload.userPrompt, tags, activeFiles });
       // An error is relevant to the turn right after it, not forever.
       sig.lastError = null;
-      if (compiled.residentPrefix && payload.injectSystemStablePrefix) {
-        payload.injectSystemStablePrefix(compiled.residentPrefix);
+
+      // Keep the cached system prefix stable; rules that changed since it was pinned travel once, ephemerally.
+      const pin = sessionPrefixPins.get(payload.sessionId);
+      let injectedPrefix = compiled.residentPrefix;
+      let ruleUpdateBlock = '';
+      if (pin) {
+        injectedPrefix = pin.text;
+        if (pin.text !== compiled.residentPrefix) {
+          const before = new Set(pin.ids);
+          const after = new Set(compiled.residentRuleIds);
+          const added = compiled.residentRuleIds.filter((id) => !before.has(id));
+          const removed = pin.ids.filter((id) => !after.has(id));
+          const lines = [
+            ...added.map((id) => `新增规范 ${id}：本回合起适用，调 accremind_get("${id}") 查看依据`),
+            ...removed.map((id) => `规范 ${id} 已撤回或不适用于本仓库`),
+            ...(!added.length && !removed.length ? ['已有规范的内容有更新（编号未变）：需要最新措辞时调 accremind_get 查看'] : []),
+          ];
+          ruleUpdateBlock = wrapReadOnlyXmlBlock(
+            'accremind-rule-update',
+            `规则在本回合开始时发生变化。系统前缀为复用模型缓存保持原样，以下变更立即生效：\n${lines.join('\n')}`,
+          );
+        }
+      } else if (compiled.residentPrefix) {
+        pinPrefix(payload.sessionId, compiled.residentPrefix, compiled.residentRuleIds);
+      }
+      if (injectedPrefix && payload.injectSystemStablePrefix) {
+        payload.injectSystemStablePrefix(injectedPrefix);
       }
       for (const id of compiled.residentRuleIds) {
         const item = store.getEntry(id, { recordUsage: false });
         if (item.found && item.servable) receipts.record(item.entry, payload.sessionId, 'rule');
       }
-      if (compiled.radarBlock && payload.injectTurnEphemeralContext) {
-        payload.injectTurnEphemeralContext(compiled.radarBlock);
+      const ephemeral = [compiled.radarBlock, ruleUpdateBlock].filter(Boolean).join('\n');
+      if (ephemeral && payload.injectTurnEphemeralContext) {
+        payload.injectTurnEphemeralContext(ephemeral);
       }
       return compiled;
     },
@@ -493,6 +542,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       demoSessions?.dispose();
       sessionSurfacedMap.clear();
       sessionSignals.clear();
+      sessionPrefixPins.clear();
       for (const id of sessionSurfacedMap.keys()) tagger.forget(id);
       store.close();
     },

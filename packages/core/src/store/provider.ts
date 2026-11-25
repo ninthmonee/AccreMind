@@ -88,5 +88,10 @@ export interface KnowledgeStoreProvider {
   listRuleWaivers?(): Map<string, { entryId: string; reason: string; expiresAt: string }>;
   /** Project knowledge contradicting a team rule without an exception is taken out of reminders and flagged. */
   reportRuleConflict?(entry: KnowledgeEntry, rule: KnowledgeEntry): void;
+  /**
+   * Monotonic counter of the served index (our writes plus other processes' commits). Callers cache per-file
+   * lookups against it, so a repeated tool call in the same turn costs no search at all.
+   */
+  dataVersion?(): number;
   close(): void;
 }

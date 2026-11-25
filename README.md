@@ -136,7 +136,7 @@ All three are read-only reference material. They never override host rules and h
 - **Rule documents** — `domain` / `business_rules` / `project_norms` / `project_profile` are indexed by `##` section, with import, change proposals, accept/reject and a change log, written to `.accremind/docs/` and reviewed with the code.
 - **Cross-repository knowledge** — repository identity comes from `.accremind/repo.json`, then `origin`, then a path hash. Entries in the `domain` and `shared_tech` layers surface across repositories in the same domain.
 - **Structured relations** — an entry can declare what it `supersedes`, which shared-tech entry it `specializes`, and which team rule it `overrides`, and it shares controlled `tags` and `domains` with related knowledge. Relations are honoured at serving time — a specialised pair is never delivered together — so the structure survives instead of decaying into prose links.
-- **Receipts and offline evaluation** — every turn keeps a redacted question plus feedback; `accremind eval` replays real feedback and hand-written cases, `--grid` sweeps parameters, `--apply` writes back only when the score improves.
+- **Receipts and offline evaluation** — every turn keeps a redacted question plus feedback; `accremind eval` replays real feedback and the real questions written in `.accremind/eval/cases.jsonl`, and reports three arms side by side: nothing shown at all (`off`), resident team rules only (`rulesOnly`), and the full reminder path. `lift` is what the last one adds over the first two. `--grid` sweeps parameters, `--apply` writes back only when the score improves.
 - **Workbench** — seven views covering overview, library, candidate review, rule documents, governance, turn receipts and a Git radar. A verified entry can be exported to `.dsh/skills/<slug>/SKILL.md`.
 - **Self-improvement, unattended and reversible** — configurable via `autoEvolve: { tune: false, demote: false }`:
   - *Auto-tuning* runs one minute after a session opens, at most once a week per repository. It only applies when there are ≥ 30 labelled samples, the score improves by ≥ 0.03, recall drops by no more than 0.02, and rejected entries do not surface more often. It then enters an observation window and rolls itself back if either the adjusted feedback or the real "does not apply" rate gets worse. Every step is recorded in `~/.dsh/accremind/tuning-history.jsonl` and can be undone.
@@ -304,13 +304,15 @@ pnpm accremind docs list --scope domain --domain payment   # also --category, --
 pnpm accremind docs search partial refund
 pnpm accremind docs proposals             # pending document and vocabulary proposals
 pnpm accremind docs accept <proposal-id>
+pnpm accremind eval                       # replay feedback + cases.jsonl, with off / rulesOnly baselines
 pnpm accremind eval --grid --apply        # replay feedback, tune, write back only if better
 pnpm accremind eval auto                  # run one tuning cycle now (incl. observation verdict)
 pnpm accremind eval history               # tuning history and observation state
 pnpm accremind eval rollback              # undo the last tuning
+pnpm accremind usage [--days 7]           # model calls and tokens spent on extraction and topic tagging
 pnpm accremind demotions [--all]          # automatic demotion / archive records
 pnpm accremind demotions restore K-XXXX   # undo a demotion or archive
-pnpm accremind digest [--days 7] [--json]   # recent digest: pending, automatic changes, document changes, reminder quality
+pnpm accremind digest [--days 7] [--json]   # recent digest: pending, automatic changes, document changes, reminder quality, model usage
 pnpm accremind ui --port 3180
 ```
 

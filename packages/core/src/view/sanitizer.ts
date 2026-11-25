@@ -30,7 +30,8 @@ export function sanitizeKnowledgeText(raw: string): string {
 }
 
 export function wrapReadOnlyXmlBlock(
-  tagName: 'accremind-rules' | 'accremind-radar' | 'accremind-guard' | 'accremind-entry' | 'accremind-profile' | 'accremind-doc' | 'accremind-preferences',
+  tagName: 'accremind-rules' | 'accremind-radar' | 'accremind-guard' | 'accremind-entry' | 'accremind-profile' | 'accremind-doc'
+    | 'accremind-preferences' | 'accremind-rule-update',
   body: string,
 ): string {
   const safeBody = sanitizeKnowledgeText(body).trim();

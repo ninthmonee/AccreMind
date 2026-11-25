@@ -12,6 +12,7 @@ import {
   rollbackMigration,
   runArchaeologyBootstrap,
   scanGitHistorySignals,
+  LlmUsageMeter,
 } from '@accremind/core';
 import { createAccreMindRuntime, startAccreMindWebuiServer } from './index.ts';
 
@@ -178,6 +179,15 @@ async function main(): Promise<void> {
         break;
       }
 
+      // Model usage: how many calls and tokens the automatic extraction and topic tagging actually spent.
+      // Reads the same append-only counter the workbench digest shows; --days N sets the window (default 7).
+      case 'usage': {
+        const days = Number.parseInt(getFlag(rest, '--days', '7')!, 10);
+        const meter = new LlmUsageMeter(path.join(runtime.store.paths.globalRoot, 'usage', 'llm-usage.jsonl'));
+        console.log(JSON.stringify({ file: meter.file, ...meter.read(Number.isFinite(days) ? days : 7) }, null, 2));
+        break;
+      }
+
       // Replays recorded feedback (and .accremind/eval/cases.jsonl) through the reminder path; --grid tries
       // variations of the retrieval settings, --apply saves the best to ~/.dsh/accremind/tuning.json.
       // eval auto: one automatic tuning round now (judges a change on watch, else looks for a better setting);
@@ -340,7 +350,7 @@ async function main(): Promise<void> {
 
       default:
         throw new Error(
-          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | subprojects | eval | demotions | docs | team | domains | digest | ui`,
+          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | subprojects | eval | usage | demotions | docs | team | domains | digest | ui`,
         );
     }
   } finally {
