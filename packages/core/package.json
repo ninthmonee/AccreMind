@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Zero-dependency local engineering knowledge delta engine (Markdown SoT + node:sqlite FTS5)",
+  "license": "MIT",
   "engines": {
     "node": ">=24.0.0"
   },
@@ -17,13 +18,17 @@
   },
   "files": [
     "dist/**/*.js",
-    "src"
+    "src",
+    "LICENSE"
   ],
-  "homepage": "https://github.com/ninthmonee/AccreMind",
+  "homepage": "https://github.com/carlosai-dev/AccreMind",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ninthmonee/AccreMind.git",
+    "url": "https://github.com/carlosai-dev/AccreMind.git",
     "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/carlosai-dev/AccreMind/issues"
   },
   "publishConfig": {
     "access": "public"

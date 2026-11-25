@@ -1,7 +1,7 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -43,7 +43,9 @@ describe('plugin market manifest', () => {
 
   it('DSH 清单能被宿主解析', () => {
     assert.equal(manifest.dsh?.client?.platform, 'web');
-    assert.match(manifest.dsh?.engines?.dsh ?? '', /^>=/);
+    // 宿主 evaluatePluginCompatibility 只读顶层 engines.dsh；写在 dsh.engines 下等于没有要求。
+    assert.match(manifest.engines?.dsh ?? '', /^>=/, '版本门槛必须写在顶层 engines.dsh');
+    assert.equal(manifest.dsh?.engines, undefined, 'dsh.engines 不是宿主读取的位置');
     assert.ok(fs.existsSync(path.join(pluginDir, manifest.dsh.bundle.patch)));
     const inject: string[] = manifest.dsh.client.inject;
     for (const service of [
@@ -88,6 +90,51 @@ describe('plugin market manifest', () => {
   });
 });
 
+function hostAppBootPath(): string | null {
+  const dirs = [
+    process.env.DSH_HOST_NODE_MODULES,
+    '/Applications/DeepSeek Harness.app/Contents/Resources/app/dsh/node_modules',
+    path.join(root, 'node_modules'),
+  ].filter((dir): dir is string => typeof dir === 'string' && dir.length > 0);
+  for (const dir of dirs) {
+    for (const candidate of [
+      path.join(dir, '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js'),
+      path.join(dir, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js'),
+    ]) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+describe('宿主真实判定', () => {
+  const hostLib = hostAppBootPath();
+
+  it('版本门槛在宿主里真的生效', async (t) => {
+    if (!hostLib) return t.skip('本机没有 DSH 安装，可用 DSH_HOST_NODE_MODULES 指定');
+    const { evaluatePluginCompatibility } = await import(pathToFileURL(hostLib).href);
+    assert.notEqual(
+      evaluatePluginCompatibility(manifest, {}, '0.0.0'),
+      undefined,
+      '旧版本必须被判为不兼容，否则门槛没有生效',
+    );
+    const floor = manifest.engines.dsh.replace(/^>=/, '');
+    assert.equal(evaluatePluginCompatibility(manifest, {}, floor), undefined, floor + ' 必须被判为兼容');
+  });
+
+  it('dsh.client.inject 列出的包在宿主里都装得到', async (t) => {
+    if (!hostLib) return t.skip('本机没有 DSH 安装，可用 DSH_HOST_NODE_MODULES 指定');
+    // 宿主的 client 装载器按包名解析 graph row：写错一个名字，这一行永远等不到依赖。
+    const nodeModules = path.resolve(hostLib, '../../../../');
+    for (const dependency of manifest.dsh.client.inject as string[]) {
+      assert.ok(
+        fs.existsSync(path.join(nodeModules, dependency, 'package.json')),
+        '宿主安装目录里没有 ' + dependency,
+      );
+    }
+  });
+});
+
 describe('market index format 1', () => {
   const plugin = index.plugins?.[0];
 
@@ -106,7 +153,7 @@ describe('market index format 1', () => {
     assert.doesNotMatch(plugin.repository.url, /\.git$/);
     assert.equal(plugin.versions.length, 1);
     assert.equal(plugin.versions[0].version, manifest.version);
-    assert.equal(plugin.versions[0].engines.dsh, manifest.dsh.engines.dsh);
+    assert.equal(plugin.versions[0].engines.dsh, manifest.engines.dsh);
   });
 
   it('版本源与发布时间可用', () => {

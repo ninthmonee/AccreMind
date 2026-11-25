@@ -3,8 +3,9 @@
 // 用法：node packages/dsh-plugin/scripts/check-publishable.mjs [--pack]
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = resolve(here, '..');
@@ -56,8 +57,54 @@ if (inject.length > 0) ok('dsh.client.inject', inject.length + ' 项');
 else bad('dsh.client.inject', '为空，客户端不会加载');
 if (dsh.client?.platform === 'web') ok('dsh.client.platform', 'web');
 else bad('dsh.client.platform', String(dsh.client?.platform ?? '未声明'));
-if (dsh.engines?.dsh) ok('dsh.engines.dsh', dsh.engines.dsh);
-else bad('dsh.engines.dsh', '缺失，市场无法判断兼容性');
+// 宿主 evaluatePluginCompatibility 只读顶层 engines.dsh（或 peerDependencies 里的 @deepseek-ai/dsh*）。
+if (typeof manifest.engines?.dsh === 'string' && manifest.engines.dsh) ok('engines.dsh（顶层，宿主读取位置）', manifest.engines.dsh);
+else bad('engines.dsh（顶层，宿主读取位置）', '缺失：宿主读不到版本要求时会放行任何 DSH 版本');
+if (dsh.engines) bad('不应存在 dsh.engines', '宿主不读这个位置，写了只会造成"已声明门槛"的错觉');
+else ok('没有失效的 dsh.engines 副本');
+
+// 3b. 真实宿主判定：找到 @deepseek-ai/dsh-app-boot 时，用宿主自己的函数确认门槛确实生效
+const hostDirs = [];
+const hostArgIndex = process.argv.indexOf('--host');
+if (hostArgIndex >= 0 && process.argv[hostArgIndex + 1]) hostDirs.push(resolve(process.argv[hostArgIndex + 1]));
+if (process.env.DSH_HOST_NODE_MODULES) hostDirs.push(resolve(process.env.DSH_HOST_NODE_MODULES));
+for (const guess of [
+  '/Applications/DeepSeek Harness.app/Contents/Resources/app/dsh/node_modules',
+  resolve(root, 'node_modules'),
+]) hostDirs.push(guess);
+try {
+  hostDirs.push(dirname(dirname(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-app-boot/package.json'))));
+} catch {
+  // 常规 node_modules 里没有宿主包：走上面几个候选目录。
+}
+let hostAppBoot = null;
+for (const dir of hostDirs) {
+  for (const candidate of [
+    join(dir, '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js'),
+    join(dir, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js'),
+  ]) {
+    if (existsSync(candidate)) {
+      hostAppBoot = candidate;
+      break;
+    }
+  }
+  if (hostAppBoot) break;
+}
+if (!hostAppBoot) {
+  ok('宿主兼容性判定', '跳过：未找到 @deepseek-ai/dsh-app-boot，可用 --host <DSH 的 node_modules> 指定');
+} else {
+  try {
+    const { evaluatePluginCompatibility } = await import(pathToFileURL(hostAppBoot).href);
+    const tooOld = evaluatePluginCompatibility(manifest, {}, '0.0.0');
+    const target = evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.5');
+    if (tooOld) ok('宿主拒绝过旧版本', '0.0.0 → 不兼容');
+    else bad('宿主拒绝过旧版本', '0.0.0 也被当成兼容：版本门槛没有生效');
+    if (target === undefined) ok('宿主接受声明的范围', '0.2.2-rc.5 → 兼容');
+    else bad('宿主接受声明的范围', JSON.stringify(target));
+  } catch (error) {
+    bad('宿主兼容性判定', error instanceof Error ? error.message : String(error));
+  }
+}
 
 // 4. 入口可解析
 for (const [label, rel] of [

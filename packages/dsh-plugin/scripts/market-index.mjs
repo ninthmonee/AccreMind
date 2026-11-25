@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = resolve(here, '..');
 const root = resolve(pkgDir, '..', '..');
 
-export const ICON_URL = 'https://raw.githubusercontent.com/ninthmonee/AccreMind/main/packages/dsh-plugin/icon.svg';
+export const ICON_URL = 'https://raw.githubusercontent.com/carlosai-dev/AccreMind/main/packages/dsh-plugin/icon.svg';
 
 export const INDEX_METADATA = {
   categories: {
@@ -48,14 +48,14 @@ export function buildMarketIndex({ manifest, timestamp, iconUrl = ICON_URL }) {
         name: manifest.name,
         title: { en: 'AccreMind', zh: 'AccreMind 经验引擎' },
         description: {
-          en: 'Capture the engineering experience that code and docs cannot recover, then hand it back at the moment it matters. Markdown source of truth plus a node:sqlite FTS5 index, entirely on your machine.',
-          zh: '把代码与文档无法反推的研发经验（隐性约束、排障陷阱、架构取舍）沉淀成本地知识，再在需要的那一刻交还给模型和开发者。Markdown 为事实来源，node:sqlite FTS5 只做索引，数据不出本机。',
+          en: 'Turn the experience scattered across your projects into reusable knowledge assets, then hand it back at the moment it matters. Markdown source of truth plus a node:sqlite FTS5 index, entirely on your machine.',
+          zh: '把散落在项目里的经验沉淀成可复用的知识资产，再在需要的那一刻交还给模型和开发者。Markdown 为事实来源，node:sqlite FTS5 只做索引，数据不出本机。',
         },
         icon: iconUrl,
-        author: 'ninthmonee',
-        homepage: webUrl(manifest.homepage, 'https://github.com/ninthmonee/AccreMind'),
+        author: 'carlosai-dev',
+        homepage: webUrl(manifest.homepage, 'https://github.com/carlosai-dev/AccreMind'),
         repository: {
-          url: webUrl(manifest.repository?.url, 'https://github.com/ninthmonee/AccreMind'),
+          url: webUrl(manifest.repository?.url, 'https://github.com/carlosai-dev/AccreMind'),
           directory: 'packages/dsh-plugin',
         },
         metadata: {
@@ -69,7 +69,7 @@ export function buildMarketIndex({ manifest, timestamp, iconUrl = ICON_URL }) {
             version: manifest.version,
             publishTimestamp: timestamp,
             source: { type: 'npm' },
-            engines: { dsh: manifest.dsh?.engines?.dsh ?? '>=0.2.2-rc.5' },
+            engines: { dsh: manifest.engines?.dsh ?? '>=0.2.2-rc.5' },
           },
         ],
       },

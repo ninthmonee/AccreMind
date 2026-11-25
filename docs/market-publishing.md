@@ -23,6 +23,8 @@ node packages/dsh-plugin/scripts/market-index.mjs --check
 
 第一条编译 `dist/`（**必须**，包里不含构建脚本）；第二条按市场的收录条件逐项核对，`--pack` 还会实跑 `pnpm pack --dry-run` 确认 `dist/` 真的进了 tarball；第三条确认索引与清单没有漂移。
 
+本机装了 DSH 时，第二条会自动找到 `@deepseek-ai/dsh-app-boot`，直接用宿主的 `evaluatePluginCompatibility` 验证版本门槛真的会拒绝旧版本（找不到时可加 `--host <DSH 的 node_modules 路径>` 指定；CI 上没有宿主，该项显示为跳过）。
+
 > `**/dist/` 在 `.gitignore` 里，npm 默认会继承它。两个包都显式声明了 `files` 白名单，`dist/` 因此一定会被打包——这一步不要删。
 
 ## 2. 发布顺序：core 先，插件后
@@ -51,7 +53,7 @@ git add market/index.json && git commit -m 'chore(market): 刷新索引发布时
 索引推到 `main` 后，URL 是：
 
 ```
-https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
+https://raw.githubusercontent.com/carlosai-dev/AccreMind/main/market/index.json
 ```
 
 用户侧操作：
@@ -71,6 +73,7 @@ https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 - `versions` 非空、按 SemVer 降序，版本号是精确 SemVer 且在插件内唯一。
 - `publishTimestamp` 是 Unix **秒**；`0` 是合法值（会被保留），`null` 会被丢弃。
 - `metadata.category` / `labels` / `sortKeys` 的 id 必须在该索引的 `metadata` 里声明过，否则引用悬空。
+- **版本门槛必须写在包清单顶层的 `engines.dsh`**：`{"engines":{"node":">=24.0.0","dsh":">=0.2.2-rc.5"}}`。宿主的 `evaluatePluginCompatibility` 只读顶层 `engines.dsh`（有则独占决定）或 `peerDependencies` 里的 `@deepseek-ai/dsh*`；写在 `dsh.engines` 下会被当成"没有任何版本要求"，任何 DSH 版本都放行，并且不会出现在安装/启动校验里。索引里的 `versions[].engines.dsh` 只用于门店展示，市场不校验它与包是否一致。
 - 安装串由 `marketInstallTarget` 生成：npm 源是 `name@version`，git 源是 `git+https://…#<40 位 commit>` 加 `path:` 参数。
 
 ## 6. 不想发 npm 的备选：git 源
@@ -78,7 +81,7 @@ https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 `source` 也可以写 git：
 
 ```json
-{ "type": "git", "url": "https://github.com/ninthmonee/AccreMind", "commit": "<40 位小写 commit>", "path": "packages/dsh-plugin" }
+{ "type": "git", "url": "https://github.com/carlosai-dev/AccreMind", "commit": "<40 位小写 commit>", "path": "packages/dsh-plugin" }
 ```
 
 但 pnpm 从 git 装子目录时**不会解析 `workspace:*`**，这样装会失败。要走这条路，得先给两个包改成真实版本号依赖（`"@accremind/core": "0.1.0"`），并且接受安装包里没有 `dist/`——因为 git 安装不会替你跑 `scripts/build.ts`。所以默认走 npm。

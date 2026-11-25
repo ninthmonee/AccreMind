@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "type": "module",
   "description": "AccreMind for DeepSeek Harness: capture the engineering experience that code and docs cannot recover, then hand it back at the moment it matters.",
+  "license": "MIT",
   "icon": "icon.svg",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.0.0",
+    "dsh": ">=0.2.2-rc.5"
   },
   "main": "./dist/index.js",
   "types": "./src/index.ts",
@@ -24,9 +26,6 @@
     "./package.json": "./package.json"
   },
   "dsh": {
-    "engines": {
-      "dsh": ">=0.2.2-rc.5"
-    },
     "client": {
       "platform": "web",
       "immediately": true,
@@ -49,6 +48,7 @@
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
+    "LICENSE",
     "src"
   ],
   "keywords": [
@@ -61,11 +61,14 @@
     "local-first",
     "sqlite-fts5"
   ],
-  "homepage": "https://github.com/ninthmonee/AccreMind",
+  "homepage": "https://github.com/carlosai-dev/AccreMind",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ninthmonee/AccreMind.git",
+    "url": "https://github.com/carlosai-dev/AccreMind.git",
     "directory": "packages/dsh-plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/carlosai-dev/AccreMind/issues"
   },
   "publishConfig": {
     "access": "public"

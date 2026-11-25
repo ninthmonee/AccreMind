@@ -22,3 +22,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+      - run: pnpm pack:check
+      - run: node packages/dsh-plugin/scripts/market-index.mjs --check
