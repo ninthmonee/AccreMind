@@ -53,7 +53,7 @@ git add market/index.json && git commit -m 'chore(market): 刷新索引发布时
 索引推到 `main` 后，URL 是：
 
 ```
-https://raw.githubusercontent.com/carlosai-dev/AccreMind/main/market/index.json
+https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 ```
 
 用户侧操作：
@@ -81,7 +81,7 @@ https://raw.githubusercontent.com/carlosai-dev/AccreMind/main/market/index.json
 `source` 也可以写 git：
 
 ```json
-{ "type": "git", "url": "https://github.com/carlosai-dev/AccreMind", "commit": "<40 位小写 commit>", "path": "packages/dsh-plugin" }
+{ "type": "git", "url": "https://github.com/ninthmonee/AccreMind", "commit": "<40 位小写 commit>", "path": "packages/dsh-plugin" }
 ```
 
 但 pnpm 从 git 装子目录时**不会解析 `workspace:*`**，这样装会失败。要走这条路，得先给两个包改成真实版本号依赖（`"@accremind/core": "0.1.0"`），并且接受安装包里没有 `dist/`——因为 git 安装不会替你跑 `scripts/build.ts`。所以默认走 npm。

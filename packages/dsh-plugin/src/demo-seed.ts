@@ -495,7 +495,7 @@ function seedDemoLedger(store: LocalMarkdownSqliteStore): void {
     if (entry.maturity === 'draft') return;
     store.ledger.append(entry, { kind: 'validated', task: `ticket-${entry.id}-1`, note: '在真实任务中确认有用', at: new Date(Date.now() - (10 - i) * day).toISOString(), actor: people[0] });
     if (entry.maturity === 'proven') {
-      store.ledger.append(entry, { kind: 'validated', task: `ticket-${entry.id}-2`, note: '另一位同事复现并确认', at: new Date(Date.now() - (4 - i % 3) * day).toISOString(), actor: people[1] });
+      store.ledger.append(entry, { kind: 'validated', task: `ticket-${entry.id}-2`, note: '另一项独立任务复现并确认', at: new Date(Date.now() - (4 - i % 3) * day).toISOString(), actor: people[1] });
     }
   });
 }

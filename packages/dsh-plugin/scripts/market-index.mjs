@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = resolve(here, '..');
 const root = resolve(pkgDir, '..', '..');
 
-export const ICON_URL = 'https://raw.githubusercontent.com/carlosai-dev/AccreMind/main/packages/dsh-plugin/icon.svg';
+export const ICON_URL = 'https://raw.githubusercontent.com/ninthmonee/AccreMind/main/packages/dsh-plugin/icon.svg';
 
 export const INDEX_METADATA = {
   categories: {
@@ -52,10 +52,10 @@ export function buildMarketIndex({ manifest, timestamp, iconUrl = ICON_URL }) {
           zh: '把散落在项目里的经验沉淀成可复用的知识资产，再在需要的那一刻交还给模型和开发者。Markdown 为事实来源，node:sqlite FTS5 只做索引，数据不出本机。',
         },
         icon: iconUrl,
-        author: 'carlosai-dev',
-        homepage: webUrl(manifest.homepage, 'https://github.com/carlosai-dev/AccreMind'),
+        author: 'ninthmonee',
+        homepage: webUrl(manifest.homepage, 'https://github.com/ninthmonee/AccreMind'),
         repository: {
-          url: webUrl(manifest.repository?.url, 'https://github.com/carlosai-dev/AccreMind'),
+          url: webUrl(manifest.repository?.url, 'https://github.com/ninthmonee/AccreMind'),
           directory: 'packages/dsh-plugin',
         },
         metadata: {

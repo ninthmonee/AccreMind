@@ -1,200 +1,308 @@
+<div align="center">
+
 # AccreMind
 
-> 把代码和文档里推不出来的工程经验沉淀成本地知识，并在下一次改动前递到模型和开发者手边。
+**Models are always superseded by the next generation. Knowledge is not.**
 
-AccreMind 是面向 [DeepSeek Harness](https://github.com/deepseek-ai)（下称 DSH）的本地插件与独立工作台。它只收一件事：**这次踩的坑、试过但放弃的方案、最后为什么选它**——也就是读代码、翻文档都还原不出来的那层增量（`knowledge_delta`）。
+Turn the experience scattered across your projects into reusable knowledge assets.
 
-所有数据留在本机：Markdown 是事实来源，`node:sqlite`（WAL + FTS5 trigram）只做索引，没有后台服务和外部向量库。
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+[![CI](https://github.com/ninthmonee/AccreMind/actions/workflows/ci.yml/badge.svg)](https://github.com/ninthmonee/AccreMind/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%E2%89%A524-339933.svg)](https://nodejs.org)
+[![DeepSeek Harness](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4d6bfe.svg)](#requirements)
+
+</div>
+
+AccreMind is a local-first plugin for [DeepSeek Harness](https://github.com/deepseek-ai) (DSH) plus a standalone workbench. It turns the experience scattered across your projects — the decisions, the abandoned routes, the domain rules and shared conventions, the traps already fallen into, and how all of it connects — into Markdown knowledge assets you can commit, review and reuse. Then it puts them back in front of the model and the developer right before the next change.
+
+Everything stays on your machine: Markdown is the source of truth, `node:sqlite` (WAL + FTS5 trigram) is only ever a rebuildable index. No background service, no external vector store, no telemetry.
 
 ---
 
-## 目录
+## Table of contents
 
-- [为什么需要它](#为什么需要它)
-- [三层复用](#三层复用)
-- [核心能力](#核心能力)
-- [仓库结构](#仓库结构)
-- [快速开始](#快速开始)
-- [在 DSH 中使用](#在-dsh-中使用)
-- [独立工作台](#独立工作台)
-- [数据放在哪](#数据放在哪)
-- [命令行](#命令行)
-- [模型配置（可选）](#模型配置可选)
-- [开发与验证](#开发与验证)
-- [文档](#文档)
+- [The problem](#the-problem)
+- [How it works](#how-it-works)
+- [What we accumulate](#what-we-accumulate)
+- [Three injection layers](#three-injection-layers)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Using it inside DSH](#using-it-inside-dsh)
+- [Standalone workbench](#standalone-workbench)
+- [Where the data lives](#where-the-data-lives)
+- [CLI](#cli)
+- [Model access (optional)](#model-access-optional)
+- [Design principles](#design-principles)
+- [How it compares](#how-it-compares)
+- [Non-goals](#non-goals)
+- [Requirements](#requirements)
+- [Development](#development)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
 
-## 为什么需要它
+## The problem
 
-模型的上下文会滚走，人的记忆会衰减，文档只留下结论。团队真正花过代价的知识——"这个接口重试会重复扣款"、"这个库 3.x 之后 SSR 下不能动态导入"——通常以口头、聊天记录或某次事故复盘的形式存在，下一次改动时没人想得起来。
+Model context rolls over. Human memory decays. Documentation keeps the conclusion and throws away the reason.
 
-AccreMind 在三个时刻把这些知识递回来：
+The knowledge that actually cost a team something — "retrying this endpoint double-charges", "this library cannot be dynamically imported under SSR since 3.x", "we tried the queue-based design and reverted it" — lives in a chat thread, a postmortem, or one person's head. It is exactly the knowledge that is missing at the moment the next change is written, and exactly the knowledge an AI assistant cannot infer from the repository.
 
-| 场景 | 发生什么 |
+AccreMind stores that delta and nothing else.
+
+## How it works
+
+Three moments, one knowledge base:
+
+| Moment | What happens |
 | --- | --- |
-| 改之前 | 检索命中的经验以条目 id 和一句摘要进入上下文，标记为参考、不执行 |
-| 改之中 | 读写到同一文件时，按需展开完整条目：前置条件、反例、验证方法、证据定位 |
-| 改之后 | 对话尾部回执记录本轮用到哪些经验，一键反馈"有用 / 没用 / 不准" |
+| **Before a change** | Entries that match the turn are injected as *references* — id plus one-line summary, explicitly marked as material, not instructions |
+| **During a change** | Touching a file that an entry watches unfolds the full entry: preconditions, counterexamples, how to verify, where the evidence is |
+| **After a change** | A turn-tail receipt lists what was used, with one-click "helpful / not helpful / inaccurate" feedback |
 
-## 三层复用
+## What we accumulate
 
-| 层 | 注入时机 | 默认预算 | 作用 |
+"The experience scattered across projects" is not a slogan here — it is six concrete kinds of knowledge, each with a home in the store:
+
+| Kind | What it looks like in practice | Entry type | Layer |
 | --- | --- | --- | --- |
-| 常驻规则 | 每轮对话开头 | 500 tokens | 团队硬约束，字节稳定以保住 KV cache |
-| 回合雷达 | 每轮按提问检索 | 300 tokens | 相关经验按 id 提示，标注为参考材料 |
-| 工具护栏 | 读/写目标文件时 | 240 / 1500 tokens | 命中同一文件时展开完整条目 |
+| **Decisions and their reasoning** | why this design, what it cost, what it rules out next time | `decision` | `project` |
+| **Traps and abandoned routes** | "retrying this endpoint double-charges"; "we tried the queue design and reverted it" | `pitfall` | `project` |
+| **Domain rules** | business invariants, temporal rules, what a settled order may never become | `model` / `guideline` | `domain` |
+| **Shared conventions** | naming, error envelope, migration pattern, review expectations | `guideline` / `process` | `project`, and `team_rule` once accepted as a team norm |
+| **Shared-tech gotchas** | "this library cannot be dynamically imported under SSR since 3.x" — true in every repository | `model` / `pitfall` | `shared_tech` |
+| **Process knowledge** | how a release, rollout or incident is actually handled here | `process` | `project` / `personal` |
 
-三层都只是参考材料，不覆盖宿主规则，也没有命令执行权。
+Two properties make this a body of knowledge rather than a pile of notes:
 
-## 核心能力
+- **Relations are part of the record.** An entry states what it `supersedes`, which shared-tech entry it `specializes`, which team rule it `overrides`, and which `tags` and `domains` it belongs to. A specialised pair is never served together, so refinement replaces contradiction instead of adding to it.
+- **Scope decides who gets it.** A `personal` entry stays with you, `project` stays in the repository, `domain` and `shared_tech` travel to other repositories, and `team_rule` is organisation-wide — it is only ever proposed by a person, never written by automatic capture, and is exempt from automatic demotion.
 
-1. **本地优先的双层存储**：正式经验落在仓库 `.accremind/`（可随 Git 提交供全队共享），试用稿、队列、索引、按用户划分的检索记录落在 `~/.dsh/accremind/`。Markdown 卡片 + `node:sqlite` FTS5 索引，索引可随时从文件重建。
-2. **五路分流**：提交的候选按 `index_only / link_existing / knowledge_candidate / needs_confirmation / discard` 判定；代码或文档已能还原的输入不会污染知识库。
-3. **影子试用与转正**：新条目先进 `probation`，被检索命中并拿到独立验证后才转 `verified`；连续多次曝光无反馈自动归档。
-4. **时效与符号复核**：条目记录 `watch_paths` 和符号锚点哈希；代码改动或复核周期到期后进入待复核队列，反证会让条目立即暂停服务。
-5. **规则文档集**：`domain` / `business_rules` / `project_norms` / `project_profile` 四类文档按 `##` 章节建索引，支持导入、修改提议、接受/拒绝与变更记录，写入 `.accremind/docs/` 随 Git 评审。
-6. **跨仓库知识**：仓库身份取自 `.accremind/repo.json`，其次 `origin`，最后才是路径哈希；`domain` 与 `shared_tech` 层的经验可在同领域仓库间互相提醒。
-7. **回执与离线评测**：每轮对话回执保留脱敏问题文本，`accremind eval` 用真实反馈与手写用例回放提醒效果，`--grid` 试参数，`--apply` 只在更好时写回。
-8. **经验治理工作台**：七个视图覆盖总览、知识库、候选审核、规则文档、治理、回合记录与 Git 雷达；已验证经验可一键导出为 `.dsh/skills/<slug>/SKILL.md`。
-9. **自我改进（无人值守，均可撤销）**，可用插件配置 `autoEvolve: { tune: false, demote: false }` 关闭：
-   - **自动调参**：会话打开 1 分钟后在后台运行，每个仓库每周最多一次。要同时满足这几条才会应用：有标注样本 ≥ 30 个，得分至少高 0.03，召回降幅不超过 0.02，被否定的条目不会更多地出现。应用后进入观察期：3 天后用调整之后的新反馈对比新旧参数，同时对比调整前后实际的"不适用"比例，任何一项变差就自动回滚，30 天内不再尝试同一组参数。全部记录在 `~/.dsh/accremind/tuning-history.jsonl`。
-   - **低效经验自动降级**：正式经验在当前版本被 ≥ 2 个会话标为"不适用"且占提醒会话 ≥ 25%，或 30 天内在 ≥ 40 个会话中提醒过却从未被打开、引用或确认，会自动降为试用；卡片状态同步写回 Markdown，Git 里可见。因"不适用"暂停后 30 天无人处理会自动归档（试用期满无人决定的等 60 天）。团队规范、当前版本有过确认或反例的、跨仓库共享的经验不做自动处理。每一步都进入总览的「需要你处理」，可一键撤销；撤销后该版本不再自动降级。
+### What is deliberately not accumulated
 
-## 仓库结构
+- Anything the code, tests or existing docs already say.
+- Diffs and file listings that `git log` regenerates for free.
+- Machine-local paths and one-off environment noise.
+- Unverified guesses: they wait in `needs_confirmation` for a human, and are dropped if nobody vouches for them.
 
-```
-.
-├── packages/
-│   ├── core/          # @accremind/core：存储、检索、增量评估、治理、评测（宿主无关）
-│   ├── dsh-plugin/    # @accremind/dsh-plugin：DSH 工具、上下文注入、面板、CLI、内嵌 WebUI
-│   └── webui/         # @accremind/webui：React + Vite 工作台，构建为单文件内联进插件
-├── scripts/           # 构建、WebUI 产物一致性校验
-├── tests/             # node:test 端到端用例
-├── docs/              # 产品设计与技术实现方案、市场发布说明
-└── market/            # 插件市场索引
-```
+### How a candidate is filtered
 
-## 快速开始
+Only a `knowledge_delta` — the part a reader could not reconstruct from the code and the existing docs — is accepted. Every candidate goes through five-way triage:
 
-要求 Node.js ≥ 24（`node:sqlite` 的 FTS5 trigram 分词）与 pnpm 10。
+| Disposition | Meaning |
+| --- | --- |
+| `index_only` | Already discoverable in code/docs; index it for retrieval, do not store a card |
+| `link_existing` | Duplicate of an entry we already have; link to it instead |
+| `knowledge_candidate` | A real delta; promote into a Markdown card |
+| `needs_confirmation` | Plausible but unverified; park it until a human decides |
+| `discard` | Empty delta, a guess, or a machine-local path; drop it |
+
+New cards start in `probation`. They become `verified` only after being surfaced by real turns and validated — no silent self-promotion.
+
+## Three injection layers
+
+| Layer | Fires on | Default budget | Role |
+| --- | --- | --- | --- |
+| Resident rules | Start of every turn | 500 tokens | Team hard constraints; byte-stable so the KV cache survives |
+| Turn radar | Each turn, by query | 300 tokens | Matching entries by id, marked as reference material |
+| Tool guard | Reading/writing a watched file | 240 / 1500 tokens | Unfolds the full entry when the same file is touched |
+
+All three are read-only reference material. They never override host rules and have no execution authority.
+
+## Features
+
+- **Local-first, two-tier storage** — team knowledge lives in `.accremind/` inside the repo (commit it, review it in PRs); drafts, queues, indexes and per-user retrieval logs live in `~/.dsh/accremind/`. The index can be rebuilt from the Markdown at any time.
+- **Five-way triage** — `index_only / link_existing / knowledge_candidate / needs_confirmation / discard`, so code-recoverable input never pollutes the base.
+- **Shadow probation** — new entries are used quietly, then promoted on independent validation. Repeated exposure without feedback archives them.
+- **Staleness and symbol anchors** — entries record `watch_paths` and symbol-anchor hashes. Code changes or an expired review window push the entry into a re-check queue; a counterexample suspends it immediately. Formatting-only edits do not raise false alarms.
+- **Rule documents** — `domain` / `business_rules` / `project_norms` / `project_profile` are indexed by `##` section, with import, change proposals, accept/reject and a change log, written to `.accremind/docs/` and reviewed with the code.
+- **Cross-repository knowledge** — repository identity comes from `.accremind/repo.json`, then `origin`, then a path hash. Entries in the `domain` and `shared_tech` layers surface across repositories in the same domain.
+- **Structured relations** — an entry can declare what it `supersedes`, which shared-tech entry it `specializes`, and which team rule it `overrides`, and it shares controlled `tags` and `domains` with related knowledge. Relations are honoured at serving time — a specialised pair is never delivered together — so the structure survives instead of decaying into prose links.
+- **Receipts and offline evaluation** — every turn keeps a redacted question plus feedback; `accremind eval` replays real feedback and hand-written cases, `--grid` sweeps parameters, `--apply` writes back only when the score improves.
+- **Workbench** — seven views covering overview, library, candidate review, rule documents, governance, turn receipts and a Git radar. A verified entry can be exported to `.dsh/skills/<slug>/SKILL.md`.
+- **Self-improvement, unattended and reversible** — configurable via `autoEvolve: { tune: false, demote: false }`:
+  - *Auto-tuning* runs one minute after a session opens, at most once a week per repository. It only applies when there are ≥ 30 labelled samples, the score improves by ≥ 0.03, recall drops by no more than 0.02, and rejected entries do not surface more often. It then enters an observation window and rolls itself back if either the adjusted feedback or the real "does not apply" rate gets worse. Every step is recorded in `~/.dsh/accremind/tuning-history.jsonl` and can be undone.
+  - *Demotion* moves a verified entry back to probation when at least two sessions in the current revision flag it as "not applicable" at ≥ 25% of exposures, or when it has been surfaced in ≥ 40 sessions over 30 days and never opened, quoted or confirmed. Suspended entries archive after 30 days untouched; probation drafts after 60. Team norms, entries confirmed on the current revision, and counterexample-backed entries are exempt. Every action lands in the overview's *needs your attention* list with a one-click undo.
+
+## Quick start
+
+### From source (current, recommended until the npm release)
 
 ```bash
+git clone https://github.com/ninthmonee/AccreMind.git
+cd AccreMind
 pnpm install
-pnpm build          # 构建 core / plugin / webui，并生成内联的工作台产物
-pnpm verify         # 构建 + 全部测试 + WebUI 产物指纹校验
+pnpm build      # builds core, plugin and the inlined workbench bundle
+pnpm verify     # build + full test suite + workbench artifact fingerprint
 ```
 
-CI 跑的就是 `pnpm verify`（见 `.github/workflows/ci.yml`）。
-
-## 在 DSH 中使用
-
-本地开发时把包软链进 DSH profile，改代码后重启 DSH 即可生效：
+Then link the plugin into a DSH profile:
 
 ```bash
-pnpm install:dsh                      # 默认 desktop profile
-pnpm install:dsh -- --profile web     # 或指定 profile
+pnpm install:dsh                      # desktop profile by default
+pnpm install:dsh -- --profile web     # or a specific profile
 ```
 
-也可以手动登记：
+### From the plugin marketplace
 
-```bash
-dsh plugin --profile web add "link:$(pwd)/packages/dsh-plugin"
-dsh plugin --profile web enable accremind
+The package is published as `@accremind/dsh-plugin`; the index URL for DSH's *Custom plugin indexes* is:
+
+```
+https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 ```
 
-安装后左侧栏出现 `AccreMind` 面板，对话中会按需注入经验、在回合尾部给回执；对话内可用的工具：
+Add it under **Plugins → Experimental plugins → Custom plugin indexes**, then install **AccreMind** from Discover. Release mechanics are documented in [docs/market-publishing.md](docs/market-publishing.md).
 
-- `accremind_capture`：提交经验候选并执行五路分流
-- `accremind_search`：按关键词、类型、层、文件路径检索
-- `accremind_get`：取完整正文、前置条件、验证方法与证据定位
-- `accremind_validate`：登记本次使用的成败，`failure` 会立即暂停条目
-- `accremind_export_skill`：把已验证条目固化为 DSH 技能文档
+## Using it inside DSH
 
-## 独立工作台
+After installation a `AccreMind` panel appears in the sidebar, entries are injected as the conversation needs them, and a receipt is appended to each turn. Six tools are available to the model:
 
-不开 DSH 也能起同一套界面（默认 3180 端口，仅监听本机）：
+| Tool | Purpose |
+| --- | --- |
+| `accremind_capture` | Submit a candidate and run five-way triage |
+| `accremind_search` | Search by keyword, kind, layer or file path |
+| `accremind_get` | Fetch full text, preconditions, verification steps and evidence |
+| `accremind_validate` | Record a success or failure for this use; `failure` suspends the entry |
+| `accremind_export_skill` | Freeze a verified entry into a DSH skill document |
+| `accremind_propose_doc_change` | Propose a change to a rule document for human review |
+
+## Standalone workbench
+
+The same UI runs without DSH (port 3180, loopback only):
 
 ```bash
 pnpm ui -- --port 3180
 ```
 
-修改界面时用 Vite 热更新：
-
-```bash
-pnpm dev:webui
-```
-
-发版前务必跑 `pnpm verify`：`check:webui` 会比对 `packages/webui` 源码与插件内联产物的指纹，避免界面改动漏进发布包。
-
-## 数据放在哪
-
-| 路径 | 内容 |
+| View | What it answers |
 | --- | --- |
-| `<repo>/.accremind/entries/` | 正式经验卡片（Markdown，含版本与证据引用） |
-| `<repo>/.accremind/evidence/` | 条目证据附件 |
-| `<repo>/.accremind/rules/` | 常驻规则 |
-| `<repo>/.accremind/docs/` | 四类规则文档与变更记录 |
-| `<repo>/.accremind/repo.json` | 仓库身份与业务领域（建议提交） |
-| `~/.dsh/accremind/probation/` | 试用稿（不写入项目 Git） |
-| `~/.dsh/accremind/queue/` | 自动捕获与评估队列 |
-| `~/.dsh/accremind/index/` | 可重建的 SQLite 索引 |
-| `~/.dsh/accremind/{personal,domain,shared-tech}/` | 跨仓库的经验层 |
-| `~/.dsh/accremind/{registry,users,workspaces}/` | 仓库注册表、用户身份、按仓库划分的检索记录 |
+| Overview | What needs my attention, how healthy is the base |
+| Library | Browse, search and summarise every entry |
+| Review | Compare baseline against delta, check evidence |
+| Rule documents | Domain, business rules, project norms and pending proposals |
+| Governance | Staleness re-checks, counterexamples, settings |
+| Receipts | Which entries each turn actually used |
+| Git radar | Scan commit history for high-signal experience |
 
-## 命令行
+For UI work use `pnpm dev:webui` (Vite HMR). Before releasing, always run `pnpm verify`: `check:webui` compares the `packages/webui` sources with the inlined artifact so a UI change cannot silently miss the published bundle.
+
+## Where the data lives
+
+| Path | Contents |
+| --- | --- |
+| `<repo>/.accremind/entries/` | Verified experience cards (Markdown, with revisions and evidence) |
+| `<repo>/.accremind/evidence/` | Evidence attachments |
+| `<repo>/.accremind/rules/` | Resident rules |
+| `<repo>/.accremind/docs/` | The four rule document kinds and their change log |
+| `<repo>/.accremind/repo.json` | Repository identity and business domain (commit this) |
+| `~/.dsh/accremind/probation/` | Probation drafts (never written into the repo) |
+| `~/.dsh/accremind/queue/` | Auto-capture and evaluation queues |
+| `~/.dsh/accremind/index/` | Rebuildable SQLite index |
+| `~/.dsh/accremind/{personal,domain,shared-tech}/` | Cross-repository knowledge layers |
+| `~/.dsh/accremind/{registry,users,workspaces}/` | Repository registry, user identity, per-repository retrieval logs |
+
+## CLI
 
 ```bash
-pnpm accremind status                     # 概览 + 时效巡检
-pnpm accremind search "订单 重试" --scope auto --file packages/core/src/store/local-store.ts
-pnpm accremind get K-XXXX                 # 完整条目
-pnpm accremind rebuild                    # 从 Markdown 重建索引
-pnpm accremind bootstrap --top 10         # 扫描 Git 历史找高信号提交
-pnpm accremind bootstrap --extract        # 再交给模型做代码对照与五路分流
-pnpm accremind migrate                    # 跨仓库迁移预演，--apply 执行，--rollback 回退
+pnpm accremind status                     # overview + staleness sweep
+pnpm accremind search "order retry" --scope auto --file packages/core/src/store/local-store.ts
+pnpm accremind get K-XXXX                 # full entry
+pnpm accremind rebuild                    # rebuild the index from Markdown
+pnpm accremind bootstrap --top 10         # scan Git history for high-signal commits
+pnpm accremind bootstrap --extract        # hand them to the model for triage
+pnpm accremind migrate                    # cross-repo migration rehearsal; --apply, --rollback
 pnpm accremind repo --domains payments,ledger
 pnpm accremind docs import ./adr --category business_rules
-pnpm accremind docs proposals             # 待审修改提议与词表提议
-pnpm accremind docs accept <提议编号>
-pnpm accremind eval --grid --apply        # 回放反馈，调参并只在更好时落盘
-pnpm accremind eval auto                  # 立即跑一轮自动调参（含观察期判定）
-pnpm accremind eval history               # 调参记录与观察状态
-pnpm accremind eval rollback              # 撤销最近一次调参
-pnpm accremind demotions [--all]          # 自动降级 / 归档记录
-pnpm accremind demotions restore K-XXXX   # 撤销某条经验的自动降级 / 归档
+pnpm accremind docs proposals             # pending document and vocabulary proposals
+pnpm accremind docs accept <proposal-id>
+pnpm accremind eval --grid --apply        # replay feedback, tune, write back only if better
+pnpm accremind eval auto                  # run one tuning cycle now (incl. observation verdict)
+pnpm accremind eval history               # tuning history and observation state
+pnpm accremind eval rollback              # undo the last tuning
+pnpm accremind demotions [--all]          # automatic demotion / archive records
+pnpm accremind demotions restore K-XXXX   # undo a demotion or archive
 pnpm accremind ui --port 3180
 ```
 
-所有命令都接受 `--repo` 与 `--global-dir`，默认分别是当前目录与 `~/.dsh/accremind`。
+Every command accepts `--repo` and `--global-dir`, defaulting to the current directory and `~/.dsh/accremind`.
 
-## 模型配置（可选）
+## Model access (optional)
 
-检索、提醒、文件护栏和时效巡检全部在本机完成，不需要任何 Key。只有"提炼经验"（`bootstrap --extract`、工作台里的提炼、开启后的自动提炼）会调用模型；插件默认复用宿主 `llm` 服务，也可以用环境变量指定外部端点：
+Retrieval, reminders, file guards and the staleness sweep are entirely local and need no key. Only **extraction** (`bootstrap --extract`, extraction in the workbench, and auto-capture when enabled) calls a model. The plugin reuses the host's `llm` service by default; an external endpoint can be configured with environment variables:
 
 ```bash
 cp .env.example .env
 # ACCREMIND_LLM_BASE_URL / ACCREMIND_LLM_MODEL / ACCREMIND_LLM_API_KEY
-# 或 DEEPSEEK_API_KEY / OPENAI_API_KEY
+# or DEEPSEEK_API_KEY / OPENAI_API_KEY
 ```
 
-密钥只会发给与之配对的服务；自定义 `ACCREMIND_LLM_BASE_URL` 指向其他主机时不会附带 DeepSeek / OpenAI 的 Key。
+Keys are only sent to the service they belong to: a custom `ACCREMIND_LLM_BASE_URL` pointing at another host never receives a DeepSeek or OpenAI key.
 
-## 开发与验证
+## Design principles
+
+| # | Principle | What it means in the implementation |
+| --- | --- | --- |
+| 1 | Only the delta | Baseline answer is generated from code and docs first; triage drops anything reconstructible |
+| 2 | Local-first, Markdown is the source of truth | Every entry is a reviewable card; SQLite is a rebuildable index |
+| 3 | Reference, not instruction | Injected inside read-only tags, sanitised, marked as material; no host override, no execution |
+| 4 | Evidence and freshness before conclusions | Entries carry evidence locations and symbol anchors; code drift queues a re-check |
+| 5 | AI proposes, humans decide | Probation before verification; rule documents and vocabularies only change on human acceptance |
+| 6 | Respect the context budget | Per-layer token budgets; byte-stable resident block for KV cache; silence when relevance is uncertain |
+| 7 | Self-improvement you can audit and undo | Retrieval parameters auto-tune and auto-roll-back; knowledge content is never rewritten automatically |
+
+## How it compares
+
+| | AccreMind | `AGENTS.md` / `CLAUDE.md` | Wiki / ADR | Chat-memory assistants |
+| --- | --- | --- | --- | --- |
+| What is stored | Only the delta code cannot give back | Whatever gets pasted in | Decisions, rarely the traps | Past conversation turns |
+| Where it lives | Markdown cards in the repo + local index | One flat file, hand-edited | Prose, human search only | Usually cloud embeddings |
+| When it reaches the model | Three budgeted moments | Every turn, whole file | When a human reads it | Similarity match |
+| Freshness | Symbol anchors, watch paths, re-check queue | None | Manual | None |
+| Verification | Probation → verified on real use | None | Review, if any | None |
+| Leaves your machine | No | No | Depends | Usually yes |
+
+## Non-goals
+
+- Not a general-purpose chat memory or a personal note app.
+- Not a code knowledge graph or an index of your repository's structure.
+- Not a replacement for ADRs — it complements them by keeping what ADRs usually omit.
+- It never writes code, never runs commands, and never overrides the host's rules.
+
+## Requirements
+
+- **Node.js ≥ 24** — `node:sqlite` with FTS5 trigram tokenisation.
+- **DeepSeek Harness ≥ 0.2.2-rc.5** — declared as `engines.dsh`; DSH refuses to install or start the bundle below that range.
+
+## Development
 
 ```bash
-pnpm build          # 构建 core、plugin 与 WebUI 产物
-pnpm build:webui    # 只重建 WebUI 并写回内联产物
-pnpm test           # node:test（会先构建）
-pnpm verify         # 构建 + 测试 + 产物指纹校验，提交前跑这个
-pnpm typecheck      # 内核与 WebUI 类型检查
-pnpm pack:check     # 检查发布包内容
-pnpm market:index   # 重新生成 market/index.json
+pnpm build          # build core, plugin and the workbench artifact
+pnpm build:webui    # rebuild only the workbench and write it back inline
+pnpm test           # node:test (builds first)
+pnpm verify         # build + tests + artifact fingerprint — run before every PR
+pnpm typecheck      # kernel + workbench type checks
+pnpm pack:check     # verify the published package shape (incl. host compatibility)
+pnpm market:index   # regenerate market/index.json
 ```
 
-## 文档
+CI runs `pnpm verify`, `pnpm pack:check` and the market index check on every push. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
-- [架构与设计理念](docs/ARCHITECTURE.md)：愿景、七条原则、总体架构图、经验生命周期、检索流水线与自我改进（新同事建议先读）
-- [产品设计方案 V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>)：产品边界、数据模型、验收口径
-- [技术实现方案 V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>)：模块契约、检索与治理实现
-- [对外介绍稿](docs/blog/2026-11-23-accremind-introduction.md)：面向团队的一篇完整介绍，可作为对外发布底稿
-- [插件市场发布说明](docs/market-publishing.md)
+## Documentation
 
-许可证尚未指定；对外分发前请先补充 `LICENSE`。
+- [Architecture and design principles](docs/ARCHITECTURE.md) — vision, seven principles, data flow, lifecycle, retrieval pipeline, self-improvement
+- [Product design V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>) — scope, data model, acceptance criteria
+- [Technical design V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>) — module contracts, retrieval and governance
+- [Marketplace publishing](docs/market-publishing.md) — package shape, index schema, release order
+- [Introduction article](docs/blog/2026-11-23-accremind-introduction.md) — a long-form introduction for teams
+- [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
+
+Deep-dive documents are currently written in Chinese; English translations are tracked in [docs/README.md](docs/README.md).
+
+## Contributing
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first — it covers the local setup, the checks a PR must pass, and the commit conventions. This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
+
+## License
+
+[MIT](LICENSE) © 2026 AccreMind contributors

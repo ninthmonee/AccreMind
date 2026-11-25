@@ -21,14 +21,14 @@
     "src",
     "LICENSE"
   ],
-  "homepage": "https://github.com/carlosai-dev/AccreMind",
+  "homepage": "https://github.com/ninthmonee/AccreMind",
   "repository": {
     "type": "git",
-    "url": "https://github.com/carlosai-dev/AccreMind.git",
+    "url": "https://github.com/ninthmonee/AccreMind.git",
     "directory": "packages/core"
   },
   "bugs": {
-    "url": "https://github.com/carlosai-dev/AccreMind/issues"
+    "url": "https://github.com/ninthmonee/AccreMind/issues"
   },
   "publishConfig": {
     "access": "public"

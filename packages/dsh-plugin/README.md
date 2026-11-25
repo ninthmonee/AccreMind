@@ -1,88 +1,107 @@
 # @accremind/dsh-plugin
 
-AccreMind 的 DeepSeek Harness 插件：把研发过程中真正花过代价才得到的经验（隐性约束、排障陷阱、架构取舍）沉淀成本地知识，再在需要的那一刻交还给模型和开发者。
+**Models are always superseded by the next generation. Knowledge is not.** A local-first knowledge base for [DeepSeek Harness](https://github.com/deepseek-ai): it turns the decisions you made while solving a problem, the domain rules and conventions you settled on, the traps you already fell into, and how each one refines, overrides or supersedes another into reusable Markdown knowledge assets — then hands them back through three budgeted injection layers.
 
-数据全部留在本机：Markdown 是事实来源，`node:sqlite`（WAL + FTS5 trigram）只做索引，零外部运行时依赖。
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%E2%89%A524-339933.svg)](https://nodejs.org)
 
-## 它解决什么
+This is the DSH plugin package. The repository root also ships `@accremind/core` (the kernel) and a standalone workbench; see the [project README](https://github.com/ninthmonee/AccreMind#readme) for the full picture.
 
-模型的上下文会滚走，人的记忆会衰减。写进文档的结论往往只剩结论，丢掉的是"为什么"。AccreMind 抓的是代码与文档无法反推的那一层增量：当时踩了什么坑、试过什么失败的方案、为什么最后选了这个。
+## What it solves
 
-## 三层复用
+Model context rolls over, human memory decays, and documentation keeps the conclusion while dropping the reason. The knowledge that cost a team real time — *this retry double-charges*, *this library cannot be dynamically imported under SSR since 3.x*, *we tried the queue design and reverted it*, *this domain rule overrides the generic one* — is exactly what is missing when the next change is written.
 
-| 层 | 注入时机 | 预算 | 作用 |
-| --- | --- | --- | --- |
-| 常驻规则 | 每轮对话开头 | 默认 500 tokens | 团队硬约束，字节稳定以保住 KV cache |
-| 回合雷达 | 每轮按提问检索 | 默认 300 tokens | 相关经验按条目 id 提示，标记为参考、不执行 |
-| 工具护栏 | 读/写目标文件时 | 默认 240 / 1500 tokens | 命中同一文件时按需展开完整条目 |
+AccreMind stores only that **knowledge delta**, as Markdown you can review in a pull request, with a rebuildable local SQLite index. No background service, no external vector store, no telemetry. The full list of what is worth accumulating — and what is deliberately never kept — is in the [project README](https://github.com/ninthmonee/AccreMind#what-we-accumulate).
 
-三层都只是"参考材料"，不会覆盖宿主的规则，也没有命令执行权。
+## Install
 
-## 沉淀链路
+```bash
+dsh plugin install @accremind/dsh-plugin
+```
 
-1. 捕获：对话结束后按 `autoCapture` 策略入队，或由模型显式调用 `accremind_capture`。
-2. 评估：用评测模型判定这条经验是"代码/文档已能恢复"还是"真正的增量"，给出 `discoverability`、`disposition` 与基线回答。
-3. 落盘：写入 Markdown（条目 + 版本），同步索引。
-4. 试用与转正：新条目默认 `probation`（试用草稿），被检索命中到 `maxProbationExposures` 次、且经 `accremind_validate` 反馈后转 `verified`。
-5. 导出：`accremind_export_skill` 把一条已验证经验写成 `.dsh/skills/<slug>/SKILL.md`，让它成为任何会话都能命中的技能。
+Or from the marketplace: add `https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json` under **Plugins → Experimental plugins → Custom plugin indexes**, then install **AccreMind** from Discover.
 
-## 工具
+Requires **DSH ≥ 0.2.2-rc.5** (declared as `engines.dsh`; the host refuses to load the bundle below that range) and **Node.js ≥ 24** (`node:sqlite` with FTS5 trigram).
 
-- `accremind_capture`：提交经验候选并按五路分流（index_only / link_existing / knowledge_candidate / needs_confirmation / discard）。
-- `accremind_search`：按关键词、类型、层、文件路径检索条目。
-- `accremind_get`：取完整正文、前置条件、验证方法与证据定位。
-- `accremind_validate`：登记本次使用的成败；`failure` 会立即暂停该条目等待复核。
-- `accremind_export_skill`：把条目固化成 DSH 技能文档。
+## What you get
 
-## 界面
+- A sidebar **AccreMind** panel: overview, library, candidate review, rule documents, governance, turn receipts, Git radar.
+- Entries injected as the conversation needs them, plus a per-turn receipt with one-click feedback.
+- Six tools for the model:
 
-- 左侧栏 `AccreMind` 面板：经验工作台（检索、审阅、版本、导出），唯一的入口，输入框区域保持干净。
-- 回合尾部回执：本轮命中了几条经验，可一键反馈"有用 / 没用 / 不准"。
+| Tool | Purpose |
+| --- | --- |
+| `accremind_capture` | Submit a candidate and run five-way triage |
+| `accremind_search` | Search by keyword, kind, layer or file path |
+| `accremind_get` | Fetch full entry: preconditions, verification, evidence |
+| `accremind_validate` | Record success or failure; `failure` suspends the entry |
+| `accremind_export_skill` | Freeze a verified entry into a DSH skill |
+| `accremind_propose_doc_change` | Propose a change to a rule document for human review |
 
-## 配置
+## Configuration
+
+Everything is optional; defaults are sensible. Configuration lives in the host's cordis patch:
 
 ```yaml
-- insert:
-    - id: accremind
-      name: '@accremind/dsh-plugin'
-      config:
-        globalDir: ~/.dsh/accremind        # 全局知识库（personal / shared_tech 层）
-        projectDirName: .accremind          # 仓库内知识库（project 层）
-        writeGate: probation                # 新条目默认状态
-        maxProbationExposures: 3            # 试用期被命中多少次后允许转正
-        assessmentMode: single_pass         # 单轮评估
-        budgets:
-          residentRulesTokens: 500
-          turnRadarTokens: 300
-          toolGuardTokens: 240
-          toolReadMaxTokens: 1500
-        autoCapture:
-          enabled: true
+plugins:
+  accremind:
+    globalDir: ~/.dsh/accremind
+    projectDirName: .accremind
+    writeGate:
+      mode: probation        # probation | auto | manual
+      maxProbationExposures: 3
+      assessmentMode: single_pass
+    budgets:
+      residentRulesTokens: 500
+      turnRadarTokens: 300
+      toolGuardTokens: 240
+      toolReadMaxTokens: 1500
+    autoCapture:
+      enabled: true
+    autoEvolve:
+      tune: false            # weekly auto-tuning with observation window
+      demote: false           # automatic demotion / archiving
 ```
 
-模型通道默认复用宿主 `llm` 服务（自动挑一个非白盒 provider），也可以用 `ACCREMIND_LLM_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 指定外部端点。`accremind.settings.get` 会返回当前通道（`host` / `injected` / `env` / `none`）与描述。
+| Key | Meaning |
+| --- | --- |
+| `globalDir` | Per-user state: drafts, queues, index, cross-repo layers (default `~/.dsh/accremind`) |
+| `projectDirName` | In-repo knowledge directory (default `.accremind`, meant to be committed) |
+| `writeGate.mode` | `probation` keeps new entries shadowed until validated; `auto` promotes immediately; `manual` requires review |
+| `writeGate.maxProbationExposures` | Exposures without validation before a draft is archived |
+| `budgets.*` | Per-layer token ceilings; the resident block is byte-stable so the KV cache survives |
+| `autoCapture.enabled` | Let the host model propose candidates from a turn (needs an `llm` service) |
+| `autoEvolve.tune` / `autoEvolve.demote` | Auditable, roll-back-able self-improvement; both off by default |
 
-## 安装
+Retrieval, reminders, file guards and the staleness sweep run fully locally and need no API key. Only extraction calls a model: the plugin reuses the host `llm` service, or an external endpoint via `ACCREMIND_LLM_BASE_URL` / `ACCREMIND_LLM_MODEL` / `ACCREMIND_LLM_API_KEY`.
 
-本地开发（把包软链进 profile，改代码即时生效）：
+## Where knowledge lives
 
-```bash
-node packages/dsh-plugin/scripts/install-to-dsh.mjs --profile desktop
-```
+| Path | Contents |
+| --- | --- |
+| `<repo>/.accremind/entries/` | Verified cards (Markdown, revisions, evidence) |
+| `<repo>/.accremind/rules/` | Resident rules |
+| `<repo>/.accremind/docs/` | Domain, business rules, project norms, project profile |
+| `~/.dsh/accremind/probation/` | Probation drafts, never written into the repo |
+| `~/.dsh/accremind/index/` | Rebuildable SQLite index |
+| `~/.dsh/accremind/tuning-history.jsonl` | Every auto-tuning step, undoable |
 
-从源码构建并验证：
+Run `accremind rebuild` at any time to rebuild the index from the Markdown.
 
-```bash
-node scripts/build.ts
-node --test tests/*.test.ts
-node scripts/check-webui.ts
-```
+## Design guarantees
 
-## 要求
+- **Reference, not instruction** — injected inside read-only tags, sanitised, explicitly marked as material. No host override, no execution authority.
+- **Only the delta** — five-way triage (`index_only / link_existing / knowledge_candidate / needs_confirmation / discard`) keeps reconstructible content out.
+- **AI proposes, humans decide** — probation before verification; rule documents only change on human acceptance.
+- **Reversible** — every automatic tuning and demotion is recorded and can be undone.
 
-- Node.js >= 24（`node:sqlite` 的 FTS5 trigram 分词）
-- DeepSeek Harness >= 0.2.2-rc.5
+## Links
 
-## 许可
+- [Full documentation](https://github.com/ninthmonee/AccreMind#readme)
+- [Architecture and design principles](https://github.com/ninthmonee/AccreMind/blob/main/docs/ARCHITECTURE.md)
+- [Changelog](https://github.com/ninthmonee/AccreMind/blob/main/CHANGELOG.md)
+- [Issues](https://github.com/ninthmonee/AccreMind/issues)
 
-尚未指定开源许可证；对外分发前请先在仓库根目录补充 `LICENSE`。
+## License
+
+[MIT](./LICENSE) © 2026 AccreMind contributors

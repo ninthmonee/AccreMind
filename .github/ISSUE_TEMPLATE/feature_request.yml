@@ -1,0 +1,60 @@
+name: Feature request
+description: Propose a capability or a change in behaviour
+title: "[feat] "
+labels: ["enhancement", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        AccreMind deliberately stays narrow: it stores only the knowledge delta, keeps Markdown as the source of truth, and never lets injected content act as instruction. Proposals that keep those three invariants are much easier to accept.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to accomplish, and what blocks you today. Describe the problem before the solution.
+      placeholder: When several repositories share a domain, I cannot tell which entries came from another team…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The behaviour you would like. Sketch the interface if you have one in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing flags, configuration, or workflows that almost work, and why they do not.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Capture and triage
+        - Retrieval and injection
+        - Lifecycle (probation, verification, staleness)
+        - Rule documents and governance
+        - Cross-repository knowledge
+        - Workbench UI
+        - CLI
+        - DSH integration
+        - Packaging and distribution
+        - Documentation
+    validations:
+      required: true
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Design invariants
+      description: Confirm the proposal is compatible with how the project works.
+      options:
+        - label: Markdown remains the source of truth and the index stays rebuildable
+          required: true
+        - label: Injected content stays reference material with no execution authority
+          required: true
+        - label: Anything the model proposes still requires human acceptance before it becomes knowledge
+          required: true

@@ -1,0 +1,66 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+title: "[bug] "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Before filing, please:
+        - run `pnpm verify` on the current `main` to see whether it is already fixed;
+        - search existing issues for the same symptom.
+
+        For security problems, do **not** open an issue — use the process in [SECURITY.md](https://github.com/ninthmonee/AccreMind/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behaviour, including any error text verbatim.
+      placeholder: Searching for an entry with a symbol anchor returns nothing after the anchor drifted…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that still shows the problem.
+      placeholder: |
+        1. Run `pnpm accremind bootstrap --top 5`
+        2. …
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it happen
+      options:
+        - DSH plugin (tools, injection, receipts)
+        - Workbench (web UI)
+        - CLI
+        - Storage / index (.accremind, ~/.dsh/accremind)
+        - Build, tests or packaging
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: AccreMind, DSH, Node.js and OS.
+      placeholder: "AccreMind 0.1.0 · DSH 0.2.2-rc.5 · Node 24.4.0 · macOS 15.3"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Console output, failing test names, or the affected entry id. Redact anything private.
+      render: shell
+    validations:
+      required: false

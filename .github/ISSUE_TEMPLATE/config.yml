@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ninthmonee/AccreMind/security/advisories/new
+    about: Report privately. Do not open a public issue for a security problem.
+  - name: Question or usage help
+    url: https://github.com/ninthmonee/AccreMind/discussions
+    about: Ask in Discussions instead of opening an issue.
+  - name: Contributing guide
+    url: https://github.com/ninthmonee/AccreMind/blob/main/CONTRIBUTING.md
+    about: Setup, checks and commit conventions before sending a pull request.
