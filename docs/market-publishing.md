@@ -40,11 +40,27 @@ npm login                                  # 一次性，需要能写 @accremind
 ./scripts/release-npm.sh                   # 或者 NPM_TOKEN=npm_xxx ./scripts/release-npm.sh
 ```
 
-脚本存在的三个理由，都是踩过的坑：
+脚本存在的理由，每一条都是踩过的坑：
 
 - **必须用 `pnpm publish`，不能用 `npm publish`**：实测同一个包 `npm pack` 出来的 tarball 里 `@accremind/core` 依赖不会被改写，`pnpm pack` 出来的才是 `0.1.0`。
 - **强制 `--registry https://registry.npmjs.org/`**：本机 `~/.npmrc` 常指向镜像（npmmirror），不显式指定会把发布打到镜像上。
 - **npm 缓存重定向到临时目录**：受限 shell 里 `~/.npm` 不可写，`npm whoami` 会直接 EPERM。
+- **token 必须走环境变量，不能只写 `.npmrc`**：`pnpm publish` 不读 userconfig / 项目 `.npmrc` 里的 `_authToken`。只写配置文件时，即使 token 已带 Bypass 2FA，发布仍报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required`——这条错误极易被误判成"token 没开 Bypass 2FA"。脚本因此把 token 同时注入成 `npm_config_//registry.npmjs.org/:_authToken`，发布步骤一次通过。
+
+判断 token 到底是"权限不足"还是"没被读到"，看 `GET /-/npm/v1/tokens` 的返回：`bypass_2fa: true` 且权限含 package write 就说明 token 本身没问题，问题在客户端没带上它。
+
+## 2.1 2FA 越来越紧，备选是分段发布
+
+npm 已在收紧 bypass-2FA token 用于直接发布（官方提示：`https://gh.io/npm-gat-bypass2fa-deprecation`）。如果手上的 token 不再允许直接发，用 npm 的分段发布把 2FA 推迟到审批那一刻：
+
+```bash
+pnpm pack --pack-destination /tmp/rel                 # 仍用 pnpm，保证 workspace:* 被改写
+npm stage publish /tmp/rel/accremind-core-0.1.0.tgz    # 只上传，不生效
+npm stage list                                        # 拿 stage-id
+npm stage approve <stage-id>                           # 这一步才校验 2FA
+```
+
+`npm stage publish` 对已存在的版本会报 `409 Cannot stage previously published version`，可以当作"这个版本确实已经发布成功"的旁证。
 
 首次发布前要先在 npm 建好 `@accremind` 组织（scope 必须存在，`--access public` 才生效）。版本号改动走 `pnpm version`，两个包保持同步。
 

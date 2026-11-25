@@ -29,6 +29,15 @@ if [ -n "${NPM_TOKEN:-}" ]; then
   trap 'rm -f "$TMP_NPMRC"' EXIT
 fi
 
+# pnpm does not take the auth token from a userconfig or a project .npmrc: with the
+# token only in a config file the publish dies 403 "two-factor authentication or
+# granular access token with bypass 2fa enabled is required" (verified three ways).
+# Injecting it as a per-registry environment variable for the publish step works.
+PUBLISH_ENV=()
+if [ -n "${NPM_TOKEN:-}" ]; then
+  PUBLISH_ENV=("npm_config_//registry.npmjs.org/:_authToken=$NPM_TOKEN" "npm_config_registry=$REGISTRY")
+fi
+
 OTP_FLAG=()
 if [ -n "${NPM_OTP:-}" ]; then
   OTP_FLAG=(--otp "$NPM_OTP")
@@ -58,10 +67,10 @@ node scripts/build.ts
 pnpm verify
 
 echo "==> publish @accremind/core"
-(cd packages/core && pnpm publish --access public --no-git-checks --registry "$REGISTRY" ${OTP_FLAG[@]+"${OTP_FLAG[@]}"})
+(cd packages/core && env ${PUBLISH_ENV[@]+"${PUBLISH_ENV[@]}"} pnpm publish --access public --no-git-checks --registry "$REGISTRY" ${OTP_FLAG[@]+"${OTP_FLAG[@]}"})
 
 echo "==> publish @accremind/dsh-plugin"
-(cd packages/dsh-plugin && pnpm publish --access public --no-git-checks --registry "$REGISTRY" ${OTP_FLAG[@]+"${OTP_FLAG[@]}"})
+(cd packages/dsh-plugin && env ${PUBLISH_ENV[@]+"${PUBLISH_ENV[@]}"} pnpm publish --access public --no-git-checks --registry "$REGISTRY" ${OTP_FLAG[@]+"${OTP_FLAG[@]}"})
 
 echo "==> published versions"
 npm view @accremind/core version
