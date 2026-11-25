@@ -1,11 +1,11 @@
 # @accremind/dsh-plugin
 
-**Models are always superseded by the next generation. Knowledge is not.** A local-first knowledge base for [DeepSeek Harness](https://github.com/deepseek-ai): it turns the decisions you made while solving a problem, the domain rules and conventions you settled on, the traps you already fell into, and how each one refines, overrides or supersedes another into reusable Markdown knowledge assets — then hands them back through three budgeted injection layers.
+**Models are always superseded by the next generation. Knowledge is not.** This is the [DeepSeek Harness](https://github.com/deepseek-ai) adapter for AccreMind — a local-first knowledge base for AI-assisted engineering. AccreMind turns the decisions you made while solving a problem, the domain rules and conventions you settled on, the traps you already fell into, and how each one refines, overrides or supersedes another into reusable Markdown knowledge assets, then hands them back through three budgeted injection layers.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%E2%89%A524-339933.svg)](https://nodejs.org)
 
-This is the DSH plugin package. The repository root also ships `@accremind/core` (the kernel) and a standalone workbench; see the [project README](https://github.com/ninthmonee/AccreMind#readme) for the full picture.
+**AccreMind is not built for DSH only.** The engine, `@accremind/core`, is a zero-dependency Node.js library that knows nothing about any host; the CLI and the standalone workbench drive it directly. This package is the host integration: it maps AccreMind onto DSH turn hooks, tools, the sidebar panel and skill export. Another host — an IDE, a server — would be another package like this one, over the same public API. See the [project README](https://github.com/ninthmonee/AccreMind#host-model) for the full picture.
 
 ## What it solves
 

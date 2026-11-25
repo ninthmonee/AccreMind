@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `docs/legacy/` — the V1 product thinking note and the V2 PRD revision, restored verbatim from history (blob-identical to their last committed revision). They were removed from the tree while the V3.1 design became authoritative and are now archived next to it instead of being reachable only through `git log`.
+### Changed
+
+- Repositioned the documentation: AccreMind is no longer described as "a plugin for DeepSeek Harness". The kernel `@accremind/core` has no host dependency; the DSH plugin is the first (and currently most complete) host integration, and `~/.dsh/accremind/` plus `.dsh/skills/` are adapter conventions rather than engine defaults. README (both languages), `packages/dsh-plugin/README.md`, `docs/ARCHITECTURE.md`, the introduction article, the publishing guide and the package `description` fields all follow that framing. A dedicated **Host model** section in the README maps the three front doors (DSH plugin, CLI, standalone workbench) onto the same public API.
 
 ## [0.1.0] — first public release
 

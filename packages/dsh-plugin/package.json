@@ -2,7 +2,7 @@
   "name": "@accremind/dsh-plugin",
   "version": "0.1.0",
   "type": "module",
-  "description": "AccreMind for DeepSeek Harness: capture the engineering experience that code and docs cannot recover, then hand it back at the moment it matters.",
+  "description": "DeepSeek Harness adapter for AccreMind: capture the engineering experience that code and docs cannot recover, then hand it back at the moment it matters.",
   "license": "MIT",
   "icon": "icon.svg",
   "engines": {

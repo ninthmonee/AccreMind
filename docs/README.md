@@ -2,6 +2,8 @@
 
 Start here, then dive into the document that matches your question.
 
+**Scope note.** AccreMind is a host-agnostic knowledge base, not a DSH-only product: the kernel has no host dependency, and the CLI and standalone workbench drive it without any plugin. The two V3 design documents below were written for the **DSH integration layer** specifically — read them as the design record of the first adapter, and take the product positioning from the [README](../README.md#host-model) and [Architecture](ARCHITECTURE.md).
+
 ## Reading order
 
 | Document | Read it if you want to know | Length |

@@ -1,5 +1,7 @@
 # 发布到 DSH 插件市场
 
+本文只讲 DSH 这条分发渠道：工程本身与宿主无关，内核不依赖 DSH，命令行与独立工作台也不需要插件。这里说的"上架"仅仅是"把 DSH 适配层发出去"。
+
 DSH 的插件市场**没有官方索引**：Discover 只列出用户自己添加的 index URL（`@deepseek-ai/dsh-experimental-plugin-market-bundle` README 原文）。所以“上架”= 发布 npm 包 + 提供一个 format 1 的索引 JSON，让用户把它的 URL 加进 Discover。
 
 本仓库已把这两件事都准备好：

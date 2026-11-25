@@ -27,7 +27,7 @@
 
 | 阶段 | 目标 |
 | --- | --- |
-| 个人 | 我在 DSH 里和 AI 一起写代码时，它记得我上周踩过的坑 |
+| 个人 | 我和 AI 一起写代码时——在 DSH 里，或直接用 CLI——它记得我上周踩过的坑 |
 | 团队 | 项目里踩过的坑、团队定下的规范，随 Git 提交共享，接入的模型都能看到 |
 | 组织 | 同一业务领域的多个仓库互相借鉴；经验能自己判断适用范围、自己淘汰过时内容 |
 
@@ -59,9 +59,11 @@ AccreMind 只收这一类知识：**代码与现有文档还原不出来的增�
 
 三个包，单向依赖：插件依赖内核，内核不依赖任何宿主。内核只用 Node.js 24 标准库（内置 `node:sqlite`），没有第三方运行时依赖。
 
+这也决定了定位：**DSH 是第一个宿主接入，不是 AccreMind 的边界。** 插件包做的是把内核映射到 DSH 的回合钩子、工具、侧栏与技能导出；命令行与独立工作台绕过插件直接驱动内核；换一个宿主（IDE、服务端）就是新写一个接入层，调用同一套公开接口。`~/.dsh/accremind/` 与 `.dsh/skills/` 这两个默认路径属于接入层的约定，不是内核数据模型的约定。
+
 ```mermaid
 flowchart TB
-  subgraph Host["宿主 DSH（Cordis）"]
+  subgraph Host["宿主（首个接入：DSH · Cordis）"]
     H1[对话会话] --- H2[模型服务] --- H3[工具调用] --- H4[侧栏面板]
   end
 
@@ -268,7 +270,7 @@ flowchart LR
 
 | 想做的事 | 从哪里接入 |
 | --- | --- |
-| 接入新的宿主（IDE、服务端） | 参照 `dsh-plugin` 写一个接入层，只调用 `@accremind/core` 的公开接口 |
+| 接入新的宿主（IDE、服务端） | 参照 `dsh-plugin` 写一个接入层，只调用 `@accremind/core` 的公开接口；内核无第三方依赖，不需要改动 |
 | 接入登录用户 | `store.setUserIdentity({ provider, id, emails })` |
 | 换模型服务 | 实现 `LlmInferenceAdapter`，或配置 `ACCREMIND_LLM_*` 环境变量 |
 | 调整检索参数 | `~/.dsh/accremind/tuning.json`，或让自动调参完成 |

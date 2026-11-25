@@ -11,11 +11,12 @@
 [![CI](https://github.com/ninthmonee/AccreMind/actions/workflows/ci.yml/badge.svg)](https://github.com/ninthmonee/AccreMind/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%E2%89%A524-339933.svg)](https://nodejs.org)
-[![DeepSeek Harness](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4d6bfe.svg)](#环境要求)
+[![内核与宿主无关](https://img.shields.io/badge/%E5%86%85%E6%A0%B8-%E5%AE%BF%E4%B8%BB%E6%97%A0%E5%85%B3-6c6cf0.svg)](#宿主模型)
+[![DSH 插件](https://img.shields.io/badge/DSH%20%E6%8F%92%E4%BB%B6-%E2%89%A50.2.2--rc.5-4d6bfe.svg)](#deepseek-harnessdsh)
 
 </div>
 
-AccreMind 是 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）的本地优先插件，并附带一个独立工作台。它把散落在各个项目里的经验——每一次决策、试过又被推翻的路线、领域规则与团队通用约定、踩过的坑，以及它们彼此之间的关联——变成可以提交、可以评审、可以复用的 Markdown 知识资产；然后在下一次改动发生之前，把它们递回到模型和开发者眼前。
+AccreMind 是面向 AI 辅助研发的本地优先知识库。它把散落在各个项目里的经验——每一次决策、试过又被推翻的路线、领域规则与团队通用约定、踩过的坑，以及它们彼此之间的关联——变成可以提交、可以评审、可以复用的 Markdown 知识资产；然后在下一次改动发生之前，把它们递回到模型和开发者眼前。
 
 所有内容都留在你自己的机器上：Markdown 是事实来源，`node:sqlite`（WAL + FTS5 trigram）只是可随时重建的索引。没有后台服务，没有外部向量库，没有遥测。
 
@@ -25,11 +26,12 @@ AccreMind 是 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）的本�
 
 - [为什么需要它](#为什么需要它)
 - [它是怎么工作的](#它是怎么工作的)
+- [宿主模型](#宿主模型)
 - [我们要沉淀哪些知识](#我们要沉淀哪些知识)
 - [三层注入](#三层注入)
 - [核心能力](#核心能力)
 - [快速开始](#快速开始)
-- [在 DSH 中使用](#在-dsh-中使用)
+- [宿主接入](#宿主接入)
 - [独立工作台](#独立工作台)
 - [数据放在哪](#数据放在哪)
 - [命令行](#命令行)
@@ -60,6 +62,20 @@ AccreMind 只把这部分差值（delta）沉淀成资产，别的都不存。
 | **改动之前** | 与本回合相关的条目以**引用**形式注入——id 加一行摘要，并显式标注为素材而非指令 |
 | **改动之中** | 读到某条目监视的文件时，展开完整条目：前置条件、反例、如何验证、证据在哪 |
 | **改动之后** | 回合尾部生成回执，列出本条用了什么，并提供「有帮助 / 没帮助 / 不准确」一键反馈 |
+
+## 宿主模型
+
+AccreMind 不属于任何单一宿主。内核 `@accremind/core` 是一个零依赖的 Node.js 库——只 import `node:*` 内建模块——并由三个共享同一套公开 API 的入口驱动：
+
+| 入口 | 包 | 需要宿主吗 |
+| --- | --- | --- |
+| [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）插件 | `@accremind/dsh-plugin` | 是——第一个，也是目前最完整的宿主接入 |
+| 命令行 | `accremind`（在 `@accremind/core` 内） | 否 |
+| 独立工作台 | `@accremind/webui` | 否 |
+
+DSH 是第一个适配层，不是设计中心：回合钩子、工具、侧边栏面板与技能导出，是宿主能提供的表面，而每一处都只是对内核的一层薄映射。接入新的宿主——IDE 扩展、服务端——就是写一个适配层，调用公开 API，并用那个宿主自己的表达方式还原同样这三层注入。
+
+DSH 接入确实带了 DSH 形状的默认值：个人状态放在 `~/.dsh/accremind/`（可用 `globalDir` 覆盖），导出的技能落在 `.dsh/skills/<slug>/SKILL.md`。这些是适配层的约定，不是内核数据模型的约定——知识本身始终是仓库里的纯 Markdown。
 
 ## 我们要沉淀哪些知识
 
@@ -154,9 +170,11 @@ https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 
 路径是 **插件 → 实验性插件 → 自定义插件索引**，然后在 Discover 里安装 **AccreMind**。发布细节见 [docs/market-publishing.md](docs/market-publishing.md)。
 
-## 在 DSH 中使用
+## 宿主接入
 
-安装后侧边栏会出现 `AccreMind` 面板，条目会在对话需要时自动注入，每个回合尾部追加一份回执。模型可以使用六个工具：
+### DeepSeek Harness（DSH）
+
+参考实现。安装后侧边栏会出现 `AccreMind` 面板，条目会在对话需要时自动注入，每个回合尾部追加一份回执。模型可以使用六个工具：
 
 | 工具 | 用途 |
 | --- | --- |
@@ -272,7 +290,7 @@ Key 只会发往它所属的服务：当 `ACCREMIND_LLM_BASE_URL` 指向别的�
 ## 环境要求
 
 - **Node.js ≥ 24** —— 需要 `node:sqlite` 与 FTS5 trigram 分词。
-- **DeepSeek Harness ≥ 0.2.2-rc.5** —— 声明在 `engines.dsh` 里；低于该范围时 DSH 会拒绝安装或启动该包。
+- **DeepSeek Harness ≥ 0.2.2-rc.5** —— 仅在用插件时需要；声明在 `engines.dsh` 里，低于该范围时 DSH 会拒绝安装或启动该包。命令行与独立工作台只需要 Node.js。
 
 ## 开发与验证
 

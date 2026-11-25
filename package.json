@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "AccreMind - local-first engineering experience base for DeepSeek Harness (DSH): Markdown as the source of truth, a rebuildable local index, and three budgeted injection layers",
+  "description": "AccreMind - a local-first knowledge base for AI-assisted engineering: Markdown as the source of truth, a rebuildable local index, and three budgeted injection layers, delivered through a CLI, a standalone workbench and a DeepSeek Harness plugin",
   "homepage": "https://github.com/ninthmonee/AccreMind",
   "repository": {
     "type": "git",

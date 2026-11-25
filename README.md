@@ -11,11 +11,12 @@ Turn the experience scattered across your projects into reusable knowledge asset
 [![CI](https://github.com/ninthmonee/AccreMind/actions/workflows/ci.yml/badge.svg)](https://github.com/ninthmonee/AccreMind/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%E2%89%A524-339933.svg)](https://nodejs.org)
-[![DeepSeek Harness](https://img.shields.io/badge/DSH-%E2%89%A50.2.2--rc.5-4d6bfe.svg)](#requirements)
+[![Core: host-agnostic](https://img.shields.io/badge/core-host--agnostic-6c6cf0.svg)](#host-model)
+[![DSH plugin](https://img.shields.io/badge/DSH%20plugin-%E2%89%A50.2.2--rc.5-4d6bfe.svg)](#deepseek-harness-dsh)
 
 </div>
 
-AccreMind is a local-first plugin for [DeepSeek Harness](https://github.com/deepseek-ai) (DSH) plus a standalone workbench. It turns the experience scattered across your projects — the decisions, the abandoned routes, the domain rules and shared conventions, the traps already fallen into, and how all of it connects — into Markdown knowledge assets you can commit, review and reuse. Then it puts them back in front of the model and the developer right before the next change.
+AccreMind is a local-first knowledge base for AI-assisted engineering. It turns the experience scattered across your projects — the decisions, the abandoned routes, the domain rules and shared conventions, the traps already fallen into, and how all of it connects — into Markdown knowledge assets you can commit, review and reuse. Then it puts them back in front of the model and the developer right before the next change.
 
 Everything stays on your machine: Markdown is the source of truth, `node:sqlite` (WAL + FTS5 trigram) is only ever a rebuildable index. No background service, no external vector store, no telemetry.
 
@@ -25,11 +26,12 @@ Everything stays on your machine: Markdown is the source of truth, `node:sqlite`
 
 - [The problem](#the-problem)
 - [How it works](#how-it-works)
+- [Host model](#host-model)
 - [What we accumulate](#what-we-accumulate)
 - [Three injection layers](#three-injection-layers)
 - [Features](#features)
 - [Quick start](#quick-start)
-- [Using it inside DSH](#using-it-inside-dsh)
+- [Host integrations](#host-integrations)
 - [Standalone workbench](#standalone-workbench)
 - [Where the data lives](#where-the-data-lives)
 - [CLI](#cli)
@@ -60,6 +62,20 @@ Three moments, one knowledge base:
 | **Before a change** | Entries that match the turn are injected as *references* — id plus one-line summary, explicitly marked as material, not instructions |
 | **During a change** | Touching a file that an entry watches unfolds the full entry: preconditions, counterexamples, how to verify, where the evidence is |
 | **After a change** | A turn-tail receipt lists what was used, with one-click "helpful / not helpful / inaccurate" feedback |
+
+## Host model
+
+AccreMind does not belong to any one host. The engine, `@accremind/core`, is a zero-dependency Node.js library — it imports nothing but `node:*` built-ins — and it is driven by three front doors that share the same public API:
+
+| Front door | Package | Needs a host? |
+| --- | --- | --- |
+| Plugin for [DeepSeek Harness](https://github.com/deepseek-ai) (DSH) | `@accremind/dsh-plugin` | Yes — the first host integration, and the most complete one |
+| Command line | `accremind` (in `@accremind/core`) | No |
+| Standalone workbench | `@accremind/webui` | No |
+
+DSH is the first adapter, not the design centre: turn hooks, tools, the sidebar panel and skill export are the surface a host can offer, and every one of them is a thin mapping onto the kernel. Adding another host — an IDE extension, a server — means writing an adapter that calls the public API and expresses the same three layers in that host's own vocabulary.
+
+The DSH integration does carry DSH-shaped defaults: per-user state lives in `~/.dsh/accremind/` (override it with `globalDir`) and exported skills land in `.dsh/skills/<slug>/SKILL.md`. Those paths are conventions of the adapter, not of the engine's data model — the knowledge itself is plain Markdown in the repository.
 
 ## What we accumulate
 
@@ -154,9 +170,11 @@ https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 
 Add it under **Plugins → Experimental plugins → Custom plugin indexes**, then install **AccreMind** from Discover. Release mechanics are documented in [docs/market-publishing.md](docs/market-publishing.md).
 
-## Using it inside DSH
+## Host integrations
 
-After installation a `AccreMind` panel appears in the sidebar, entries are injected as the conversation needs them, and a receipt is appended to each turn. Six tools are available to the model:
+### DeepSeek Harness (DSH)
+
+The reference adapter. After installation an `AccreMind` panel appears in the sidebar, entries are injected as the conversation needs them, and a receipt is appended to each turn. Six tools are available to the model:
 
 | Tool | Purpose |
 | --- | --- |
@@ -272,7 +290,7 @@ Keys are only sent to the service they belong to: a custom `ACCREMIND_LLM_BASE_U
 ## Requirements
 
 - **Node.js ≥ 24** — `node:sqlite` with FTS5 trigram tokenisation.
-- **DeepSeek Harness ≥ 0.2.2-rc.5** — declared as `engines.dsh`; DSH refuses to install or start the bundle below that range.
+- **DeepSeek Harness ≥ 0.2.2-rc.5** — only if you use the plugin; declared as `engines.dsh`, and DSH refuses to install or start the bundle below that range. The CLI and the standalone workbench need nothing but Node.js.
 
 ## Development
 
