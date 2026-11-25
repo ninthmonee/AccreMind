@@ -103,6 +103,10 @@ export function judgeApplicability(
     return { ok: false, reason: 'foreign_trial' };
   }
   if (applies.repos?.includes(here)) return { ok: true, verdict: 'own_repo', originRepo, reasons: ['已声明适用于本仓库'] };
+  // A sub-project entry is served when the work touches that sub-project (or when it is not known which one).
+  if (entry.subproject && (fromHere || originRepo === here) && ctx.subprojects?.length && !ctx.subprojects.includes(entry.subproject)) {
+    return { ok: false, reason: 'other_subproject' };
+  }
 
   const outcome = ((): ApplicabilityOutcome => {
     switch (entry.layer) {
@@ -114,8 +118,14 @@ export function judgeApplicability(
           : { ok: false, reason: 'foreign_project' };
       case 'domain': {
         if (fromHere) return { ok: true, verdict: 'own_repo', originRepo, reasons: [] };
-        const shared = (entry.domains ?? []).filter((d) => ctx.domains.includes(d));
-        if (shared.length) return { ok: true, verdict: 'domain_match', originRepo, reasons: [`同属业务领域 ${shared.join('、')}`] };
+        const keys = new Set(ctx.domains.map((d) => d.toLowerCase()));
+        const shared = (entry.domains ?? []).filter((d) => keys.has(d.toLowerCase()));
+        if (shared.length) {
+          // Knowledge meant for the domain's core projects is not served where the domain is only used.
+          const consumer = new Set((ctx.consumerDomains ?? []).map((d) => d.toLowerCase()));
+          if (entry.audience === 'core' && shared.every((d) => consumer.has(d.toLowerCase()))) return { ok: false, reason: 'audience_core' };
+          return { ok: true, verdict: 'domain_match', originRepo, reasons: [`同属业务领域 ${shared.join('、')}`] };
+        }
         return { ok: true, verdict: 'cross_ref', originRepo, reasons: ['领域不同，仅作参考'] };
       }
       case 'shared_tech': {

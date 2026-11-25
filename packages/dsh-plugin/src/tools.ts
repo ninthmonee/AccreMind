@@ -512,7 +512,7 @@ export function createAccreMindTools(deps: {
       type: 'object',
       properties: {
         doc_id: { type: 'string', description: '要修改的文档 ID（来自检索结果的 D:<文档>#<章节> 中的文档部分）；新建文档时省略' },
-        category: { type: 'string', enum: ['domain', 'business_rules', 'project_norms', 'project_profile'], description: '新建文档时的类别' },
+        category: { type: 'string', enum: ['domain', 'business_rules', 'project_norms', 'project_profile', 'personal_preferences'], description: '新建文档时的类别（personal_preferences 只属于当前使用者，不进 Git）' },
         doc_title: { type: 'string', description: '新建文档的标题' },
         section: { type: 'string', description: '章节标题' },
         op: { type: 'string', enum: ['create_doc', 'add_section', 'update_section', 'delete_section'] },

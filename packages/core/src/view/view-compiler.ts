@@ -11,11 +11,17 @@ export interface ViewBudgetConfig {
   docRadarTokens?: number;
   /** Project profile carried with the resident rules (default 300 tokens). */
   residentProfileTokens?: number;
+  /** The person's preferences carried with the resident rules (default 120 tokens). */
+  residentPreferencesTokens?: number;
 }
 
 const DOC_CATEGORY_TITLE: Record<string, string> = {
-  domain: '业务领域', business_rules: '业务规则', project_norms: '项目规范', project_profile: '项目概况',
+  domain: '业务领域', business_rules: '业务规则', project_norms: '项目规范', project_profile: '项目概况', personal_preferences: '个人偏好',
 };
+const DOC_SCOPE_TITLE: Record<string, string> = { project: '项目', domain: '领域', personal: '个人' };
+
+/** Said once with the resident context whenever more than one kind of guidance is present. */
+const PRECEDENCE_NOTE = '冲突时以此为准：团队规范 > 项目规范与经验 > 领域规则 > 个人偏好。';
 
 export interface TurnCompilationInput {
   sessionId: string;
@@ -70,7 +76,7 @@ function formatEntryRadarLine(entry: KnowledgeEntry, verdict?: ScopeVerdict, ori
 export class ViewCompiler {
   private readonly store: KnowledgeStoreProvider;
   private readonly budgets: ViewBudgetConfig;
-  private readonly onSurface?: (entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string) => void;
+  private readonly onSurface?: (entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string, reasons?: string[]) => void;
 
   constructor(store: KnowledgeStoreProvider, budgets: ViewBudgetConfig, onSurface?: ViewCompiler['onSurface']) {
     this.store = store;
@@ -78,8 +84,8 @@ export class ViewCompiler {
     this.onSurface = onSurface;
   }
 
-  private recordHit(entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string) {
-    if (this.onSurface) return this.onSurface(entry, session, source, file);
+  private recordHit(entry: KnowledgeEntry, session: string, source: 'radar' | 'jit', file?: string, reasons?: string[]) {
+    if (this.onSurface) return this.onSurface(entry, session, source, file, reasons);
     this.store.recordUsage({
       workspace_id: this.store.workspaceId, session_id: session, entry_id: entry.id,
       revision: entry.revision, event_type: source === 'jit' ? 'guard_shown' : 'radar_shown', detail: file,
@@ -121,9 +127,13 @@ export class ViewCompiler {
     }
 
     const profile = this.store.residentProfile?.(this.budgets.residentProfileTokens ?? 300) ?? '';
+    const preferences = this.store.residentPreferences?.(this.budgets.residentPreferencesTokens ?? 120) ?? '';
     const residentPrefix = [
       ruleLines.length > 0 ? wrapReadOnlyXmlBlock('accremind-rules', ruleLines.join('\n')) : '',
       profile ? wrapReadOnlyXmlBlock('accremind-profile', `项目基本业务属性（来自规则文档）：\n${profile}`) : '',
+      preferences ? wrapReadOnlyXmlBlock('accremind-preferences',
+        `使用者的个人偏好（只影响做法与表达，不得违背团队规范和项目规范）：\n${preferences}`) : '',
+      [ruleLines.length, profile, preferences].filter(Boolean).length > 1 ? PRECEDENCE_NOTE : '',
     ].filter(Boolean).join('\n');
 
     // 2. Tier 2: Millisecond Contextual Radar (active files + error tokens + prompt aliases)
@@ -132,7 +142,7 @@ export class ViewCompiler {
       .trim()
       .slice(0, 400);
 
-    const hitMap = new Map<string, { entry: KnowledgeEntry; score: number; verdict?: ScopeVerdict; origin?: string | null }>();
+    const hitMap = new Map<string, { entry: KnowledgeEntry; score: number; verdict?: ScopeVerdict; origin?: string | null; reasons?: string[] }>();
     const context = { activeFiles: input.activeFiles, errorText: input.errorOutput, ...(input.tags?.length ? { tags: input.tags } : {}) };
 
     const activeFiles = input.activeFiles ?? [];
@@ -149,7 +159,7 @@ export class ViewCompiler {
           if (h.entry.layer === 'team_rule') continue;
           const prev = hitMap.get(h.entry.id);
           if (!prev || h.score > prev.score) {
-            hitMap.set(h.entry.id, { entry: h.entry, score: h.score, verdict: h.scopeVerdict, origin: h.originRepo });
+            hitMap.set(h.entry.id, { entry: h.entry, score: h.score, verdict: h.scopeVerdict, origin: h.originRepo, reasons: h.matchReasons });
           }
         }
       }
@@ -167,7 +177,8 @@ export class ViewCompiler {
         if (h.entry.layer === 'team_rule') continue;
         const prev = hitMap.get(h.entry.id);
         const mergedScore = (prev?.score ?? 0) + h.score;
-        hitMap.set(h.entry.id, { entry: h.entry, score: mergedScore, verdict: h.scopeVerdict ?? prev?.verdict, origin: h.originRepo ?? prev?.origin });
+        hitMap.set(h.entry.id, { entry: h.entry, score: mergedScore, verdict: h.scopeVerdict ?? prev?.verdict, origin: h.originRepo ?? prev?.origin,
+          reasons: [...new Set([...(prev?.reasons ?? []), ...h.matchReasons])] });
       }
     }
 
@@ -192,7 +203,7 @@ export class ViewCompiler {
     const surfacedIds: string[] = [];
     let radarTokens = 0;
 
-    for (const { entry, verdict, origin } of ranked.slice(0, 5)) {
+    for (const { entry, verdict, origin, reasons } of ranked.slice(0, 5)) {
       const ruleId = conflictNotes.get(entry.id);
       const line = formatEntryRadarLine(entry, verdict, origin) +
         (ruleId ? `（疑似与团队规范 ${ruleId} 相反且未登记豁免：以规范为准）` : '');
@@ -205,7 +216,7 @@ export class ViewCompiler {
       surfacedIds.push(entry.id);
       sessionSurfacedIds?.add(entry.id);
 
-      if (!input.preview) this.recordHit(entry, input.sessionId, 'radar');
+      if (!input.preview) this.recordHit(entry, input.sessionId, 'radar', undefined, [...(reasons ?? []), ...(ruleId ? [`疑似与团队规范 ${ruleId} 冲突`] : [])]);
     }
 
     // Rule documents (domain, business rules, norms): at most two sections, in their own small budget.
@@ -216,7 +227,8 @@ export class ViewCompiler {
       const docBudget = this.budgets.docRadarTokens ?? 220;
       const docs = this.store.searchDocs?.({ query: combinedQuery, tags: input.tags, activeFiles: input.activeFiles, limit: 4 }) ?? [];
       for (const d of docs.filter((x) => x.category !== 'project_profile').slice(0, 2)) {
-        const line = `- [规则文档·${DOC_CATEGORY_TITLE[d.category] ?? d.category}${d.originRepo ? `·来自 ${d.originRepo}` : ''}] ${d.docTitle} › ${d.heading}：${d.snippet.slice(0, 80)} -> 调 accremind_get("${d.ref}") 查看全文`;
+        const scope = d.scope && d.scope !== 'project' ? `·${DOC_SCOPE_TITLE[d.scope] ?? d.scope}` : '';
+        const line = `- [规则文档·${DOC_CATEGORY_TITLE[d.category] ?? d.category}${scope}${d.originRepo ? `·来自 ${d.originRepo}` : ''}] ${d.docTitle} › ${d.heading}：${d.snippet.slice(0, 80)} -> 调 accremind_get("${d.ref}") 查看全文`;
         const cost = estimateTokens(line);
         if (docLines.length && docTokens + cost > docBudget) break;
         docTokens += cost;
@@ -283,7 +295,7 @@ export class ViewCompiler {
       newlySurfacedIds.push(entry.id);
       options.sessionSurfacedIds.add(entry.id);
 
-      if (!options.preview) this.recordHit(entry, options.sessionId, 'jit', options.filePath);
+      if (!options.preview) this.recordHit(entry, options.sessionId, 'jit', options.filePath, hit.matchReasons);
     }
 
     if (lines.length === 0) {

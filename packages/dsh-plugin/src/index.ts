@@ -61,7 +61,7 @@ export const DEFAULT_ACCREMIND_CONFIG: AccreMindConfig = {
     enabled: true,
     modelUpload: false,
   },
-  autoEvolve: { demote: true, tune: true },
+  autoEvolve: { demote: true, tune: true, teamFeedback: true },
 };
 
 export interface AccreMindPluginInstance {
@@ -139,6 +139,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     workspaceId: rawOptions.workspaceId,
     maxProbationExposures: config.maxProbationExposures,
     autoDemotion: config.autoEvolve?.demote !== false && !demoMode,
+    teamFeedback: config.autoEvolve?.teamFeedback !== false && !demoMode,
   });
   const ledgerSharing = repositoryLedgerSharing(store.paths);
   store.setShareLedger(() => ledgerSharing.read());
@@ -161,6 +162,14 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         if (!disposed) store.updateRepoProfile({ languages: detectLanguages(projectRoot) });
       } catch (error) {
         console.warn(`[accremind] language detection skipped: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        // Capture jobs queued before a restart are picked up again (in the background, never blocking the session).
+        if (!disposed && llmAdapter && consent.read() && config.autoCapture.enabled && autoCapture.hasRunnableJobs()) {
+          void autoCapture.processPendingQueue().catch(() => undefined);
+        }
+      } catch (error) {
+        console.warn(`[accremind] queued captures not resumed: ${error instanceof Error ? error.message : String(error)}`);
       }
       try {
         if (!disposed) store.runMaintenance();
@@ -187,11 +196,17 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   });
 
   const receipts = new TurnReceipts(store);
+  // repo.json `settings.budgets` lets one project give more (or less) room than the plugin default.
+  const projectBudgets = store.projectSettings().budgets ?? {};
+  const budgetFor = (key: 'residentRulesTokens' | 'turnRadarTokens' | 'toolGuardTokens') => {
+    const v = Number(projectBudgets[key]);
+    return Number.isFinite(v) && v >= 0 ? v : config.budgets[key];
+  };
   const viewCompiler = new ViewCompiler(store, {
-    residentRulesTokens: config.budgets.residentRulesTokens,
-    turnRadarTokens: config.budgets.turnRadarTokens,
-    toolGuardTokens: config.budgets.toolGuardTokens,
-  }, (entry, session, source, file) => receipts.record(entry, session, source, file));
+    residentRulesTokens: budgetFor('residentRulesTokens'),
+    turnRadarTokens: budgetFor('turnRadarTokens'),
+    toolGuardTokens: budgetFor('toolGuardTokens'),
+  }, (entry, session, source, file, reasons) => receipts.record(entry, session, source, file, reasons));
 
   const gate = workspaceGate(store.paths, config.writeGate);
   // A host-provided adapter is the host's own model service; env keys still need the user's opt-in.
@@ -462,7 +477,8 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         payload.assistantReply,
       );
       const { enqueuedJob } = autoCapture.checkAndEnqueueSession(payload.sessionId);
-      if (enqueuedJob && llmAdapter && consent.read()) {
+      // Also jobs left from earlier turns (a model error, a restart): otherwise they wait for the next new signal.
+      if ((enqueuedJob || autoCapture.hasRunnableJobs()) && llmAdapter && consent.read()) {
         // Non-blocking background drain (L2 Iron Law)
         queueMicrotask(() => {
           void autoCapture.processPendingQueue();

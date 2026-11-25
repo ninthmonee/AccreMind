@@ -33,6 +33,7 @@ Everything stays on your machine: Markdown is the source of truth, `node:sqlite`
 - [Quick start](#quick-start)
 - [Host integrations](#host-integrations)
 - [Standalone workbench](#standalone-workbench)
+- [Team knowledge base, domains and mounting scope](#team-knowledge-base-domains-and-mounting-scope)
 - [Where the data lives](#where-the-data-lives)
 - [CLI](#cli)
 - [Model access (optional)](#model-access-optional)
@@ -205,6 +206,67 @@ pnpm ui -- --port 3180
 
 For UI work use `pnpm dev:webui` (Vite HMR). Before releasing, always run `pnpm verify`: `check:webui` compares the `packages/webui` sources with the inlined artifact so a UI change cannot silently miss the published bundle.
 
+## Team knowledge base, domains and mounting scope
+
+Where a piece of knowledge belongs decides who gets reminded of it. AccreMind mounts knowledge in three layers:
+
+| Mounted to | Best for | Stored in | Reminded to |
+| --- | --- | --- | --- |
+| This project `project` | Project norms, project profile, business rules that only apply to this repository | `<repo>/.accremind/docs/` | This repository; can be narrowed to one sub-project |
+| Domain `domain` | Domain descriptions, business rules shared across projects | Team knowledge base (this repository when none is mounted) | Every project in that domain, sub-domains included |
+| Personal `personal` | Personal preferences (answer style, habits) | `~/.dsh/accremind/personal/docs/<user>/` | Only you; never committed |
+
+**The team knowledge base** is a separate Git repository for what the team shares and no single project owns:
+
+```
+<team knowledge base>/
+├── domains/<domain>.json        # one file per domain: name, aliases, parent, owners
+├── members/<repo>.json          # one file per repository: its domains (core / consumer, optionally per sub-project)
+├── docs/<category>/*.md          # domain documents + changes.ndjson + CHANGELOG.md
+└── feedback/<repo>/<user hash>.json  # per-person usage counts (counts only, never prompts)
+```
+
+```bash
+pnpm accremind team set ~/code/team-knowledge     # mount; otherwise ~/.dsh/accremind/knowledge/ on this machine
+pnpm accremind domains add refund --parent payment --aliases refund --owners lead@example.com
+pnpm accremind domains join refund                   # this repository joins as a core project
+pnpm accremind domains join payment --role consumer   # caller only: sees rules meant for everyone, not core-only details
+pnpm accremind subprojects add pay --paths services/pay/ --domains payment --owners pay-dev@example.com
+pnpm accremind docs import refund.md --category business_rules --scope domain --domains refund [--audience core]
+pnpm accremind docs import norms.md --category project_norms --subproject pay
+pnpm accremind docs import my-prefs.md --category personal_preferences
+```
+
+- A domain can contain many projects, and a project can join many domains; rules from a parent domain reach projects in its sub-domains.
+- The catalog is split per domain and per repository member file, so two people adding a domain or joining one never edit the same file and Git merges stay clean. An older `domains.json` is split automatically on the first change.
+- With a team knowledge base mounted, importing into a domain that is not in the catalog is refused (to prevent spelling forks); pass `--new-domain` when it really is new. The workbench import dialog can create the domain (optionally with a parent) and make this repository join it.
+- The workbench importer accepts Markdown uploads (multi-select, drag and drop) and direct paste.
+- Mounting to "this project" can target another project: the open one by default, another registered on this machine, or any folder picked from the browser.
+- Domains and memberships built on this machine before a team knowledge base existed are carried over once on mount; files the team already has win.
+- AccreMind only writes files — it never commits or pushes for you. The rule documents page shows how many changes in `.accremind/` and the team knowledge base are uncommitted, unpushed or unpulled.
+- The rule documents page filters by mounting scope, domain (sub-domains and aliases included) and storage location, and full-text searches section content; the library filters entries by domain and sub-project.
+- Personal preferences follow the person: switching between the local identity and the host login moves them to the current identity.
+- When rules collide: team rules > project norms and experience > domain rules > personal preferences. Personal preferences are resident but last.
+- When an entry's evidence cites a document section (`D:<doc>#<section>`) and that section is edited or deleted, the entry goes back for review automatically.
+- Turn receipts state why each reminder matched; reporting "does not apply" lets you pick a reason (wrong domain, not this project or sub-project, wrong version, outdated, unrelated to this question).
+
+**Project-level settings** live in `.accremind/repo.json` and are reviewed with the repository:
+
+```json
+{
+  "domains": ["refund", "payment:consumer"],
+  "owners": ["team-lead@example.com"],
+  "projects": [{ "id": "pay", "paths": ["services/pay/"], "domains": ["refund"], "owners": ["pay-dev@example.com"] }],
+  "settings": {
+    "budgets": { "turnRadarTokens": 400 },
+    "tuning": { "textSaturation": 6 },
+    "autoDemotion": { "demoteUnusedShownSessions": 12 }
+  }
+}
+```
+
+A project with a custom `settings.tuning` opts out of automatic tuning. Owners decide who the to-do belongs to: experience looks for the domain owner → sub-project owner → repository owner, and the workbench can show "only mine"; `pnpm accremind digest` prints the last seven days (pending, automatic demotions, document changes, tuning, reminder quality), addressing the reader by their Git user name.
+
 ## Where the data lives
 
 | Path | Contents |
@@ -213,7 +275,10 @@ For UI work use `pnpm dev:webui` (Vite HMR). Before releasing, always run `pnpm 
 | `<repo>/.accremind/evidence/` | Evidence attachments |
 | `<repo>/.accremind/rules/` | Resident rules |
 | `<repo>/.accremind/docs/` | The four rule document kinds and their change log |
-| `<repo>/.accremind/repo.json` | Repository identity and business domain (commit this) |
+| `<repo>/.accremind/repo.json` | Repository identity, business domains, sub-projects, owners and project settings (commit this) |
+| `<team knowledge base>/` | Domain catalog, domain documents and team usage counts (a separate Git repository) |
+| `~/.dsh/accremind/knowledge.json` | Where the team knowledge base is mounted (`ACCREMIND_KNOWLEDGE_ROOT` overrides) |
+| `~/.dsh/accremind/personal/docs/` | Personal preference documents, per user |
 | `~/.dsh/accremind/probation/` | Probation drafts (never written into the repo) |
 | `~/.dsh/accremind/queue/` | Auto-capture and evaluation queues |
 | `~/.dsh/accremind/index/` | Rebuildable SQLite index |
@@ -230,8 +295,13 @@ pnpm accremind rebuild                    # rebuild the index from Markdown
 pnpm accremind bootstrap --top 10         # scan Git history for high-signal commits
 pnpm accremind bootstrap --extract        # hand them to the model for triage
 pnpm accremind migrate                    # cross-repo migration rehearsal; --apply, --rollback
-pnpm accremind repo --domains payments,ledger
-pnpm accremind docs import ./adr --category business_rules
+pnpm accremind repo --domains payments,ledger:consumer [--new-domain]
+pnpm accremind team [set <dir> | unset]  # team knowledge base
+pnpm accremind domains [list | add | join | leave]
+pnpm accremind subprojects [list | add <id> --paths a/,b/ | remove <id>]
+pnpm accremind docs import ./adr --category business_rules --scope domain --domains refund
+pnpm accremind docs list --scope domain --domain payment   # also --category, --query
+pnpm accremind docs search partial refund
 pnpm accremind docs proposals             # pending document and vocabulary proposals
 pnpm accremind docs accept <proposal-id>
 pnpm accremind eval --grid --apply        # replay feedback, tune, write back only if better
@@ -240,6 +310,7 @@ pnpm accremind eval history               # tuning history and observation state
 pnpm accremind eval rollback              # undo the last tuning
 pnpm accremind demotions [--all]          # automatic demotion / archive records
 pnpm accremind demotions restore K-XXXX   # undo a demotion or archive
+pnpm accremind digest [--days 7] [--json]   # recent digest: pending, automatic changes, document changes, reminder quality
 pnpm accremind ui --port 3180
 ```
 

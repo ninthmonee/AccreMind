@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -48,10 +48,12 @@ import { archiveVerdict, demoteVerdict, mergeAutoDemotionPolicy, type AutoDemoti
 import { EventLog, type AccreMindEvent } from './event-log.ts';
 import { EvidenceSnapshots } from '../evidence/snapshots.ts';
 import { deriveStanding, ValidationLedger, type LedgerDecision, type LedgerStanding } from '../ledger/ledger.ts';
-import { resolveLocalActor } from '../governance/actor.ts';
+import { resolveGitUserName, resolveLocalActor } from '../governance/actor.ts';
 import { HostIdentityProvider, LocalIdentityProvider, type IdentityProvider, type UserIdentity } from '../identity/user-identity.ts';
 import { DocLibrary } from '../docs/doc-library.ts';
-import { RepoRegistry, readRepoDependencies, registryRecordFor, type RegistryRecord } from '../registry/repo-registry.ts';
+import { RepoRegistry, readRepoDependencies, registryRecordFor, writeRepoProfile, type RegistryRecord } from '../registry/repo-registry.ts';
+import { DomainCatalog, resolveKnowledgeBase, type DomainMembership, type KnowledgeBaseInfo } from '../registry/knowledge-base.ts';
+import { parseDomainDeclaration, readRepoProfile, type RepoProfileFile, type SubprojectDef } from '../codec/atomic-fs.ts';
 import { CrossRepoFeedback, REPO_SUPPRESS_SESSIONS } from '../retrieval/cross-repo-feedback.ts';
 import {
   applyQuotas,
@@ -65,6 +67,7 @@ import {
   textStrength,
   DEFAULT_TUNING,
   loadTuning,
+  mergeTuning,
   VERDICT_LABEL,
   type RetrievalTuning,
 } from '../retrieval/applicability.ts';
@@ -161,6 +164,11 @@ export interface LocalStoreOptions {
   maxProbationExposures?: number;
   /** Automatic, reversible demotion of low-value entries (`false` turns it off). Default: on. */
   autoDemotion?: Partial<AutoDemotionPolicy> | boolean;
+  /**
+   * Share this machine's usage counts through a mounted team knowledge base (`<kb>/feedback/<repo>/`), so automatic
+   * demotion sees how entries fared for everyone. Counts only: no prompts, sessions or file paths. Default: on.
+   */
+  teamFeedback?: boolean;
   /** Identity recorded on decisions and in the activity log; defaults to the repository's Git user. */
   actor?: string;
   /** Whether the validation ledger is written into the repository (team sharing). Default: off. */
@@ -214,6 +222,10 @@ export interface AttentionItem {
   reason: string;
   revision: number;
   created_at: string;
+  /** Who should decide (domain owners, sub-project or repository owners); empty = nobody named. */
+  owners: string[];
+  /** The current user is one of the owners. */
+  assignedToMe: boolean;
 }
 
 /** How many “doesn't apply here” reports on one revision, without any success, pause an entry. */
@@ -260,7 +272,7 @@ interface EntryRow {
   scope_meta_json?: string | null;
 }
 
-const V2_KEYS = ['origin_repo', 'domains', 'applies_to', 'portable_patterns', 'owner', 'visibility', 'overrides', 'specializes', 'tags'] as const;
+const V2_KEYS = ['origin_repo', 'domains', 'applies_to', 'portable_patterns', 'owner', 'visibility', 'overrides', 'specializes', 'tags', 'audience', 'subproject'] as const;
 
 function scopeMetaOf(entry: KnowledgeEntry): string | null {
   const meta: Record<string, unknown> = {};
@@ -487,6 +499,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   readonly workspaceId: string;
   readonly maxProbationExposures: number;
   autoDemotionPolicy: AutoDemotionPolicy;
+  private readonly teamFeedback: boolean;
   readonly events: EventLog;
   private db: DatabaseSync;
   private statements = new Map<string, ReturnType<DatabaseSync['prepare']>>();
@@ -517,6 +530,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     this.workspaceId = this.paths.workspaceId;
     this.maxProbationExposures = options.maxProbationExposures ?? 3;
     this.autoDemotionPolicy = mergeAutoDemotionPolicy(options.autoDemotion);
+    this.teamFeedback = options.teamFeedback !== false;
     this.actorOverride = options.actor;
     if (!options.workspaceId) adoptLegacyWorkspace(this.paths);
     this.events = new EventLog(this.paths.eventsDir);
@@ -535,7 +549,12 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     this.registry = new RepoRegistry(this.paths.registryFile, this.paths.locksDir);
     this.feedback = new CrossRepoFeedback(this.paths.feedbackDir, this.paths.locksDir);
     this.repoDependencies = readRepoDependencies(this.paths.projectRoot);
-    this.tuning = loadTuning(path.join(this.paths.globalRoot, 'tuning.json'));
+    this.globalTuning = loadTuning(path.join(this.paths.globalRoot, 'tuning.json'));
+    this.tuning = this.effectiveTuning(this.globalTuning);
+    const demotionOverride = this.projectSettings().autoDemotion;
+    if (demotionOverride && this.autoDemotionPolicy.enabled) {
+      this.autoDemotionPolicy = mergeAutoDemotionPolicy({ ...this.autoDemotionPolicy, ...demotionOverride } as Partial<AutoDemotionPolicy>);
+    }
     this.docs = new DocLibrary(this);
     const previous = this.registry.get(this.workspaceId);
     if (!this.identity.domains.length && previous?.domains?.length) this.identity = { ...this.identity, domains: previous.domains };
@@ -544,6 +563,167 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     } catch (err) {
       console.warn(`[accremind] repository registry not updated: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // ---------- project profile, sub-projects, knowledge base, domains ----------
+
+  private profileCache: { mtime: number; profile: RepoProfileFile } | null = null;
+
+  /** `.accremind/repo.json` as committed (re-read when it changes). */
+  repoProfile(): RepoProfileFile {
+    let mtime = -1;
+    try {
+      mtime = fs.statSync(this.paths.repoProfileFile).mtimeMs;
+    } catch {
+      mtime = -1;
+    }
+    if (this.profileCache?.mtime !== mtime) {
+      this.profileCache = { mtime, profile: (mtime >= 0 ? readRepoProfile(this.paths.projectRoot, this.projectDirName) : null) ?? {} };
+    }
+    return this.profileCache.profile;
+  }
+
+  /** Monorepo sub-projects declared in repo.json. */
+  subprojects(): SubprojectDef[] {
+    const list = this.repoProfile().projects;
+    return Array.isArray(list) ? list.filter((p) => p && typeof p.id === 'string' && Array.isArray(p.paths) && p.paths.length) : [];
+  }
+
+  /** Sub-projects the given files belong to (paths relative to the repository root or absolute inside it). */
+  subprojectsForFiles(files: string[] | undefined): string[] {
+    const defs = this.subprojects();
+    if (!defs.length || !files?.length) return [];
+    const out = new Set<string>();
+    for (const f of files) {
+      const rel = (path.isAbsolute(f) ? path.relative(this.paths.projectRoot, f) : f).replace(/\\/g, '/').replace(/^\.\//, '');
+      for (const d of defs) {
+        if (d.paths.some((p) => { const pre = p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/?$/, '/'); return rel === pre.slice(0, -1) || rel.startsWith(pre); })) out.add(d.id);
+      }
+    }
+    return [...out];
+  }
+
+  /** The sub-project all of these paths fall in, if exactly one. */
+  inferSubproject(files: string[]): string | undefined {
+    if (!files.length) return undefined;
+    const per = files.map((f) => this.subprojectsForFiles([f]));
+    if (per.some((s) => s.length !== 1)) return undefined;
+    const ids = new Set(per.map((s) => s[0]!));
+    return ids.size === 1 ? [...ids][0] : undefined;
+  }
+
+  /** Per-project overrides of machine-wide settings (repo.json `settings`). */
+  projectSettings(): NonNullable<RepoProfileFile['settings']> {
+    const s = this.repoProfile().settings;
+    return s && typeof s === 'object' ? s : {};
+  }
+
+  /** People responsible for this repository (or a sub-project of it). */
+  /**
+   * Adds or replaces a sub-project in repo.json. Paths are prefixes relative to the repository root; domains the
+   * sub-project declares are joined in the catalog (as members limited to that sub-project).
+   */
+  upsertSubproject(def: SubprojectDef): SubprojectDef {
+    const id = String(def.id ?? '').trim();
+    if (!/^[\w.-]{1,60}$/.test(id)) throw new Error('子项目 id 只能用字母、数字、点、横线和下划线（最多 60 个字符）');
+    const paths = [...new Set((def.paths ?? []).map((p) => String(p).trim().replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean))];
+    if (!paths.length) throw new Error('请至少提供一个路径前缀，例如 services/pay/');
+    if (paths.some((p) => path.isAbsolute(p) || p.split('/').includes('..'))) throw new Error('路径必须是仓库内的相对路径');
+    const catalog = this.domainCatalog;
+    const domains = (def.domains ?? []).map(String).map((d) => d.trim()).filter(Boolean).map((d) => {
+      const parsed = parseDomainDeclaration(d);
+      let known = catalog.resolve(parsed.name);
+      if (!known && this.knowledgeBase.kind !== 'team') known = catalog.upsert({ name: parsed.name }).id;
+      if (!known) throw new Error(`领域目录中没有「${parsed.name}」，请先用 accremind domains add 登记`);
+      return parsed.role === 'consumer' ? `${known}:consumer` : known;
+    });
+    const next: SubprojectDef = {
+      id, paths,
+      ...(def.name?.trim() ? { name: def.name.trim() } : {}),
+      ...(domains.length ? { domains } : {}),
+      ...(def.owners?.length ? { owners: [...new Set(def.owners.map(String).filter(Boolean))] } : {}),
+    };
+    const previous = this.subprojects().find((p) => p.id === id);
+    const list = [...this.subprojects().filter((p) => p.id !== id), next];
+    writeRepoProfile(this.paths.projectRoot, this.projectDirName, { projects: list });
+    for (const d of previous?.domains ?? []) {
+      const did = parseDomainDeclaration(d).name;
+      if (!domains.some((x) => parseDomainDeclaration(x).name === did) && catalog.get(did)) catalog.removeMember(did, this.workspaceId, id);
+    }
+    for (const d of domains) {
+      const parsed = parseDomainDeclaration(d);
+      catalog.addMember(parsed.name, { repo: this.workspaceId, role: parsed.role, subproject: id });
+    }
+    this.profileCache = null;
+    this.invalidateSnapshot();
+    return next;
+  }
+
+  removeSubproject(id: string): boolean {
+    const previous = this.subprojects().find((p) => p.id === id);
+    if (!previous) return false;
+    writeRepoProfile(this.paths.projectRoot, this.projectDirName, { projects: this.subprojects().filter((p) => p.id !== id) });
+    const catalog = this.domainCatalog;
+    for (const def of catalog.list()) {
+      if (def.members.some((m) => m.repo === this.workspaceId && m.subproject === id)) catalog.removeMember(def.id, this.workspaceId, id);
+    }
+    this.profileCache = null;
+    this.invalidateSnapshot();
+    return true;
+  }
+
+  repoOwners(subproject?: string): string[] {
+    if (subproject) {
+      const sp = this.subprojects().find((p) => p.id === subproject);
+      if (sp?.owners?.length) return sp.owners;
+    }
+    const o = this.repoProfile().owners;
+    return Array.isArray(o) ? o.map(String).filter(Boolean) : [];
+  }
+
+  private kbCache: { at: number; info: KnowledgeBaseInfo; catalog: DomainCatalog } | null = null;
+
+  /** The knowledge base outside this project (a mounted team repository, else this machine's folder). */
+  get knowledgeBase(): KnowledgeBaseInfo {
+    return this.kb().info;
+  }
+
+  /** The domain catalog of the knowledge base. */
+  get domainCatalog(): DomainCatalog {
+    return this.kb().catalog;
+  }
+
+  private kb(): { info: KnowledgeBaseInfo; catalog: DomainCatalog } {
+    if (this.kbCache && Date.now() - this.kbCache.at < 2000) return this.kbCache;
+    const info = resolveKnowledgeBase(this.paths.globalRoot);
+    const catalog = this.kbCache && this.kbCache.info.root === info.root
+      ? this.kbCache.catalog : new DomainCatalog(info.root, this.paths.locksDir);
+    this.kbCache = { at: Date.now(), info, catalog };
+    return this.kbCache;
+  }
+
+  /** Forget the cached knowledge-base location (after mounting another one). */
+  refreshKnowledgeBase(): KnowledgeBaseInfo {
+    this.kbCache = null;
+    this.invalidateSnapshot();
+    return this.knowledgeBase;
+  }
+
+  /** Domains this repository (and the given sub-projects) belongs to, resolved through the catalog. */
+  domainMembership(subprojects: string[] = []): DomainMembership[] {
+    const declared = [...this.identity.domains];
+    const roles: Record<string, 'core' | 'consumer'> = { ...(this.identity.domainRoles ?? {}) };
+    for (const sp of this.subprojects()) {
+      if (!subprojects.includes(sp.id)) continue;
+      // Sub-project declarations are written like repo.json's (`payment:consumer`).
+      for (const d of sp.domains ?? []) {
+        const parsed = parseDomainDeclaration(String(d));
+        if (!parsed.name) continue;
+        declared.push(parsed.name);
+        if (parsed.role === 'consumer' && !this.identity.domains.includes(parsed.name)) roles[parsed.name] = 'consumer';
+      }
+    }
+    return this.domainCatalog.membership(this.workspaceId, [...new Set(declared)], roles, subprojects);
   }
 
   /** Re-reads this repository's dependency manifests (they change with upgrades during a session). */
@@ -627,11 +807,22 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   setUserIdentity(input: { provider: string; id: string; displayName?: string; emails?: string[] } | null): UserIdentity {
     if (!input) {
       this.identityProvider = null;
+      this.afterIdentityChange();
       return this.currentUser();
     }
     this.currentUser();
     this.identityProvider = new HostIdentityProvider(input, this.localIdentity ?? undefined);
+    this.afterIdentityChange();
     return this.identityProvider.current();
+  }
+
+  /** Personal documents are kept per person: pick up (and move over) the ones of the identity now in use. */
+  private afterIdentityChange(): void {
+    try {
+      this.docs.reconcile();
+    } catch (err) {
+      console.warn(`[accremind] personal documents not refreshed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** Lets the host supply per-turn signals (languages, active files, error text) for relevance. */
@@ -649,16 +840,69 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     });
   }
 
+  /**
+   * Sets this repository's business domains (`"payment"`, `"支付"`, `"payment:consumer"`): names are resolved
+   * through the domain catalog, written to repo.json as catalog IDs, and the catalog's member list is updated to
+   * match. Unknown names are refused unless `create` (or the catalog is still empty).
+   */
+  setDomains(declarations: string[], options: { create?: boolean } = {}): { domains: Array<{ id: string; role: 'core' | 'consumer' }>; created: string[] } {
+    const catalog = this.domainCatalog;
+    const parsed = declarations.map((d) => parseDomainDeclaration(String(d))).filter((d) => d.name);
+    const out: Array<{ id: string; role: 'core' | 'consumer' }> = [];
+    const created: string[] = [];
+    // A mounted team catalog is reviewed like code, so typos are refused there; on this machine alone new names are added.
+    const emptyCatalog = catalog.list().length === 0 || this.knowledgeBase.kind !== 'team';
+    for (const d of parsed) {
+      let id = catalog.resolve(d.name);
+      if (!id) {
+        if (!options.create && !emptyCatalog) {
+          const hint = catalog.suggest(d.name);
+          throw new Error(`领域目录中没有「${d.name}」${hint.length ? `，是否指：${hint.join('、')}` : ''}。确认是新领域请加 --new-domain`);
+        }
+        id = catalog.upsert({ name: d.name }).id;
+        created.push(id);
+      }
+      if (!out.some((x) => x.id === id)) out.push({ id, role: d.role });
+    }
+    for (const d of out) catalog.addMember(d.id, { repo: this.workspaceId, role: d.role });
+    for (const def of catalog.list()) {
+      if (!out.some((d) => d.id === def.id) && def.members.some((m) => m.repo === this.workspaceId && !m.subproject)) {
+        catalog.removeMember(def.id, this.workspaceId);
+      }
+    }
+    writeRepoProfile(this.paths.projectRoot, this.projectDirName, {
+      repo_id: this.workspaceId,
+      domains: out.map((d) => (d.role === 'consumer' ? `${d.id}:consumer` : d.id)),
+      ...(this.identity.org ? { org: this.identity.org } : {}),
+    });
+    const domainRoles: Record<string, 'core' | 'consumer'> = {};
+    for (const d of out) if (d.role === 'consumer') domainRoles[d.id] = 'consumer';
+    this.identity = { ...this.identity, domains: out.map((d) => d.id), domainRoles };
+    this.updateRepoProfile({});
+    this.invalidateSnapshot();
+    return { domains: out, created };
+  }
+
   /** The signals relevance is judged on for this session; host-supplied values override the defaults. */
   sessionContext(override: Partial<SessionContext> = {}): SessionContext {
     const host = this.contextProvider?.() ?? {};
     const rec = this.registry.get(this.workspaceId);
+    const activeFiles = override.activeFiles ?? host.activeFiles;
+    const subprojects = override.subprojects ?? host.subprojects ?? this.subprojectsForFiles(activeFiles);
+    const membership = this.domainMembership(subprojects);
+    const catalog = this.domainCatalog;
+    const coreKeys = new Set(catalog.matchKeys(membership.filter((m) => m.role === 'core').map((m) => m.id)).map((k) => k.toLowerCase()));
+    const consumerKeys = catalog.matchKeys(membership.filter((m) => m.role === 'consumer').map((m) => m.id))
+      .filter((k) => !coreKeys.has(k.toLowerCase()));
     return {
       repoId: this.workspaceId,
       orgId: this.identity.org,
       userId: this.currentUser().userId,
       userAliases: this.currentUser().aliases,
-      domains: this.identity.domains,
+      domains: catalog.matchKeys(membership.map((m) => m.id)),
+      declaredDomains: membership.map((m) => m.id),
+      consumerDomains: consumerKeys,
+      subprojects,
       languages: rec?.languages ?? [],
       dependencies: this.repoDependencies,
       ...host,
@@ -903,6 +1147,26 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     this.tuning = tuning;
   }
 
+  /** The machine-wide settings (`tuning.json`), before this project's overrides. */
+  globalTuning: RetrievalTuning = DEFAULT_TUNING;
+
+  /** Whether this project overrides retrieval settings in repo.json (automatic tuning then leaves it alone). */
+  hasProjectTuning(): boolean {
+    const t = this.projectSettings().tuning;
+    return Boolean(t && typeof t === 'object' && Object.keys(t).length);
+  }
+
+  private effectiveTuning(global: RetrievalTuning): RetrievalTuning {
+    const t = this.projectSettings().tuning;
+    return t && typeof t === 'object' ? mergeTuning(t, global) : global;
+  }
+
+  /** Adopts new machine-wide settings, keeping this project's overrides on top. */
+  setGlobalTuning(tuning: RetrievalTuning): void {
+    this.globalTuning = tuning;
+    this.tuning = this.effectiveTuning(tuning);
+  }
+
   // ---- topic tags (controlled vocabulary; see `vocabulary.ts`) ----
   private vocabularyVersion(): number {
     return this.vocabulary?.version ?? 0;
@@ -938,6 +1202,14 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   residentProfile(maxTokens = 300): string {
     try {
       return this.docs.residentProfile(maxTokens);
+    } catch {
+      return '';
+    }
+  }
+
+  residentPreferences(maxTokens = 120): string {
+    try {
+      return this.docs.residentPreferences(maxTokens);
     } catch {
       return '';
     }
@@ -981,6 +1253,21 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     if (this.actorOverride) return this.actorOverride;
     this.resolvedActor ??= resolveLocalActor(this.paths.projectRoot);
     return this.resolvedActor;
+  }
+
+  private resolvedGitName: string | null | undefined;
+
+  /**
+   * The name to address the person by: a signed-in account's name, else the repository's Git user name
+   * (what teammates see in history), else the Git e-mail, else the machine user.
+   */
+  get displayName(): string {
+    const user = this.currentUser();
+    if (user.source === 'host' && user.displayName && user.displayName !== user.userId) return user.displayName;
+    if (this.resolvedGitName === undefined) this.resolvedGitName = resolveGitUserName(this.paths.projectRoot);
+    if (this.resolvedGitName) return this.resolvedGitName;
+    const actor = this.actor;
+    return actor.startsWith('local:') ? user.displayName || actor.slice(6) : actor;
   }
 
   /** Lets a host attribute subsequent actions to an authenticated identity. */
@@ -1039,13 +1326,53 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
 
   /** Items that need a human decision; entries that were archived or withdrawn since drop out. */
   listAttentionItems(): AttentionItem[] {
-    return this.stmt(
+    const rows = this.stmt(
         `SELECT a.entry_id, a.kind, a.reason, a.revision, a.created_at FROM attention_items a
          JOIN entries e ON e.id = a.entry_id AND e.workspace_id IN (?, ?)
          WHERE a.workspace_id = ? AND e.status IN ('active', 'probation')
          ORDER BY a.created_at`,
       )
-      .all(this.workspaceId, GLOBAL_WORKSPACE_ID, this.workspaceId) as unknown as AttentionItem[];
+      .all(this.workspaceId, GLOBAL_WORKSPACE_ID, this.workspaceId) as unknown as Array<Omit<AttentionItem, 'owners' | 'assignedToMe'>>;
+    return rows.map((r) => {
+      const raw = this.findRawEntryRow(r.entry_id);
+      const owners = raw ? this.ownersForEntry(rowToEntry(raw)) : this.repoOwners();
+      return { ...r, owners, assignedToMe: this.isMine(owners) };
+    });
+  }
+
+  /**
+   * Who should decide about an entry: the owners of its business domains (domain knowledge), then the owners of
+   * its sub-project, else of this repository.
+   */
+  ownersForEntry(entry: Pick<KnowledgeEntry, 'layer' | 'domains' | 'subproject'>): string[] {
+    const out = new Set<string>();
+    if (entry.layer === 'domain') {
+      const catalog = this.domainCatalog;
+      for (const d of entry.domains ?? []) {
+        const id = catalog.resolve(d);
+        const line = id ? catalog.lineage(id) : [];
+        // The nearest domain that names owners.
+        const owned = line.find((x) => x.owners.length);
+        for (const o of owned?.owners ?? []) out.add(o);
+      }
+    }
+    for (const o of this.repoOwners(entry.subproject)) out.add(o);
+    return [...out];
+  }
+
+  /** Owners of a domain (the nearest one up its hierarchy that names any). */
+  domainOwners(domain: string): string[] {
+    const catalog = this.domainCatalog;
+    const id = catalog.resolve(domain);
+    return (id ? catalog.lineage(id).find((d) => d.owners.length)?.owners : undefined) ?? [];
+  }
+
+  /** Whether the current user is named in an owner list (e-mail, user ID or display name). */
+  isMine(owners: string[]): boolean {
+    if (!owners.length) return false;
+    const me = this.currentUser();
+    const keys = new Set([me.userId, me.displayName, ...me.emails, ...me.aliases].filter(Boolean).map((k) => k.toLowerCase()));
+    return owners.some((o) => keys.has(o.trim().toLowerCase()));
   }
 
   /**
@@ -1113,6 +1440,11 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     let demoted: string[] = [];
     let archived: string[] = [];
     try {
+      this.exportTeamFeedback(now);
+    } catch (err) {
+      console.warn(`[accremind] team feedback export skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
       ({ demoted, archived } = this.runAutoDemotion({ now }));
     } catch (err) {
       console.warn(`[accremind] automatic demotion skipped: ${err instanceof Error ? err.message : String(err)}`);
@@ -1122,6 +1454,97 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
 
   /** Per entry revision: what this repository's sessions did with it (usage detail kept for the retention window). */
   entrySignals(): Map<string, EntrySignals> {
+    const map = this.localEntrySignals();
+    for (const [key, other] of this.teamFeedbackSignals()) {
+      const f = map.get(key);
+      if (!f) {
+        map.set(key, { ...other });
+        continue;
+      }
+      f.shownSessions += other.shownSessions;
+      f.usedSessions += other.usedSessions;
+      f.inapplicableSessions += other.inapplicableSessions;
+      f.successes += other.successes;
+      f.failures += other.failures;
+      if (other.firstShownAt && (!f.firstShownAt || other.firstShownAt < f.firstShownAt)) f.firstShownAt = other.firstShownAt;
+    }
+    return map;
+  }
+
+  private teamFeedbackDir(): string | null {
+    if (!this.teamFeedback) return null;
+    const kb = this.knowledgeBase;
+    if (kb.kind !== 'team') return null;
+    return path.join(kb.root, 'feedback', this.workspaceId.replace(/[^\w.-]+/g, '_'));
+  }
+
+  private teamFeedbackFileName(): string {
+    return `${createHash('sha256').update(this.currentUser().userId).digest('hex').slice(0, 12)}.json`;
+  }
+
+  /**
+   * Writes this user's usage counts for this repository's entries to the team knowledge base (one file per user,
+   * named by a hash of the user ID). Only counts per entry revision are written; nothing about prompts or sessions.
+   * Returns the file written, or null when there is no team knowledge base or sharing is off.
+   */
+  exportTeamFeedback(now = new Date()): string | null {
+    const dir = this.teamFeedbackDir();
+    if (!dir) return null;
+    const entries: Record<string, Omit<EntrySignals, 'firstShownAt'> & { firstShownAt?: string }> = {};
+    for (const [key, s] of this.localEntrySignals()) {
+      if (!s.shownSessions && !s.usedSessions && !s.inapplicableSessions && !s.successes && !s.failures) continue;
+      entries[key] = {
+        shownSessions: s.shownSessions, usedSessions: s.usedSessions, inapplicableSessions: s.inapplicableSessions,
+        successes: s.successes, failures: s.failures, ...(s.firstShownAt ? { firstShownAt: s.firstShownAt.slice(0, 10) } : {}),
+      };
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, this.teamFeedbackFileName());
+    // The knowledge base is a Git repository: rewrite the file only when the counts changed, so it stays quiet.
+    try {
+      const prev = JSON.parse(fs.readFileSync(file, 'utf8')) as { entries?: unknown };
+      if (JSON.stringify(prev.entries ?? {}) === JSON.stringify(entries)) return file;
+    } catch {
+      // first export
+    }
+    if (!Object.keys(entries).length && !fs.existsSync(file)) return null;
+    writeFileAtomicSync(file, `${JSON.stringify({ version: 1, repo: this.workspaceId, updatedAt: now.toISOString(), entries }, null, 2)}\n`);
+    return file;
+  }
+
+  /** Other users' counts for this repository, from the team knowledge base (this user's own file is skipped). */
+  teamFeedbackSignals(): Map<string, EntrySignals> {
+    const map = new Map<string, EntrySignals>();
+    const dir = this.teamFeedbackDir();
+    if (!dir || !fs.existsSync(dir)) return map;
+    const mine = this.teamFeedbackFileName();
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.json') || name === mine) continue;
+      let raw: { entries?: Record<string, Partial<EntrySignals>> };
+      try {
+        raw = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      } catch {
+        continue;
+      }
+      for (const [key, e] of Object.entries(raw.entries ?? {})) {
+        if (!/^K-[A-Za-z0-9]+@\d+$/.test(key) || !e) continue;
+        const n = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.floor(Number(v)) : 0);
+        const f = map.get(key) ?? { shownSessions: 0, usedSessions: 0, inapplicableSessions: 0, successes: 0, failures: 0, firstShownAt: null };
+        f.shownSessions += n(e.shownSessions);
+        f.usedSessions += n(e.usedSessions);
+        f.inapplicableSessions += n(e.inapplicableSessions);
+        f.successes += n(e.successes);
+        f.failures += n(e.failures);
+        const first = typeof e.firstShownAt === 'string' ? e.firstShownAt : null;
+        if (first && (!f.firstShownAt || first < f.firstShownAt)) f.firstShownAt = first;
+        map.set(key, f);
+      }
+    }
+    return map;
+  }
+
+  /** {@link entrySignals} from this machine's records only. */
+  localEntrySignals(): Map<string, EntrySignals> {
     const map = new Map<string, EntrySignals>();
     const get = (id: string, rev: number) => {
       const k = `${id}@${rev}`;
@@ -1209,6 +1632,45 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     }
     if (demoted.length || archived.length) this.invalidateSnapshot();
     return { demoted, archived };
+  }
+
+  /** Live entries of this repository (and machine-wide ones) that cite a rule document (or one of its sections). */
+  entriesCitingDoc(docId: string, sectionIdValue?: string): string[] {
+    const rows = this.stmt(`SELECT * FROM entries WHERE workspace_id IN (?, ?) AND status IN ('active', 'probation') AND evidence_json LIKE ?`)
+      .all(this.workspaceId, GLOBAL_WORKSPACE_ID, `%D:${docId}%`) as unknown as EntryRow[];
+    const ref = sectionIdValue ? `D:${docId}#${sectionIdValue}` : null;
+    // A citation of the whole document (`D:<doc>` not followed by `#`) counts for every section.
+    const citesWhole = (text: string) => text.split(`D:${docId}`).slice(1).some((rest) => !rest.startsWith('#') && !/^[\w-]/.test(rest));
+    return rows.map((r) => rowToEntry(r)).filter((e) => e.evidence.some((ev) => {
+      const text = `${ev.source_ref} ${ev.locator}`;
+      return ref ? text.includes(ref) || citesWhole(text) : text.includes(`D:${docId}`);
+    })).map((e) => e.id);
+  }
+
+  /**
+   * A rule-document section an entry relies on changed or was removed: the entry goes back to review (it keeps
+   * being shown, marked as due for review), with the reason in the review queue.
+   */
+  flagEntriesCitingDoc(docId: string, sectionIdValue: string, heading: string, reason: string): string[] {
+    const flagged: string[] = [];
+    for (const id of this.entriesCitingDoc(docId, sectionIdValue)) {
+      const row = this.findRawEntryRow(id);
+      if (!row || !this.isOwnedSource(row.workspace_id)) continue;
+      const entry = rowToEntry(row);
+      if (transitionBlocker(entry, 'flag_review_due')) continue;
+      const why = `${reason}：${docId} › ${heading}`;
+      this.stmt(`INSERT OR REPLACE INTO freshness_reviews (workspace_id, entry_id, reason, previous_head, affected_paths) VALUES (?, ?, ?, ?, ?)`)
+        .run(this.workspaceId, id, why, null, JSON.stringify([`D:${docId}#${sectionIdValue}`]));
+      try {
+        this.updateExistingEntryDirect(transition(entry, 'flag_review_due'));
+        this.emit('entry.review_due', entry, { reason: 'doc_changed', doc: docId, section: sectionIdValue, note: why });
+        flagged.push(id);
+      } catch (err) {
+        if (!(err instanceof ConcurrentModificationError)) throw err;
+      }
+    }
+    if (flagged.length) this.invalidateSnapshot();
+    return flagged;
   }
 
   private recordAutoStep(entry: KnowledgeEntry, step: 'demote' | 'archive', reason: string, signals: EntrySignals, now: Date): void {
@@ -1978,6 +2440,12 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     assessment: CaptureAssessment | null,
   ): KnowledgeEntry {
     checkLayerStorage(entry.layer, zone);
+    // In a monorepo, project knowledge whose files all sit in one sub-project belongs to that sub-project.
+    if (entry.subproject === undefined && (entry.layer === 'project' || entry.layer === 'domain') && this.subprojects().length) {
+      const files = [...entry.watch_paths, ...entry.symbol_anchors.map((a) => a.file_path)].filter((f) => f && !/[*?]/.test(f));
+      const sp = this.inferSubproject(files);
+      if (sp) entry = { ...entry, subproject: sp };
+    }
     const resolvedAssessment =
       assessment ??
       (entry.capture_assessment_id ? this.getAssessment(entry.capture_assessment_id) : null);

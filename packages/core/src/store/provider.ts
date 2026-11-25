@@ -28,6 +28,8 @@ export interface DocHitLike {
   score: number;
   originRepo: string | null;
   matchedTags: string[];
+  /** Where the document is mounted: project · domain · personal. */
+  scope?: string;
 }
 
 export type GetEntryOutcome =
@@ -80,6 +82,8 @@ export interface KnowledgeStoreProvider {
   searchDocs?(input: { query: string; tags?: string[]; activeFiles?: string[]; errorText?: string; limit?: number }): DocHitLike[];
   /** The project profile (basic business attributes) as resident context. */
   residentProfile?(maxTokens?: number): string;
+  /** The person's own preferences (personal documents) as resident context. */
+  residentPreferences?(maxTokens?: number): string;
   /** This repository's documented exceptions to team rules. */
   listRuleWaivers?(): Map<string, { entryId: string; reason: string; expiresAt: string }>;
   /** Project knowledge contradicting a team rule without an exception is taken out of reminders and flagged. */

@@ -266,11 +266,15 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
       failed: false,
     });
     coordinator.recordTurnConversation('s-rec-1', '修一下任务并发失败', '已补充锁校验并测试通过');
+    // Every model step of the turn reports the same prompt again; it is kept once.
+    coordinator.recordTurnConversation('s-rec-1', '修一下任务并发失败');
+    coordinator.recordTurnConversation('s-rec-1', '修一下任务并发失败', '已补充锁校验并测试通过');
 
     const { signalResult, enqueuedJob } = coordinator.checkAndEnqueueSession('s-rec-1');
     assert.ok(signalResult.strongSignals.includes('error_to_green_recovery'));
     assert.ok(enqueuedJob);
     assert.equal(coordinator.listQueuedJobs().length, 1);
+    assert.equal(coordinator.listQueuedJobs()[0]!.rawCandidateContext.split('修一下任务并发失败').length - 1, 1, 'the prompt appears once');
 
     // First drain fails due to HTTP 503 -> job stays in queue with attempts=1!
     const failedDrain = await coordinator.processPendingQueue();
@@ -279,7 +283,18 @@ describe('M1-A & M2: DeltaAssessor (Isolated Blind Check), SignalDetector & Dura
     assert.equal(queuedAfterFail.length, 1);
     assert.equal(queuedAfterFail[0]!.attempts, 1);
 
-    // Second drain after backoff window succeeds -> job removed from queue & routed to navigation.json!
+    // While the job waits out its backoff it is not runnable; a person asking now ("立即提炼") overrides that.
+    assert.equal(coordinator.hasRunnableJobs(), false);
+    assert.equal(coordinator.hasRunnableJobs(Date.now() + 120_000), true);
+    // Used-up attempts: the job is reported as failed (not silently skipped), and can be given another go.
+    for (let i = 0; i < 4; i++) await coordinator.processPendingQueue(Date.now(), { force: true });
+    assert.equal(coordinator.failedJobs().length, 1);
+    assert.match(coordinator.failedJobs()[0]!.lastError ?? '', /503|fail|错误|Error/i);
+    assert.equal(coordinator.hasRunnableJobs(Date.now() + 10_000_000), false, 'a failed job is not retried by itself');
+    assert.ok(coordinator.retryJob(coordinator.failedJobs()[0]!.jobId));
+    assert.equal(coordinator.failedJobs().length, 0);
+
+    // After the retry the model is back -> job removed from queue & routed to navigation.json!
     shouldFailLlm = false;
     const futureNow = Date.now() + 120_000;
     const okDrain = await coordinator.processPendingQueue(futureNow);

@@ -33,6 +33,7 @@ AccreMind 是面向 AI 辅助研发的本地优先知识库。它把散落在各
 - [快速开始](#快速开始)
 - [宿主接入](#宿主接入)
 - [独立工作台](#独立工作台)
+- [团队知识库、领域与挂载范围](#团队知识库领域与挂载范围)
 - [数据放在哪](#数据放在哪)
 - [命令行](#命令行)
 - [模型配置（可选）](#模型配置可选)
@@ -205,6 +206,67 @@ pnpm ui -- --port 3180
 
 改界面用 `pnpm dev:webui`（Vite HMR）。发布前务必运行 `pnpm verify`：`check:webui` 会比对 `packages/webui` 源码与内联产物，避免界面改动没进发布包。
 
+## 团队知识库、领域与挂载范围
+
+一份知识属于谁，决定它提醒给谁。AccreMind 分三层挂载：
+
+| 挂载到 | 适合 | 保存在 | 提醒给 |
+| --- | --- | --- | --- |
+| 本项目 `project` | 项目规范、项目概况、只属于本仓库的业务规则 | `<repo>/.accremind/docs/` | 本仓库；可再限定到一个子项目 |
+| 领域 `domain` | 领域说明、跨项目共享的业务规则 | 团队知识库（未挂载时为本仓库） | 属于该领域（含下级领域）的所有项目 |
+| 个人 `personal` | 个人偏好（回答风格、习惯） | `~/.dsh/accremind/personal/docs/<用户>/` | 只有你自己，不进 Git |
+
+**团队知识库**是一个独立的 Git 仓库，放团队共享、又不属于任何单个项目的东西：
+
+```
+<团队知识库>/
+├── domains/<领域>.json        # 每个领域一个文件：名称、别名、上级、负责人
+├── members/<仓库>.json        # 每个仓库一个文件：它属于哪些领域（核心 / 使用方，可限定子项目）
+├── docs/<类别>/*.md          # 领域文档 + changes.ndjson + CHANGELOG.md
+└── feedback/<仓库>/<用户哈希>.json  # 每个人的使用计数（只有计数，没有提问内容）
+```
+
+```bash
+pnpm accremind team set ~/code/team-knowledge     # 挂载；没有挂载时用本机 ~/.dsh/accremind/knowledge/
+pnpm accremind domains add 退款 --parent 支付 --aliases refund --owners lead@example.com
+pnpm accremind domains join 退款                   # 本仓库作为核心项目加入
+pnpm accremind domains join 支付 --role consumer   # 只是调用方：看得到面向所有人的规则，看不到“仅核心项目”的内部细节
+pnpm accremind subprojects add pay --paths services/pay/ --domains 支付 --owners pay-dev@example.com
+pnpm accremind docs import refund.md --category business_rules --scope domain --domains 退款 [--audience core]
+pnpm accremind docs import norms.md --category project_norms --subproject pay
+pnpm accremind docs import my-prefs.md --category personal_preferences
+```
+
+- 一个领域可以有多个项目，一个项目也可以属于多个领域；上级领域的规则会提醒给下级领域的项目。
+- 领域目录按“每个领域一个文件、每个仓库一个成员文件”存放，不同人新建领域或加入领域不会改同一个文件，Git 合并不冲突。旧版的 `domains.json` 会在第一次修改时自动拆分。
+- 挂载了团队知识库时，导入不在目录里的领域名会被拒绝（防止拼写分叉），确认是新领域加 `--new-domain`；工作台的导入弹窗可以直接新建领域（可选上级），并让本仓库加入。
+- 工作台导入支持上传 Markdown 文件（可多选、可拖入），也可以直接粘贴。
+- 挂载到“本项目”时可以选目标项目：默认是当前打开的项目，也可以选本机登记过的其他项目，或浏览文件夹选择任意项目。
+- 先在本机建了领域、之后才挂载团队知识库时，本机的领域和成员关系会在挂载时带过去（只带一次，团队已有的文件不覆盖）。
+- AccreMind 只写文件、不会替你提交或推送。规则文档页顶部会提示 `.accremind/` 和团队知识库里还有多少改动未提交、未推送或未拉取。
+- 规则文档页可以按挂载范围、领域（含下级领域和别名）、存放位置筛选，并全文搜索章节内容；知识库页可以按领域和子项目筛选经验。
+- 个人偏好跟着人走：同一个人从本机身份切到宿主登录账号（或反过来）时，偏好文档会自动移到当前身份下。
+- 冲突时的优先级：团队规范 > 项目规范与经验 > 领域规则 > 个人偏好。个人偏好常驻但排在最后。
+- 经验的证据引用了文档章节（`D:<文档>#<章节>`）时，章节被修改或删除，这条经验自动转为待复核。
+- 回合记录会写明每条提醒的命中理由；反馈“不适用”时可以选原因（领域不对、不是这个项目或子项目、版本不对、已过时、和这次问题无关）。
+
+**项目级设置**写在 `.accremind/repo.json`，随仓库评审：
+
+```json
+{
+  "domains": ["refund", "payment:consumer"],
+  "owners": ["team-lead@example.com"],
+  "projects": [{ "id": "pay", "paths": ["services/pay/"], "domains": ["refund"], "owners": ["pay-dev@example.com"] }],
+  "settings": {
+    "budgets": { "turnRadarTokens": 400 },
+    "tuning": { "textSaturation": 6 },
+    "autoDemotion": { "demoteUnusedShownSessions": 12 }
+  }
+}
+```
+
+自定义了 `settings.tuning` 的项目不参与自动调参。负责人决定待办归谁：经验按“领域负责人 → 子项目负责人 → 仓库负责人”找人，工作台可以“只看我的”，`pnpm accremind digest` 输出近 7 天的摘要（待办、自动降级、文档变更、调参、提醒效果），读者按 Git 用户名称呼。
+
 ## 数据放在哪
 
 | 路径 | 内容 |
@@ -213,7 +275,10 @@ pnpm ui -- --port 3180
 | `<repo>/.accremind/evidence/` | 证据附件 |
 | `<repo>/.accremind/rules/` | 常驻规则 |
 | `<repo>/.accremind/docs/` | 四类规则文档与变更日志 |
-| `<repo>/.accremind/repo.json` | 仓库身份与业务域（建议提交） |
+| `<repo>/.accremind/repo.json` | 仓库身份、业务领域、子项目、负责人与项目级设置（建议提交） |
+| `<团队知识库>/` | 领域目录、领域文档与团队使用计数（独立 Git 仓库） |
+| `~/.dsh/accremind/knowledge.json` | 团队知识库挂载位置（`ACCREMIND_KNOWLEDGE_ROOT` 可覆盖） |
+| `~/.dsh/accremind/personal/docs/` | 个人偏好文档，按人分开 |
 | `~/.dsh/accremind/probation/` | 试用期草稿（不写进仓库） |
 | `~/.dsh/accremind/queue/` | 自动沉淀与评估队列 |
 | `~/.dsh/accremind/index/` | 可重建的 SQLite 索引 |
@@ -230,8 +295,13 @@ pnpm accremind rebuild                    # 从 Markdown 重建索引
 pnpm accremind bootstrap --top 10         # 从 Git 历史扫描高信号提交
 pnpm accremind bootstrap --extract        # 交给模型做分流
 pnpm accremind migrate                    # 跨仓库迁移演练；--apply、--rollback
-pnpm accremind repo --domains payments,ledger
-pnpm accremind docs import ./adr --category business_rules
+pnpm accremind repo --domains payments,ledger:consumer [--new-domain]
+pnpm accremind team [set <dir> | unset]  # 团队知识库
+pnpm accremind domains [list | add | join | leave]
+pnpm accremind subprojects [list | add <id> --paths a/,b/ | remove <id>]
+pnpm accremind docs import ./adr --category business_rules --scope domain --domains refund
+pnpm accremind docs list --scope domain --domain payment   # 另支持 --category、--query
+pnpm accremind docs search partial refund
 pnpm accremind docs proposals             # 待处理的文档与词表提案
 pnpm accremind docs accept <proposal-id>
 pnpm accremind eval --grid --apply        # 回放反馈并调参，只有更好才写回
@@ -240,6 +310,7 @@ pnpm accremind eval history               # 调参历史与观察状态
 pnpm accremind eval rollback              # 撤销上一次调参
 pnpm accremind demotions [--all]          # 自动降级/归档记录
 pnpm accremind demotions restore K-XXXX   # 撤销某条降级或归档
+pnpm accremind digest [--days 7] [--json]   # 近 7 天摘要：待办、自动变更、文档变更、提醒效果
 pnpm accremind ui --port 3180
 ```
 

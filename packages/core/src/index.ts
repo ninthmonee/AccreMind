@@ -42,3 +42,6 @@ export * from './evidence/snapshots.ts';
 export * from './ledger/ledger.ts';
 export * from './governance/auto-demotion.ts';
 export * from './retrieval/auto-tuning.ts';
+export * from './registry/knowledge-base.ts';
+export * from './governance/digest.ts';
+export * from './registry/project-picker.ts';

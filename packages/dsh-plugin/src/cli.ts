@@ -28,7 +28,12 @@ function hasFlag(args: string[], flag: string): boolean {
 }
 
 async function main(): Promise<void> {
-  const [, , subcommand = 'status', ...rest] = process.argv;
+  // `--repo` and `--global-dir` may come before the subcommand too (`accremind --repo ../pay status`).
+  const argv = process.argv.slice(2);
+  const leading: string[] = [];
+  while (argv[0] === '--repo' || argv[0] === '--global-dir') leading.push(...argv.splice(0, 2));
+  const [subcommand = 'status', ...afterCommand] = argv;
+  const rest = [...afterCommand, ...leading];
   const repoRoot = path.resolve(getFlag(rest, '--repo', process.cwd())!);
   const globalDir = getFlag(rest, '--global-dir', '~/.dsh/accremind')!;
 
@@ -213,14 +218,20 @@ async function main(): Promise<void> {
         const [action = 'list', target] = rest.filter((a) => !a.startsWith('--'));
         const docs = runtime.store.docs;
         if (action === 'import') {
-          if (!target) throw new Error('用法: accremind docs import <文件或目录> --category domain|business_rules|project_norms|project_profile');
+          if (!target) {
+            throw new Error('用法: accremind docs import <文件或目录> --category domain|business_rules|project_norms|project_profile|personal_preferences'
+              + ' [--scope project|domain|personal] [--domains a,b] [--home kb|repo] [--audience core|all] [--subproject id] [--new-domain]');
+          }
           const category = getFlag(rest, '--category') as never;
           const domains = getFlag(rest, '--domains')?.split(',').map((d) => d.trim()).filter(Boolean);
+          const scope = getFlag(rest, '--scope') as 'project' | 'domain' | 'personal' | undefined;
+          const home = getFlag(rest, '--home') as 'kb' | 'repo' | undefined;
+          const audience = getFlag(rest, '--audience') as 'core' | 'all' | undefined;
           const abs = path.resolve(target);
           const files = fs.statSync(abs).isDirectory()
             ? fs.readdirSync(abs).filter((f) => /\.(md|markdown)$/i.test(f)).map((f) => path.join(abs, f)) : [abs];
           const out = files.map((f) => docs.importDoc({ content: fs.readFileSync(f, 'utf8'), fileName: path.basename(f), category, domains,
-            replace: hasFlag(rest, '--replace') }));
+            replace: hasFlag(rest, '--replace'), scope, home, audience, subproject: getFlag(rest, '--subproject'), createDomains: hasFlag(rest, '--new-domain') }));
           console.log(JSON.stringify({ imported: out }, null, 2));
         } else if (action === 'proposals') {
           console.log(JSON.stringify({ proposals: docs.listProposals('pending'), tagProposals: docs.listTagProposals('pending') }, null, 2));
@@ -230,16 +241,70 @@ async function main(): Promise<void> {
           console.log(JSON.stringify(out, null, 2));
         } else if (action === 'changes') {
           console.log(JSON.stringify({ changes: docs.listChanges({ docId: target, limit: 100 }) }, null, 2));
+        } else if (action === 'search') {
+          const query = rest.filter((a) => !a.startsWith('--'))[1];
+          if (!query) throw new Error('用法: accremind docs search <关键词> [--limit 10]');
+          console.log(JSON.stringify({ hits: runtime.store.searchDocs({ query, limit: Number(getFlag(rest, '--limit') ?? 10) }) }, null, 2));
         } else {
-          console.log(JSON.stringify({ docs: docs.listDocs() }, null, 2));
+          // docs list [--scope project|domain|personal] [--domain 退款] [--category business_rules] [--query 关键词]
+          const scope = getFlag(rest, '--scope');
+          const category = getFlag(rest, '--category');
+          const domain = getFlag(rest, '--domain');
+          const query = getFlag(rest, '--query')?.toLowerCase();
+          const catalog = runtime.store.domainCatalog;
+          const domainId = domain ? catalog.resolve(domain) ?? domain : null;
+          const list = docs.listDocs().filter((d) => (!scope || d.scope === scope) && (!category || d.category === category)
+            && (!domainId || d.domains.some((x) => (catalog.resolve(x) ?? x) === domainId
+              || catalog.lineage(catalog.resolve(x) ?? x).some((l) => l.id === domainId)))
+            && (!query || [d.title, d.docId, ...d.domains, ...d.tags].some((t) => t.toLowerCase().includes(query))));
+          console.log(JSON.stringify({ docs: list }, null, 2));
         }
+        break;
+      }
+
+      // Team knowledge base: team (where it is) | team set <folder> | team unset
+      case 'team': {
+        const [action, target] = rest.filter((a) => !a.startsWith('--'));
+        if (action === 'set') {
+          if (!target) throw new Error('用法: accremind team set <团队知识库仓库目录>');
+          console.log(JSON.stringify(await runtime.rpcHandlers['accremind.knowledge.mount']!({ path: path.resolve(target) }), null, 2));
+        } else if (action === 'unset') {
+          console.log(JSON.stringify(await runtime.rpcHandlers['accremind.knowledge.mount']!({ path: null }), null, 2));
+        } else {
+          console.log(JSON.stringify(await runtime.rpcHandlers['accremind.knowledge.info']!({}), null, 2));
+        }
+        break;
+      }
+
+      // Domain catalog: domains [list] | add <name> [--id x] [--aliases a,b] [--parent p] [--owners a,b] [--desc text]
+      //   | join <domain> [--role core|consumer] [--subproject id] [--new-domain] | leave <domain>
+      case 'domains': {
+        const [action = 'list', target] = rest.filter((a) => !a.startsWith('--') && !['--id', '--aliases', '--parent', '--owners', '--desc', '--role', '--subproject']
+          .includes(rest[rest.indexOf(a) - 1] ?? ''));
+        const list = (flag: string) => getFlag(rest, flag)?.split(',').map((x) => x.trim()).filter(Boolean);
+        let out: unknown;
+        if (action === 'add') {
+          if (!target) throw new Error('用法: accremind domains add <名称> [--id payment] [--aliases 支付,pay] [--parent 上级] [--owners a@x.com]');
+          out = await runtime.rpcHandlers['accremind.domains.upsert']!({ name: target, id: getFlag(rest, '--id'), aliases: list('--aliases'),
+            parent: getFlag(rest, '--parent'), owners: list('--owners'), description: getFlag(rest, '--desc') });
+        } else if (action === 'join') {
+          if (!target) throw new Error('用法: accremind domains join <领域> [--role consumer] [--subproject id]');
+          out = await runtime.rpcHandlers['accremind.domains.join']!({ domain: target, role: getFlag(rest, '--role'), subproject: getFlag(rest, '--subproject'),
+            create: hasFlag(rest, '--new-domain') });
+        } else if (action === 'leave') {
+          if (!target) throw new Error('用法: accremind domains leave <领域>');
+          out = await runtime.rpcHandlers['accremind.domains.leave']!({ domain: target });
+        } else {
+          out = await runtime.rpcHandlers['accremind.domains.list']!({});
+        }
+        console.log(JSON.stringify(out, null, 2));
         break;
       }
 
       case 'repo': {
         const domainsFlag = getFlag(rest, '--domains');
         if (domainsFlag !== undefined) {
-          const out = await runtime.rpcHandlers['accremind.repo.setDomains']!({ domains: domainsFlag.split(',') });
+          const out = await runtime.rpcHandlers['accremind.repo.setDomains']!({ domains: domainsFlag.split(','), create: hasFlag(rest, '--new-domain') });
           console.log(JSON.stringify(out, null, 2));
         } else {
           console.log(JSON.stringify(await runtime.rpcHandlers['accremind.repo.profile']!({}), null, 2));
@@ -247,9 +312,35 @@ async function main(): Promise<void> {
         break;
       }
 
+      case 'subprojects': {
+        const [action = 'list', target] = rest.filter((a) => !a.startsWith('--') && !['--paths', '--name', '--domains', '--owners']
+          .includes(rest[rest.indexOf(a) - 1] ?? ''));
+        const list = (flag: string) => getFlag(rest, flag)?.split(',').map((x) => x.trim()).filter(Boolean);
+        let out: unknown;
+        if (action === 'add' || action === 'set') {
+          if (!target) throw new Error('用法: accremind subprojects add <id> --paths services/pay/,libs/pay/ [--name 支付服务] [--domains payment] [--owners a@x.com]');
+          out = await runtime.rpcHandlers['accremind.repo.upsertSubproject']!({ id: target, paths: list('--paths') ?? [], name: getFlag(rest, '--name'),
+            domains: list('--domains'), owners: list('--owners') });
+        } else if (action === 'remove' || action === 'rm') {
+          if (!target) throw new Error('用法: accremind subprojects remove <id>');
+          out = await runtime.rpcHandlers['accremind.repo.removeSubproject']!({ id: target });
+        } else {
+          out = { subprojects: (await runtime.rpcHandlers['accremind.repo.profile']!({}) as { subprojects: unknown }).subprojects };
+        }
+        console.log(JSON.stringify(out, null, 2));
+        break;
+      }
+
+      case 'digest': {
+        const days = Number(getFlag(rest, '--days') ?? 7);
+        const out = await runtime.rpcHandlers['accremind.digest']!({ days }) as { markdown: string };
+        console.log(hasFlag(rest, '--json') ? JSON.stringify(out, null, 2) : out.markdown);
+        break;
+      }
+
       default:
         throw new Error(
-          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | eval | demotions | docs | ui`,
+          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | subprojects | eval | demotions | docs | team | domains | digest | ui`,
         );
     }
   } finally {

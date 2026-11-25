@@ -74,12 +74,43 @@ export interface RepoIdentity {
   /** `host/owner` of the remote. */
   org: string | null;
   domains: string[];
+  /** Role declared in repo.json for a domain (`"payment:consumer"`); absent = core member. */
+  domainRoles?: Record<string, 'core' | 'consumer'>;
+}
+
+/** A sub-project of a monorepo: its own paths, and optionally its own domains and owners. */
+export interface SubprojectDef {
+  id: string;
+  name?: string;
+  /** Path prefixes relative to the repository root (`services/pay/`). */
+  paths: string[];
+  domains?: string[];
+  owners?: string[];
+}
+
+/** Per-project overrides of machine-wide settings (committed with the repository). */
+export interface ProjectSettings {
+  tuning?: Record<string, unknown>;
+  autoDemotion?: Record<string, unknown>;
+  budgets?: Record<string, number>;
 }
 
 export interface RepoProfileFile {
   repo_id?: string;
+  /** Business domains; `"name:consumer"` marks a domain this repository only uses. */
   domains?: string[];
   org?: string;
+  /** Monorepo sub-projects. */
+  projects?: SubprojectDef[];
+  /** People responsible for this repository's knowledge (e-mails or names). */
+  owners?: string[];
+  settings?: ProjectSettings;
+}
+
+/** `"payment:consumer"` → `{ name: "payment", role: "consumer" }`. */
+export function parseDomainDeclaration(raw: string): { name: string; role: 'core' | 'consumer' } {
+  const m = /^(.*?):(core|consumer)$/i.exec(raw.trim());
+  return m ? { name: m[1]!.trim(), role: m[2]!.toLowerCase() as 'core' | 'consumer' } : { name: raw.trim(), role: 'core' };
 }
 
 /** `git@github.com:Acme/Pay.git`, `https://user@github.com/acme/pay` → `github.com/acme/pay`. */
@@ -122,18 +153,22 @@ export function resolveRepoIdentity(projectRoot: string, projectDirName = '.accr
   }
   const normalized = remote ? normalizeGitRemote(remote) : null;
   const org = profile?.org?.trim() || (normalized ? normalized.split('/').slice(0, -1).join('/') : null);
-  const domains = Array.isArray(profile?.domains) ? profile!.domains!.map(String).map((d) => d.trim()).filter(Boolean) : [];
+  const declared = Array.isArray(profile?.domains) ? profile!.domains!.map(String).map(parseDomainDeclaration).filter((d) => d.name) : [];
+  const domains = [...new Set(declared.map((d) => d.name))];
+  const domainRoles: Record<string, 'core' | 'consumer'> = {};
+  for (const d of declared) if (d.role === 'consumer') domainRoles[d.name] = 'consumer';
+  const roles = Object.keys(domainRoles).length ? { domainRoles } : {};
   if (profile?.repo_id && SAFE_REPO_ID.test(profile.repo_id)) {
-    return { repoId: profile.repo_id, source: 'repo.json', name: path.basename(root), remote: normalized, org, domains };
+    return { repoId: profile.repo_id, source: 'repo.json', name: path.basename(root), remote: normalized, org, domains, ...roles };
   }
   if (normalized) {
     const name = normalized.split('/').at(-1)!.replace(/[^a-zA-Z0-9_-]/g, '_');
     return {
       repoId: `${name}-${createHash('sha256').update(normalized).digest('hex').slice(0, 10)}`,
-      source: 'remote', name, remote: normalized, org, domains,
+      source: 'remote', name, remote: normalized, org, domains, ...roles,
     };
   }
-  return { repoId: computeWorkspaceId(root), source: 'path', name: path.basename(root), remote: null, org, domains };
+  return { repoId: computeWorkspaceId(root), source: 'path', name: path.basename(root), remote: null, org, domains, ...roles };
 }
 
 export function sha256Hex(content: string): string {

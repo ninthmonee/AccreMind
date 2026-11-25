@@ -14,6 +14,8 @@ export interface ReceiptHit {
   currentRevision: number | null;
   currentServing: ServingStatus | null;
   feedback: 'success' | 'failure' | 'inconclusive' | null;
+  /** Why it was shown (match reasons: same domain, path anchor, topic tags…). */
+  reasons: string[];
 }
 
 export interface TurnReceipt {
@@ -68,12 +70,13 @@ export class TurnReceipts {
   }
 
   /** Records that an entry revision was shown in this turn; real exposures also count toward trial review. */
-  record(entry: KnowledgeEntry, sessionId: string, source: ReceiptHit['source'], filePath?: string) {
+  record(entry: KnowledgeEntry, sessionId: string, source: ReceiptHit['source'], filePath?: string, reasons?: string[]) {
     const turn = this.begin(sessionId);
+    const why = reasons?.length ? JSON.stringify([...new Set(reasons)].slice(0, 6).map((r) => r.slice(0, 120))) : null;
     const result = this.store.rawDb.prepare(`INSERT OR IGNORE INTO turn_hits
-      (workspace_id, session_id, turn_id, entry_id, revision, title, status, source, file_path)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      this.store.workspaceId, sessionId, turn, entry.id, entry.revision, entry.title, entry.status, source, filePath ?? null,
+      (workspace_id, session_id, turn_id, entry_id, revision, title, status, source, file_path, reasons)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      this.store.workspaceId, sessionId, turn, entry.id, entry.revision, entry.title, entry.status, source, filePath ?? null, why,
     );
     if (!result.changes || source === 'rule') return;
     this.store.recordUsage({
@@ -99,7 +102,7 @@ export class TurnReceipts {
     const turns = this.store.rawDb.prepare(`SELECT session_id AS sessionId, turn_id AS turnId, created_at AS createdAt
       FROM turn_receipts WHERE ${where.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
       .all(...values, bounded) as unknown as Omit<TurnReceipt, 'hits'>[];
-    const hits = this.store.rawDb.prepare(`SELECT h.entry_id AS id, h.revision, h.title, h.status, h.source, h.file_path AS filePath,
+    const hits = this.store.rawDb.prepare(`SELECT h.entry_id AS id, h.revision, h.title, h.status, h.source, h.file_path AS filePath, h.reasons AS reasonsJson,
       COALESCE(e.status, g.status) AS currentStatus, COALESCE(e.revision, g.revision) AS currentRevision,
       COALESCE(e.serving, g.serving) AS currentServing, v.outcome AS feedback
       FROM turn_hits h
@@ -109,7 +112,8 @@ export class TurnReceipts {
         AND v.entry_id = h.entry_id AND v.revision = h.revision AND v.task_fingerprint = ('session:' || h.session_id)
       WHERE h.workspace_id = ? AND h.session_id = ? AND h.turn_id = ? ORDER BY h.rowid`);
     return turns.map((turn) => ({
-      ...turn, hits: hits.all(this.store.workspaceId, turn.sessionId, turn.turnId) as unknown as ReceiptHit[],
+      ...turn, hits: (hits.all(this.store.workspaceId, turn.sessionId, turn.turnId) as unknown as Array<ReceiptHit & { reasonsJson?: string | null }>)
+        .map(({ reasonsJson, ...h }) => ({ ...h, reasons: reasonsJson ? JSON.parse(reasonsJson) as string[] : [] })),
     }));
   }
 

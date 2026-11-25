@@ -184,6 +184,13 @@ export interface KnowledgeEntry {
   specializes?: string | null;
   /** Topic tags (controlled vocabulary IDs) set by people; derived tags are added at index time. */
   tags?: string[];
+  /**
+   * Domain entries: who in the domain gets it. `core` = only projects that are core members of the domain;
+   * `all` (default) = also projects that only use the domain (consumers).
+   */
+  audience?: 'core' | 'all';
+  /** Sub-project (monorepo package) this entry belongs to; only served when work touches that sub-project. */
+  subproject?: string;
 }
 
 export interface ClaimEvidenceMapping {
@@ -273,7 +280,17 @@ export interface SessionContext {
   userAliases?: string[];
   /** Topic tags of the question (controlled vocabulary IDs). */
   tags?: string[];
+  /**
+   * Business-domain match keys: every domain this repository (or the active sub-project) belongs to, with its
+   * catalog ID, name, aliases and ancestor domains, so entries tagged with any spelling of them match.
+   */
   domains: string[];
+  /** Domain IDs as declared / resolved through the domain catalog (for display). */
+  declaredDomains?: string[];
+  /** Match keys of domains where this repository is only a consumer (it gets `audience: all` knowledge only). */
+  consumerDomains?: string[];
+  /** Sub-projects the current work touches (from the active files); empty = unknown. */
+  subprojects?: string[];
   languages: string[];
   dependencies: Record<string, string>;
   activeFiles?: string[];
@@ -347,5 +364,5 @@ export interface AccreMindConfig {
    * and low-value paused entries nobody decided on are archived (both reversible). `tune`: retrieval settings are
    * tuned on recorded feedback with guardrails, watched, and rolled back if they make things worse.
    */
-  autoEvolve?: { demote?: boolean; tune?: boolean };
+  autoEvolve?: { demote?: boolean; tune?: boolean; teamFeedback?: boolean };
 }

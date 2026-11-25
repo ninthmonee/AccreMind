@@ -119,7 +119,7 @@ describe('Rule document sets', () => {
     const g = path.join(base, 'g-proposal');
     const a = open(makeRepo('proposal'), g);
     try {
-      const { docId } = a.store.docs.importDoc({ content: REFUND_RULES, fileName: 'refund.md', category: 'business_rules' });
+      const { docId } = a.store.docs.importDoc({ content: REFUND_RULES, fileName: 'refund.md', category: 'business_rules', scope: 'project' });
       const file = path.join(a.store.paths.projectAccreMindDir, 'docs', 'business_rules', 'refund.md');
       const before = fs.readFileSync(file, 'utf8');
       const tool = a.tools.find((t) => t.name === 'accremind_propose_doc_change')!;

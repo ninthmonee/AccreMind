@@ -195,6 +195,7 @@ export interface EvalReport {
   best?: { label: string; metrics: EvalMetrics; tuning: RetrievalTuning };
   ranking?: Array<{ label: string; score: number; recall: number; forbiddenShown: number; noise: number }>;
   appliedTo?: string;
+  notApplied?: string;
 }
 
 /**
@@ -215,8 +216,10 @@ export function runEvaluation(store: LocalMarkdownSqliteStore, options: { casesF
   report.best = { label: best.label, metrics: best.metrics, tuning: best.tuning };
   report.ranking = ranking.slice(0, 10).map((r) => ({ label: r.label, score: r.metrics.score, recall: r.metrics.recall,
     forbiddenShown: r.metrics.forbiddenShown, noise: r.metrics.noise }));
-  if (options.apply && best.metrics.score > current.score) {
-    recordManualApply(store, store.tuning, best.tuning, best.label, current, best.metrics);
+  if (options.apply && store.hasProjectTuning()) {
+    report.notApplied = '本项目在 repo.json 中自定义了检索参数：请把更优的参数写进 repo.json 的 settings.tuning，而不是全机参数';
+  } else if (options.apply && best.metrics.score > current.score) {
+    recordManualApply(store, store.globalTuning, best.tuning, best.label, current, best.metrics);
     report.appliedTo = path.join(store.paths.globalRoot, 'tuning.json');
   }
   return report;

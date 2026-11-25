@@ -1,12 +1,35 @@
 import { sha256Hex } from '../codec/atomic-fs.ts';
 import type { SymbolAnchor } from '../contracts/types.ts';
 
+export type CommentStyle = 'c' | 'hash' | 'sql' | 'php' | 'legacy';
+
+const HASH_COMMENT_EXT = new Set(['.py', '.pyi', '.rb', '.sh', '.bash', '.zsh', '.yaml', '.yml', '.toml', '.r', '.pl', '.pm', '.ex', '.exs', '.cr', '.nim', '.tcl', '.ps1', '.cmake', '.mk']);
+const C_COMMENT_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.java', '.kt', '.kts', '.go', '.c', '.h', '.cc', '.cpp', '.hpp', '.cs',
+  '.rs', '.swift', '.scala', '.dart', '.vue', '.svelte', '.groovy', '.gradle', '.proto', '.css', '.scss', '.less', '.m', '.mm', '.zig']);
+
 /**
- * Strips single-line comments, multi-line block comments, and all whitespace while
- * preserving string / template literals so formatting or comment edits NEVER change
- * the normalized logic hash of an anchored symbol.
+ * Which comments a file's language has. Stripping the wrong ones is not harmless: `#` is a private field in
+ * JavaScript and a directive in C, `//` is integer division in Python, so treating them as comments hides real
+ * logic changes. Unknown extensions keep the original (all styles) behaviour.
  */
-export function normalizeCodeForFingerprint(source: string): string {
+export function commentStyleFor(filePath: string | undefined): CommentStyle {
+  const ext = (filePath ? filePath.slice(filePath.lastIndexOf('.')) : '').toLowerCase();
+  if (HASH_COMMENT_EXT.has(ext) || /(^|\/)(Dockerfile|Makefile|Rakefile|Gemfile)$/.test(filePath ?? '')) return 'hash';
+  if (C_COMMENT_EXT.has(ext)) return 'c';
+  if (ext === '.sql') return 'sql';
+  if (ext === '.php') return 'php';
+  return 'legacy';
+}
+
+/**
+ * Strips comments (as the language defines them) and all whitespace, keeping string / template literals, so
+ * formatting or comment edits never change the normalized logic hash of an anchored symbol.
+ */
+export function normalizeCodeForFingerprint(source: string, style: CommentStyle = 'legacy'): string {
+  const slashSlash = style === 'c' || style === 'php' || style === 'legacy';
+  const slashStar = style !== 'hash';
+  const hash = style === 'hash' || style === 'php' || style === 'legacy';
+  const dashDash = style === 'sql';
   let out = '';
   let i = 0;
   const len = source.length;
@@ -15,25 +38,15 @@ export function normalizeCodeForFingerprint(source: string): string {
     const ch = source[i]!;
     const next = source[i + 1];
 
-    // Line comment //
-    if (ch === '/' && next === '/') {
-      i += 2;
+    if ((slashSlash && ch === '/' && next === '/') || (dashDash && ch === '-' && next === '-') || (hash && ch === '#')) {
       while (i < len && source[i] !== '\n') i += 1;
       continue;
     }
 
-    // Block comment /* ... */
-    if (ch === '/' && next === '*') {
+    if (slashStar && ch === '/' && next === '*') {
       i += 2;
       while (i < len && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
       i += 2;
-      continue;
-    }
-
-    // Python hash comment # (outside strings)
-    if (ch === '#') {
-      i += 1;
-      while (i < len && source[i] !== '\n') i += 1;
       continue;
     }
 
@@ -182,6 +195,14 @@ export function extractSymbolAnchor(
   sourceCode: string,
   symbolName: string,
 ): SymbolAnchor | null {
+  return extractSymbolSlice(filePath, sourceCode, symbolName)?.anchor ?? null;
+}
+
+function extractSymbolSlice(
+  filePath: string,
+  sourceCode: string,
+  symbolName: string,
+): { anchor: SymbolAnchor; slice: string } | null {
   const lines = sourceCode.split(/\r?\n/);
   const parts = symbolName.split(/[.#]/);
   const leafName = parts[parts.length - 1]!;
@@ -237,14 +258,17 @@ export function extractSymbolAnchor(
     : findBraceBalancedEndLine(lines, foundStart);
 
   const slice = lines.slice(foundStart, foundEnd + 1).join('\n');
-  const normalized = normalizeCodeForFingerprint(slice);
+  const normalized = normalizeCodeForFingerprint(slice, commentStyleFor(filePath));
 
   return {
-    file_path: filePath,
-    symbol_name: symbolName,
-    normalized_sha256: sha256Hex(normalized),
-    start_line: foundStart + 1,
-    end_line: foundEnd + 1,
+    anchor: {
+      file_path: filePath,
+      symbol_name: symbolName,
+      normalized_sha256: sha256Hex(normalized),
+      start_line: foundStart + 1,
+      end_line: foundEnd + 1,
+    },
+    slice,
   };
 }
 
@@ -263,9 +287,17 @@ export function checkSymbolAnchorDrift(
   previous: SymbolAnchor,
   updatedSourceCode: string,
 ): SymbolDriftCheckResult {
-  const current = extractSymbolAnchor(previous.file_path, updatedSourceCode, previous.symbol_name);
-  if (!current) {
+  const found = extractSymbolSlice(previous.file_path, updatedSourceCode, previous.symbol_name);
+  if (!found) {
     return { status: 'missing', previous };
+  }
+  const current = found.anchor;
+
+  // Anchors stored before comments were stripped per language: an unchanged symbol still matches the old
+  // hash. It is reported as relocated so the caller stores the new hash, never as modified.
+  if (current.normalized_sha256 !== previous.normalized_sha256 &&
+      sha256Hex(normalizeCodeForFingerprint(found.slice, 'legacy')) === previous.normalized_sha256) {
+    return { status: 'relocated', previous, updated: current };
   }
 
   if (current.normalized_sha256 === previous.normalized_sha256) {

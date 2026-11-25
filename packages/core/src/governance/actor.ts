@@ -21,3 +21,15 @@ export function resolveLocalActor(projectRoot: string): string {
     return 'local:unknown';
   }
 }
+
+/** The repository's Git user name (`git config user.name`), or null. */
+export function resolveGitUserName(projectRoot: string): string | null {
+  try {
+    const name = execFileSync('git', ['config', 'user.name'], {
+      cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    }).trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}

@@ -194,7 +194,7 @@ export function SimpleSelect<T extends string>({
         <SelectPrimitive.Content
           position="popper"
           sideOffset={6}
-          className="z-50 max-h-80 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border bg-popover p-1 text-popover-foreground shadow-xl data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
+          className="z-50 max-h-80 min-w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border bg-popover p-1 text-popover-foreground shadow-xl data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
         >
           <SelectPrimitive.Viewport>
             {[{ value: ALL, label: placeholder, hint: undefined as string | undefined }, ...options].map((o) => (

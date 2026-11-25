@@ -18,7 +18,7 @@ import { Segmented, SimpleSelect } from '@/components/ui/overlays';
 import { Input, Skeleton } from '@/components/ui/primitives';
 import { FRESHNESS, LAYERS, STATUS, TYPES } from '@/lib/labels';
 import { rpc } from '@/lib/rpc';
-import type { EntryStatus, Freshness, KbListResult, KnowledgeLayer, KnowledgeType } from '@/lib/types';
+import type { DomainsOverview, EntryStatus, Freshness, KbListResult, KnowledgeLayer, KnowledgeType, SubprojectDef } from '@/lib/types';
 import { useAsync } from '@/lib/use-async';
 import { EntryGrid } from './entry-grid';
 import { EntrySummary } from './entry-summary';
@@ -31,8 +31,11 @@ interface Filters {
   type: KnowledgeType | '';
   status: EntryStatus | '';
   freshness: Freshness | '';
+  /** Catalog domain ID; also matches its other spellings and sub-domains. */
+  domain: string;
+  subproject: string;
 }
-const blank: Filters = { layer: '', query: '', type: '', status: '', freshness: '' };
+const blank: Filters = { layer: '', query: '', type: '', status: '', freshness: '', domain: '', subproject: '' };
 
 function useDebounced<T>(value: T, ms: number): T {
   const [v, setV] = useState(value);
@@ -56,6 +59,10 @@ export function LibraryPage() {
   const [mode, setMode] = useState<ViewMode>('cards');
   const libraryRef = useRef<HTMLElement>(null);
   const query = useDebounced(filters.query, 250);
+  const catalog = useAsync(() => rpc<DomainsOverview>('accremind.domains.list'), [revision]);
+  const profile = useAsync(() => rpc<{ subprojects: SubprojectDef[] }>('accremind.repo.profile'), [revision]);
+  const domainOptions = (catalog.data?.domains ?? []).map((d) => ({ value: d.id, label: d.name, hint: d.myRole ? '本仓库' : undefined }));
+  const subprojectOptions = (profile.data?.subprojects ?? []).map((sp) => ({ value: sp.id, label: sp.name ?? sp.id }));
 
   const list = useAsync(
     () =>
@@ -65,9 +72,11 @@ export function LibraryPage() {
         type: filters.type || undefined,
         status: filters.status || undefined,
         freshness: filters.freshness || undefined,
+        domain: filters.domain || undefined,
+        subproject: filters.subproject || undefined,
         query: query.trim() || undefined,
       }),
-    [filters.layer, filters.type, filters.status, filters.freshness, query, revision],
+    [filters.layer, filters.type, filters.status, filters.freshness, filters.domain, filters.subproject, query, revision],
   );
 
   const c = overview.data?.counts;
@@ -162,6 +171,13 @@ export function LibraryPage() {
               <SimpleSelect ariaLabel="知识类型" placeholder="全部类型" value={filters.type} onValueChange={(v) => patch({ type: v })} options={TYPES.map((t) => ({ value: t.value, label: t.label }))} className="w-[132px]" />
               <SimpleSelect ariaLabel="入库状态" placeholder="全部状态" value={filters.status} onValueChange={(v) => patch({ status: v })} options={(Object.keys(STATUS) as EntryStatus[]).map((k) => ({ value: k, label: STATUS[k].label }))} className="w-[120px]" />
               <SimpleSelect ariaLabel="时效" placeholder="全部时效" value={filters.freshness} onValueChange={(v) => patch({ freshness: v })} options={(Object.keys(FRESHNESS) as Freshness[]).map((k) => ({ value: k, label: FRESHNESS[k].label }))} className="w-[120px]" />
+              {domainOptions.length > 0 && (
+                <SimpleSelect ariaLabel="业务领域" placeholder="全部领域" value={filters.domain} onValueChange={(v) => patch({ domain: v })} options={domainOptions} className="w-[132px]" />
+              )}
+              {subprojectOptions.length > 0 && (
+                <SimpleSelect ariaLabel="子项目" placeholder="全部子项目" value={filters.subproject} onValueChange={(v) => patch({ subproject: v })}
+                  options={[{ value: '__none__', label: '整个仓库（不限子项目）' }, ...subprojectOptions]} className="w-[140px]" />
+              )}
               {active > 0 && (
                 <Button variant="ghost" size="sm" onClick={() => setFilters((f) => ({ ...blank, layer: f.layer }))}>
                   <RotateCcw />清除 {active} 项

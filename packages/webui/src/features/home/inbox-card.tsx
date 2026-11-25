@@ -19,6 +19,9 @@ interface Row {
   hint: string;
   tag: string;
   actions: ReactNode;
+  /** Owners named in repo.json or the domain catalog; empty = nobody in particular. */
+  owners?: string[];
+  mine?: boolean;
 }
 
 /**
@@ -41,6 +44,8 @@ export function InboxCard({
   const { setView, openEntry, refresh } = useApp();
   const [leaving, setLeaving] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
+  const [onlyMine, setOnlyMine] = useState(false);
+  const hasOwners = attention.some((a) => (a.owners?.length ?? 0) > 0);
 
   const decide = async (item: AttentionItem, action: 'promote' | 'dismiss') => {
     setBusy(item.entry_id);
@@ -89,8 +94,11 @@ export function InboxCard({
       icon: a.kind === 'probation_silent' ? FlaskConical : a.kind === 'auto_demoted' ? TrendingDown : BellOff,
       tone: 'warning',
       title: a.title,
-      hint: a.kind === 'auto_demoted' ? a.reason : ATTENTION[a.kind]?.hint ?? a.reason,
+      hint: (a.kind === 'auto_demoted' ? a.reason : ATTENTION[a.kind]?.hint ?? a.reason)
+        + (a.owners?.length ? ` · 负责人：${a.assignedToMe ? '你' : a.owners.join('、')}` : ''),
       tag: ATTENTION[a.kind]?.label ?? a.kind,
+      owners: a.owners ?? [],
+      mine: a.assignedToMe === true,
       actions:
         a.kind === 'probation_silent' ? (
           <div className="flex gap-1.5">
@@ -134,7 +142,8 @@ export function InboxCard({
         ]
       : []),
   ];
-  const count = rows.filter((r) => !leaving.has(r.key)).length;
+  const visible = onlyMine ? rows.filter((r) => r.mine) : rows;
+  const count = visible.filter((r) => !leaving.has(r.key)).length;
 
   return (
     <Card className={className}>
@@ -143,7 +152,12 @@ export function InboxCard({
           <CardTitle>需要你处理</CardTitle>
           <CardDescription>处理完就是空的。AI 总结出新经验或代码变化时会出现在这里。</CardDescription>
         </div>
-        <Badge tone={count ? 'primary' : 'success'} className="num">{count ? `${count} 项` : '已清空'}</Badge>
+        <div className="flex items-center gap-2">
+          {hasOwners && (
+            <Button size="sm" variant={onlyMine ? 'default' : 'outline'} aria-pressed={onlyMine} onClick={() => setOnlyMine((v) => !v)}>只看我的</Button>
+          )}
+          <Badge tone={count ? 'primary' : 'success'} className="num">{count ? `${count} 项` : '已清空'}</Badge>
+        </div>
       </CardHeader>
       <CardContent>
         {loading && !rows.length ? (
@@ -153,12 +167,12 @@ export function InboxCard({
             <span className="inline-flex size-12 animate-[rise_0.5s_ease-out_both] items-center justify-center rounded-full bg-success/12 text-success ring-1 ring-inset ring-success/25">
               <CircleCheckBig className="size-6" />
             </span>
-            <p className="font-medium">都处理完了</p>
+            <p className="font-medium">{onlyMine ? '没有由你负责的事项' : '都处理完了'}</p>
             <p className="max-w-xs text-sm text-muted-foreground">新的候选或需要复核的经验会自动出现在这里。</p>
           </div>
         ) : (
           <ul className="grid grid-cols-[minmax(0,1fr)] gap-2">
-            {rows.slice(0, 7).map((r, i) => (
+            {visible.slice(0, 7).map((r, i) => (
               <li
                 key={r.key}
                 style={stagger(i)}
@@ -172,6 +186,7 @@ export function InboxCard({
                   <div className="flex min-w-0 items-center gap-2">
                     <p className="min-w-0 truncate text-sm font-medium">{r.title}</p>
                     <Badge tone={r.tone} className="hidden shrink-0 sm:inline-flex">{r.tag}</Badge>
+                    {r.mine && <Badge tone="primary" className="shrink-0">我负责</Badge>}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">{r.hint}</p>
                 </div>
