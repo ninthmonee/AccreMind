@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { sha256Hex, writeFileAtomicSync } from '../codec/atomic-fs.ts';
 import { redactSensitiveText } from '../capture/secret-redactor.ts';
 import type { SessionContext } from '../contracts/types.ts';
+import { sharingAllowed } from '../retrieval/applicability.ts';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 import {
   DOC_CATEGORIES,
@@ -132,8 +133,10 @@ export class DocLibrary {
     const own = DOC_CATEGORIES.map((category) => ({ wsId: this.store.workspaceId, dir: path.join(this.docsDir, category), category, foreign: false }));
     const me = path.resolve(this.store.paths.projectRoot);
     const foreign: DocSource[] = [];
+    const ctx = this.store.sessionContext();
     for (const rec of this.store.registry.list()) {
       if (rec.repo_id === this.store.workspaceId || path.resolve(rec.root) === me) continue;
+      if (!sharingAllowed(rec.repo_id, rec.repo_id, ctx, GLOBAL)) continue;
       for (const category of DOC_CATEGORIES.filter(isShareableCategory)) {
         const dir = path.join(rec.root, path.basename(this.store.paths.projectAccreMindDir), 'docs', category);
         if (fs.existsSync(dir)) foreign.push({ wsId: rec.repo_id, dir, category, foreign: true });
@@ -324,8 +327,8 @@ export class DocLibrary {
     }
     const docRows = this.db.prepare(`SELECT workspace_id, title, domains_csv, tags_json, version FROM doc_files`).all() as
       Array<{ workspace_id: string; title: string; domains_csv: string; tags_json: string; version: number }>;
-    const visible = docRows.filter((d) => d.workspace_id === this.store.workspaceId ||
-      ctx.domains.some((dom) => d.domains_csv.includes(`,${dom},`)));
+    const visible = docRows.filter((d) => sharingAllowed(d.workspace_id, d.workspace_id, ctx, GLOBAL) &&
+      (d.workspace_id === this.store.workspaceId || ctx.domains.some((dom) => d.domains_csv.includes(`,${dom},`))));
     const key = JSON.stringify([vocabMtime, ctx.domains, Object.keys(ctx.dependencies).sort(), visible.map((d) => `${d.workspace_id}:${d.version}:${d.tags_json}`)]);
     if (this.vocabCache?.key === key) return this.vocabCache.vocab;
     const tags: VocabularyTag[] = [];
@@ -421,7 +424,9 @@ export class DocLibrary {
     const shortTerms = cjkShortTerms(q);
     const vocab = this.vocabulary();
     const out: DocHit[] = [];
+    const policy = this.store.sessionContext(input.ctx);
     for (const r of rows) {
+      if (!sharingAllowed(r.workspace_id, r.workspace_id, policy, GLOBAL)) continue;
       if (input.categories && !input.categories.includes(r.category)) continue;
       let score = scores.get(Number(r.rid)) ?? 0;
       const headLc = `${r.doc_title} ${r.heading}`.toLowerCase();
@@ -448,7 +453,7 @@ export class DocLibrary {
     const row = this.db.prepare(`SELECT * FROM doc_sections WHERE doc_id = ? AND section_id = ?
       ORDER BY CASE workspace_id WHEN ? THEN 0 ELSE 1 END LIMIT 1`).get(m[1]!, m[2]!, this.store.workspaceId) as
       { workspace_id: string; doc_id: string; doc_title: string; category: DocCategory; heading: string; body: string; doc_version: number } | undefined;
-    if (!row) return null;
+    if (!row || !sharingAllowed(row.workspace_id, row.workspace_id, this.store.sessionContext(), GLOBAL)) return null;
     return { docId: row.doc_id, docTitle: row.doc_title, category: row.category, heading: row.heading, body: row.body,
       version: row.doc_version, originRepo: row.workspace_id === this.store.workspaceId ? null : row.workspace_id };
   }
@@ -480,8 +485,8 @@ export class DocLibrary {
     const rows = this.db.prepare(`SELECT f.*, (SELECT COUNT(*) FROM doc_sections s WHERE s.workspace_id = f.workspace_id AND s.doc_id = f.doc_id) AS n
       FROM doc_files f ORDER BY f.category, f.title`).all() as Array<Record<string, unknown>>;
     const ctx = this.store.sessionContext();
-    return rows.filter((r) => r.workspace_id === this.store.workspaceId ||
-      ctx.domains.some((d) => String(r.domains_csv).includes(`,${d},`))).map((r) => ({
+    return rows.filter((r) => sharingAllowed(String(r.workspace_id), String(r.workspace_id), ctx, GLOBAL) &&
+      (r.workspace_id === this.store.workspaceId || ctx.domains.some((d) => String(r.domains_csv).includes(`,${d},`)))).map((r) => ({
       docId: String(r.doc_id), title: String(r.title), category: r.category as DocCategory,
       domains: String(r.domains_csv).split(',').filter(Boolean), tags: JSON.parse(String(r.tags_json || '[]')) as string[],
       version: Number(r.version), sections: Number(r.n),
@@ -493,7 +498,7 @@ export class DocLibrary {
   getDoc(docId: string): (ParsedDoc & { file: string; originRepo: string | null }) | null {
     const row = this.db.prepare(`SELECT * FROM doc_files WHERE doc_id = ? ORDER BY CASE workspace_id WHEN ? THEN 0 ELSE 1 END LIMIT 1`)
       .get(docId, this.store.workspaceId) as { workspace_id: string; file_path: string; category: DocCategory } | undefined;
-    if (!row || !fs.existsSync(row.file_path)) return null;
+    if (!row || !sharingAllowed(row.workspace_id, row.workspace_id, this.store.sessionContext(), GLOBAL) || !fs.existsSync(row.file_path)) return null;
     const doc = parseDoc(fs.readFileSync(row.file_path, 'utf8'), { id: docId, category: row.category });
     return { ...doc, file: row.file_path, originRepo: row.workspace_id === this.store.workspaceId ? null : row.workspace_id };
   }

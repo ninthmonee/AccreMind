@@ -276,6 +276,10 @@ export interface SessionContext {
   domains: string[];
   languages: string[];
   dependencies: Record<string, string>;
+  /** false = 本仓库在 .accremind/repo.json 里关掉了共享：不提供自己的经验，也不读别的仓库的。 */
+  share?: boolean;
+  /** 关掉了共享的仓库 ID：它们的条目只留在自己仓库里，不会出现在这里。 */
+  mutedRepos?: string[];
   activeFiles?: string[];
   errorText?: string;
 }

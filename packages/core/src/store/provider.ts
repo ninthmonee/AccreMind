@@ -44,6 +44,8 @@ export interface KnowledgeStoreProvider {
   /** Records that an entry went live (ledger) and snapshots its evidence. Optional for other providers. */
   recordPublication?(entry: KnowledgeEntry, note?: string): void;
   readonly workspaceId: string;
+  /** Optional repository policy; absent means capture and sharing remain enabled. */
+  repoSettings?(): { capture: boolean; share: boolean };
   initializeAndReconcile(): { syncedCount: number; corruptedCount: number };
   rebuildIndexFromScratch(): { syncedCount: number; corruptedCount: number };
   upsertEntry(

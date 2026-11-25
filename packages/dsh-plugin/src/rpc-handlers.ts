@@ -444,6 +444,15 @@ export function createWebuiRpcHandlers(deps: {
       const extractWithLlm = Boolean(params.extractWithLlm);
       const llm = getLlmAdapter();
 
+      // 被排除沉淀的项目：不扫描、不提炼，直接说明原因（避免误以为环境坏了）。
+      if (!store.repoSettings().capture) {
+        return {
+          minedCommits: [], modelAvailable: Boolean(llm),
+          message: '本项目已在 .accremind/repo.json 里排除沉淀（capture: false），雷达不会扫描。改回 true 或删掉该字段即可恢复。',
+          triageReport: null as null | { dispositionCounts: Record<Disposition, number> },
+        };
+      }
+
       if (extractWithLlm && llm) {
         const result = await runArchaeologyBootstrap({
           store,
@@ -527,8 +536,18 @@ export function createWebuiRpcHandlers(deps: {
         repoId: store.workspaceId, idSource: store.identity.source, name: store.identity.name, remote: store.identity.remote,
         org: store.identity.org, domains: store.identity.domains, languages: ctx.languages,
         dependencies: Object.keys(ctx.dependencies).length, profileFile: store.paths.repoProfileFile,
+        ...store.repoSettings(),
         knownRepositories: store.registry.list().map((r) => ({ repoId: r.repo_id, name: r.name, domains: r.domains, lastSeen: r.last_seen })),
       };
+    },
+    // 项目级排除：capture=false 不沉淀，share=false 与其它仓库互不共享。开关写进 .accremind/repo.json，随仓库一起提交。
+    'accremind.repo.setSettings': (params) => {
+      const patch: { capture?: boolean; share?: boolean } = {};
+      if (typeof params.capture === 'boolean') patch.capture = params.capture;
+      if (typeof params.share === 'boolean') patch.share = params.share;
+      if (!Object.keys(patch).length) throw new Error('请提供 capture 或 share 的布尔值');
+      const settings = store.setRepoSettings(patch);
+      return { repoId: store.workspaceId, ...settings, profileFile: store.paths.repoProfileFile };
     },
     'accremind.repo.setDomains': (params) => {
       const domains = Array.isArray(params.domains) ? params.domains.map(String).map((d) => d.trim()).filter(Boolean) : null;

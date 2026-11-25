@@ -80,6 +80,10 @@ export interface RepoProfileFile {
   repo_id?: string;
   domains?: string[];
   org?: string;
+  /** false = 本项目不沉淀经验：Git 雷达、手工捕获与自动捕获都不写入。默认 true。 */
+  capture?: boolean;
+  /** false = 本项目与其它仓库互不共享经验：既不提供自己的条目，也不读取别人的。默认 true。 */
+  share?: boolean;
 }
 
 /** `git@github.com:Acme/Pay.git`, `https://user@github.com/acme/pay` → `github.com/acme/pay`. */

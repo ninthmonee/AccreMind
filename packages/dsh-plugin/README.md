@@ -15,13 +15,23 @@ AccreMind stores only that **knowledge delta**, as Markdown you can review in a 
 
 ## Install
 
+Requires **DSH ≥ 0.2.2-rc.5** (declared as `engines.dsh`; the host refuses to load the bundle below that range) and **Node.js ≥ 24** (`node:sqlite` with FTS5 trigram).
+
+In the desktop app, add the index to whichever marketplace the host ships:
+
+- **Official plugin market** (`@deepseek-ai/dsh-experimental-plugin-market-bundle`): **Manage index sources… → Add index source**, paste `https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json`, then install **AccreMind** from **Discover**.
+- **dshmarket** (third-party): it reads *catalogs*. Give it a file with one entry — `{"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}` — as an `http(s)://` URL, a `file://` URL or an absolute path.
+
+The bundle hot-loads: the panel appears in the sidebar without a restart (reload the window if your host does not hot-load bundles). The store is created on first use under `~/.dsh/accremind/` and `<repo>/.accremind/`.
+
+The same build is on npm, for a profile the desktop app does not own (`dsh plugin` forwards its arguments to pnpm inside the profile directory, so `add`, `remove` and `why` all work):
+
 ```bash
-dsh plugin install @accremind/dsh-plugin
+dsh plugin --profile <profile> add @accremind/dsh-plugin
+dsh plugin --profile <profile> remove @accremind/dsh-plugin   # uninstall
 ```
 
-Or from the marketplace: add `https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json` under **Plugins → Experimental plugins → Custom plugin indexes**, then install **AccreMind** from Discover.
-
-Requires **DSH ≥ 0.2.2-rc.5** (declared as `engines.dsh`; the host refuses to load the bundle below that range) and **Node.js ≥ 24** (`node:sqlite` with FTS5 trigram).
+The `desktop` profile is managed by the Electron application and rejects CLI writes — install there through the interface.
 
 ## What you get
 

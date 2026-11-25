@@ -51,6 +51,9 @@ export class TriageEngine {
   }
 
   processCandidate(input: TriageCandidateInput): SingleTriageOutcome {
+    if (this.store.repoSettings?.().capture === false) {
+      throw new Error('本项目已排除沉淀（capture: false），没有写入评估或候选。');
+    }
     // 1. Idempotency check by source_fingerprint (PRD §3.4 / §6.6)
     const existing = this.store.findAssessmentByFingerprint(input.assessment.source_fingerprint);
     if (existing) {

@@ -431,7 +431,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       if (editedRelPath) sig.files = [...sig.files.filter((f) => f !== editedRelPath), editedRelPath].slice(-10);
       if (cmdFailed && outputJoined.trim()) sig.lastError = outputJoined.trim().slice(-600);
 
-      if (config.autoCapture.enabled) {
+      if (config.autoCapture.enabled && store.repoSettings().capture) {
         autoCapture.recordToolActivity({
           sessionId: payload.sessionId,
           toolName: payload.toolName,
@@ -455,7 +455,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
 
     async handleTurnCompleted(payload) {
       receipts.finish(payload.sessionId);
-      if (!config.autoCapture.enabled) return;
+      if (!config.autoCapture.enabled || !store.repoSettings().capture) return;
       autoCapture.recordTurnConversation(
         payload.sessionId,
         payload.userPrompt,

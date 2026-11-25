@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   directoryForZone,
   ensureStoreDirectoriesSync,
+  readRepoProfile,
   resolveRepoIdentity,
   resolveStorePaths,
   sha256Hex,
@@ -51,7 +52,7 @@ import { deriveStanding, ValidationLedger, type LedgerDecision, type LedgerStand
 import { resolveLocalActor } from '../governance/actor.ts';
 import { HostIdentityProvider, LocalIdentityProvider, type IdentityProvider, type UserIdentity } from '../identity/user-identity.ts';
 import { DocLibrary } from '../docs/doc-library.ts';
-import { RepoRegistry, readRepoDependencies, registryRecordFor, type RegistryRecord } from '../registry/repo-registry.ts';
+import { RepoRegistry, readRepoDependencies, registryRecordFor, writeRepoProfile, type RegistryRecord } from '../registry/repo-registry.ts';
 import { CrossRepoFeedback, REPO_SUPPRESS_SESSIONS } from '../retrieval/cross-repo-feedback.ts';
 import {
   applyQuotas,
@@ -60,6 +61,7 @@ import {
   DUPLICATE_SIMILARITY,
   extractIdentifiers,
   judgeApplicability,
+  sharingAllowed,
   relevanceOf,
   signalCount,
   textStrength,
@@ -640,6 +642,27 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   }
 
   /** Updates this repository's languages (detected in the background) in the registry and the default context. */
+  /**
+   * Repository-level switches committed in `.accremind/repo.json`:
+   * - `capture: false` → 本项目不沉淀经验（Git 雷达、手工/自动捕获都不写入）；
+   * - `share: false` → 与其它仓库完全隔离（不提供自己的条目，也不读取别人的）。
+   * 未写等于开启。
+   */
+  repoSettings(): { capture: boolean; share: boolean } {
+    const profile = readRepoProfile(this.paths.projectRoot, this.projectDirName);
+    return { capture: profile?.capture !== false, share: profile?.share !== false };
+  }
+
+  /** 写入仓库开关并立即重新解析可共享的其它仓库（true = 开启/未排除）。 */
+  setRepoSettings(update: { capture?: boolean; share?: boolean }): { capture: boolean; share: boolean } {
+    const patch: { capture?: boolean; share?: boolean } = {};
+    if (typeof update.capture === 'boolean') patch.capture = update.capture;
+    if (typeof update.share === 'boolean') patch.share = update.share;
+    writeRepoProfile(this.paths.projectRoot, this.projectDirName, patch);
+    this.discoverForeignSources();
+    return this.repoSettings();
+  }
+
   updateRepoProfile(update: { languages?: string[]; domains?: string[] }): void {
     if (update.domains) this.identity = { ...this.identity, domains: [...new Set(update.domains)] };
     const prev = this.registry.get(this.workspaceId);
@@ -654,7 +677,6 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     const host = this.contextProvider?.() ?? {};
     const rec = this.registry.get(this.workspaceId);
     return {
-      repoId: this.workspaceId,
       orgId: this.identity.org,
       userId: this.currentUser().userId,
       userAliases: this.currentUser().aliases,
@@ -663,7 +685,24 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       dependencies: this.repoDependencies,
       ...host,
       ...override,
+      repoId: this.workspaceId,
+      // Relevance hints from a host are not allowed to loosen repository policy.
+      share: this.repoSettings().share && host.share !== false && override.share !== false,
+      mutedRepos: [...new Set([...this.mutedRepos(), ...(host.mutedRepos ?? []), ...(override.mutedRepos ?? [])])],
     };
+  }
+
+  /**
+   * Repositories that turned sharing off in their own .accremind/repo.json. The switch lives with the
+   * repository (and travels with its commits), so every clone agrees on it without a central list.
+   */
+  mutedRepos(): string[] {
+    const out: string[] = [];
+    for (const rec of this.registry.list()) {
+      if (rec.repo_id === this.workspaceId || rec.repo_id === GLOBAL_WORKSPACE_ID) continue;
+      if (readRepoProfile(rec.root, this.projectDirName)?.share === false) out.push(rec.repo_id);
+    }
+    return out;
   }
 
   /** Index sources whose rows this repository may write (its own and the machine-wide folders). */
@@ -1544,8 +1583,14 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     const me = path.resolve(this.paths.projectRoot);
     const seen = new Set<string>();
     const out: Array<{ repoId: string; dir: string }> = [];
+    // 本项目设为「不共享经验」时也停止读取别人的经验：两个方向都隔离。
+    if (!this.repoSettings().share) {
+      this.foreignSources = out;
+      return;
+    }
     for (const rec of this.registry.list()) {
       if (rec.repo_id === this.workspaceId || rec.repo_id === GLOBAL_WORKSPACE_ID || path.resolve(rec.root) === me) continue;
+      if (readRepoProfile(rec.root, this.projectDirName)?.share === false) continue;
       if (seen.has(rec.repo_id)) continue;
       const dir = path.join(rec.root, this.projectDirName, 'entries');
       if (!fs.existsSync(dir)) continue;
@@ -2113,6 +2158,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     if (!row) return { found: false };
 
     const entry = rowToEntry(row);
+    if (!sharingAllowed(row.workspace_id, entry.origin_repo, this.sessionContext(), GLOBAL_WORKSPACE_ID)) return { found: false };
 
     if (!options.includeHistoryOrSuspended) {
       if (entry.status === 'withdrawn') {
@@ -2175,7 +2221,9 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
 
   findSimilarEntries(entry: KnowledgeEntry): Array<{ id: string; layer: KnowledgeEntry['layer']; originRepo: string | null; similarity: number }> {
     const out: Array<{ id: string; layer: KnowledgeEntry['layer']; originRepo: string | null; similarity: number }> = [];
+    const ctx = this.sessionContext();
     for (const item of this.servingSnapshot().items) {
+      if (!sharingAllowed(item.workspaceId, item.entry.origin_repo, ctx, GLOBAL_WORKSPACE_ID)) continue;
       if (item.entry.id === entry.id || item.entry.status === 'withdrawn' || item.entry.status === 'archived') continue;
       const similarity = claimSimilarity(item.entry, entry);
       if (similarity >= DUPLICATE_SIMILARITY) {
@@ -2928,8 +2976,10 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       probationExposures: number;
     }> = [];
 
+    const ctx = this.sessionContext();
     for (const row of rows) {
       const entry = rowToEntry(row);
+      if (!sharingAllowed(row.workspace_id, entry.origin_repo, ctx, GLOBAL_WORKSPACE_ID)) continue;
       if (filter.status && entry.status !== filter.status) continue;
       if (filter.freshness && entry.freshness !== filter.freshness) continue;
       if (filter.serving && entry.serving !== filter.serving) continue;

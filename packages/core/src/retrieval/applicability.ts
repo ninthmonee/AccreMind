@@ -76,6 +76,17 @@ export interface ApplicabilityInput {
   zone: StorageZone;
 }
 
+/** Repository policy applies to every read path, including entries held in the shared global index. */
+export function sharingAllowed(sourceId: string, originRepo: string | null | undefined, ctx: SessionContext, globalSourceId: string): boolean {
+  const origin = originRepo ?? (sourceId === globalSourceId ? null : sourceId);
+  if (sourceId === ctx.repoId) return true;
+  if (sourceId !== globalSourceId && ctx.mutedRepos?.includes(sourceId)) return false;
+  if (origin === ctx.repoId) return true;
+  if (ctx.mutedRepos?.includes(sourceId) || (origin && ctx.mutedRepos?.includes(origin))) return false;
+  // A genuinely machine-wide entry with no repository origin is not borrowed from another repository.
+  return ctx.share !== false || (sourceId === globalSourceId && origin === null);
+}
+
 export type ApplicabilityOutcome =
   | { ok: true; verdict: ScopeVerdict; originRepo: string | null; reasons: string[] }
   | { ok: false; reason: string };
@@ -98,6 +109,7 @@ export function judgeApplicability(
   const applies = entry.applies_to ?? {};
 
   if (applies.exclude_repos?.includes(here)) return { ok: false, reason: 'excluded_repo' };
+  if (!sharingAllowed(sourceId, originRepo, ctx, globalSourceId)) return { ok: false, reason: 'sharing_disabled' };
   // A trial is only ever served in the repository that produced it.
   if (entry.status === 'probation' && !fromHere && (entry.origin_repo ?? sourceId) !== here) {
     return { ok: false, reason: 'foreign_trial' };

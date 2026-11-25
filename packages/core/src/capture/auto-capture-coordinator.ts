@@ -91,6 +91,10 @@ export class AutoCaptureCoordinator {
     userText?: string,
     assistantText?: string,
   ): void {
+    if (!this.store.repoSettings().capture) {
+      this.sessions.delete(sessionId);
+      return;
+    }
     const s = this.getSession(sessionId);
     if (userText?.trim()) s.userMessages.push(userText.trim());
     if (assistantText?.trim()) s.assistantMessages.push(assistantText.trim());
@@ -103,6 +107,10 @@ export class AutoCaptureCoordinator {
     isCommandOrTest?: boolean;
     failed?: boolean;
   }): void {
+    if (!this.store.repoSettings().capture) {
+      this.sessions.delete(sessionIdFrom(options.sessionId));
+      return;
+    }
     const s = this.getSession(sessionIdFrom(options.sessionId));
     s.totalToolCalls += 1;
 
@@ -148,6 +156,10 @@ export class AutoCaptureCoordinator {
     };
 
     const signalResult = evaluateSessionSignals(snapshot);
+    if (!this.store.repoSettings().capture) {
+      this.sessions.delete(sessionId);
+      return { signalResult: { ...signalResult, shouldCapture: false }, enqueuedJob: null };
+    }
     if (!signalResult.shouldCapture || s.capturedInSession) {
       return { signalResult, enqueuedJob: null };
     }
@@ -177,6 +189,9 @@ export class AutoCaptureCoordinator {
     touchedFiles: string[];
     rawCandidateContext: string;
   }): QueuedCaptureJob {
+    if (!this.store.repoSettings().capture) {
+      throw new Error('本项目已排除沉淀（capture: false），没有创建捕获队列任务。');
+    }
     const job: QueuedCaptureJob = {
       jobId: `JOB-${Date.now()}-${randomUUID().slice(0, 6)}`,
       sessionId: input.sessionId,
@@ -245,7 +260,7 @@ export class AutoCaptureCoordinator {
    * Transient LLM failures apply exponential backoff + jitter up to 5 attempts (PRD §9.4).
    */
   async processPendingQueue(nowMs = Date.now()): Promise<SingleTriageOutcome[]> {
-    if (this.draining || !this.llm) return [];
+    if (this.draining || !this.llm || !this.store.repoSettings().capture) return [];
     this.draining = true;
     const outcomes: SingleTriageOutcome[] = [];
 
@@ -258,6 +273,7 @@ export class AutoCaptureCoordinator {
 
       const jobs = this.listQueuedJobs();
       for (const job of jobs) {
+        if (!this.store.repoSettings().capture) break;
         if (job.attempts >= MAX_AUTO_RETRIES) continue;
         if (job.nextRetryAtMs > nowMs) continue;
 
@@ -272,6 +288,8 @@ export class AutoCaptureCoordinator {
           });
 
           const triagedInput = await assessor.assess(bundle, this.assessmentMode);
+          // A switch changed while inference was running pauses the original job without consuming it.
+          if (!this.store.repoSettings().capture) break;
           const outcome = this.triageEngine.processCandidate(triagedInput);
           outcomes.push(outcome);
 
@@ -279,6 +297,7 @@ export class AutoCaptureCoordinator {
             fs.unlinkSync(jobFile);
           }
         } catch (err) {
+          if (!this.store.repoSettings().capture) break;
           const nextAttempts = job.attempts + 1;
           const jitter = Math.floor(Math.random() * 300);
           const backoff = Math.min(60_000, 1000 * 2 ** job.attempts) + jitter;
@@ -320,6 +339,9 @@ export async function runArchaeologyBootstrap(options: {
   minedCommits: ArchaeologyCommitCandidate[];
   triageReport: BatchTriageReport;
 }> {
+  if (!options.store.repoSettings().capture) {
+    throw new Error('本项目已排除沉淀（capture: false），Git 雷达与提炼已暂停。');
+  }
   const scanned = scanGitHistorySignals({
     repoRoot: options.store.paths.projectRoot,
     maxCommitsToScan: options.maxCommitsToScan ?? 200,
@@ -339,6 +361,9 @@ export async function runArchaeologyBootstrap(options: {
 
   const candidateInputs = [];
   for (const commit of minedCommits) {
+    if (!options.store.repoSettings().capture) {
+      throw new Error('本项目已排除沉淀（capture: false），历史提炼已暂停。');
+    }
     const rawContext = [
       `Commit: ${commit.commitSha} (${commit.committedAtIso})`,
       `Subject: ${commit.subject}`,

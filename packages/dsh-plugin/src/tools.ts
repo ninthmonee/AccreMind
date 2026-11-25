@@ -265,6 +265,9 @@ export function createAccreMindTools(deps: {
       required: ['question', 'discoverability', 'disposition', 'baseline_answer', 'knowledge_delta'],
     },
     execute(args) {
+      if (!store.repoSettings().capture) {
+        return errText('本项目已在 .accremind/repo.json 里排除沉淀（capture: false），没有写入任何经验。改回 true 或删掉该字段即可恢复。');
+      }
       if (args.layer !== undefined && !isCapturableLayer(args.layer)) {
         return errText('请选择 project、domain、shared_tech 或 personal；团队规范请用 propose_team_rule 提交提案');
       }

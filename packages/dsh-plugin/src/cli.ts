@@ -101,6 +101,12 @@ async function main(): Promise<void> {
             ? 'isolated_p0'
             : 'single_pass';
 
+        if (!runtime.store.repoSettings().capture) {
+          console.log(JSON.stringify({ mode: 'repository_excluded', repoRoot, scannedCandidatesCount: 0, candidates: [],
+            message: '本项目已排除沉淀（capture: false），Git 雷达与提炼已暂停。' }, null, 2));
+          break;
+        }
+
         if (!shouldExtract) {
           const candidates = scanGitHistorySignals({ repoRoot, topK });
           console.log(

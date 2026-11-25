@@ -128,13 +128,32 @@ window.__ModuleLoader__.load({
       return snapshot ?? { ids: [], byId: {} };
     }
 
+    // The mark must match packages/dsh-plugin/icon.svg exactly: same rounded surface, same gradients,
+    // same three layered strokes. The host renders the panel entry in both themes, so the icon carries
+    // its own dark surface instead of borrowing currentColor.
+    const ICON_PATHS = [
+      'M234 132Q256 94 278 132L342 244H284L256 195L228 244H170Z',
+      'M159 268H353L378 310Q382 316 374 316H138Q130 316 134 310Z',
+      'M116 340H174L146 389Q142 396 134 396H104Q90 396 96 385ZM396 340H338L366 389Q370 396 378 396H408Q422 396 416 385Z',
+    ];
+    let iconSerial = 0;
+
     // The sidebar renders panellist entries through renderSlot, so size/active arrive as props.
     function PanelIcon({ size = 18, active = false }) {
-      return h('svg', { viewBox: '64 64 384 384', width: size, height: size, fill: 'currentColor',
-          opacity: active ? 1 : 0.9, 'aria-hidden': true },
-        h('path', { d: 'M234 132Q256 94 278 132L342 244H284L256 195L228 244H170Z' }),
-        h('path', { d: 'M159 268H353L378 310Q382 316 374 316H138Q130 316 134 310Z' }),
-        h('path', { d: 'M116 340H174L146 389Q142 396 134 396H104Q90 396 96 385ZM396 340H338L366 389Q370 396 378 396H408Q422 396 416 385Z' }));
+      const uid = 'accremind-mark-' + (++iconSerial);
+      return h('svg', { viewBox: '0 0 512 512', width: size, height: size,
+          opacity: active ? 1 : 0.94, 'aria-hidden': true },
+        h('defs', null,
+          h('linearGradient', { id: uid + '-surface', gradientUnits: 'userSpaceOnUse', x1: 56, y1: 24, x2: 456, y2: 512 },
+            h('stop', { stopColor: '#174849' }),
+            h('stop', { offset: 1, stopColor: '#081C25' })),
+          h('linearGradient', { id: uid + '-knowledge', gradientUnits: 'userSpaceOnUse', x1: 256, y1: 112, x2: 256, y2: 396 },
+            h('stop', { stopColor: '#F0FFF8' }),
+            h('stop', { offset: 0.55, stopColor: '#B4F6E7' }),
+            h('stop', { offset: 1, stopColor: '#70E6E3' }))),
+        h('rect', { width: 512, height: 512, rx: 116, fill: 'url(#' + uid + '-surface)' }),
+        h('g', { fill: 'url(#' + uid + '-knowledge)' },
+          ICON_PATHS.map(d => h('path', { key: d, d }))));
     }
 
     // The knowledge base is scoped to the repository, never to one conversation, so the panel does
