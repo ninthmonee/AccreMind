@@ -33,11 +33,18 @@ node packages/dsh-plugin/scripts/market-index.mjs --check
 
 `packages/dsh-plugin` 依赖 `@accremind/core`。本地用 `workspace:*`，`pnpm publish` 会把它替换成真实版本号，所以**先发 core**，否则装插件时会找不到依赖。
 
+一条命令跑完全流程（自检 → 发 core → 发插件 → 回读版本 → 刷新索引 → 校验索引）：
+
 ```bash
-npm login                       # 需要能写 @accremind scope
-cd packages/core && pnpm publish --access public --no-git-checks
-cd ../dsh-plugin && pnpm publish --access public --no-git-checks
+npm login                                  # 一次性，需要能写 @accremind scope
+./scripts/release-npm.sh                   # 或者 NPM_TOKEN=npm_xxx ./scripts/release-npm.sh
 ```
+
+脚本存在的三个理由，都是踩过的坑：
+
+- **必须用 `pnpm publish`，不能用 `npm publish`**：实测同一个包 `npm pack` 出来的 tarball 里 `@accremind/core` 依赖不会被改写，`pnpm pack` 出来的才是 `0.1.0`。
+- **强制 `--registry https://registry.npmjs.org/`**：本机 `~/.npmrc` 常指向镜像（npmmirror），不显式指定会把发布打到镜像上。
+- **npm 缓存重定向到临时目录**：受限 shell 里 `~/.npm` 不可写，`npm whoami` 会直接 EPERM。
 
 首次发布前要先在 npm 建好 `@accremind` 组织（scope 必须存在，`--access public` 才生效）。版本号改动走 `pnpm version`，两个包保持同步。
 
