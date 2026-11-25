@@ -685,3 +685,78 @@ describe('V11: performance with 30 repositories and 10,000 entries', () => {
     console.log(`[perf] first index ${firstMs.toFixed(0)}ms, second repo open ${secondOpen.toFixed(0)}ms, reopen ${reopen.toFixed(0)}ms, search p95 ${p95(samples).toFixed(1)}ms, file p95 ${p95(guard).toFixed(1)}ms`);
   });
 });
+describe('Repository exclusion: the capture and share switches', () => {
+  const captureArgs = {
+    question: '为什么结算服务读到的时钟和网关差 8 小时？',
+    discoverability: 'missing_context', disposition: 'knowledge_candidate',
+    baseline_answer: '代码里只看到 new Date()。',
+    knowledge_delta: '容器默认 TZ=UTC，网关按东八区解释，结算落库前必须显式转成 UTC。',
+    title: '结算落库前显式转 UTC', claim: '写入结算时间前统一转成 UTC，不要依赖容器时区。',
+    layer: 'project', preconditions: ['容器未设置 TZ'], invalidation_triggers: ['容器统一设置 TZ=Asia/Shanghai'],
+    verification_method: '对比两个时区的写入结果', file_locator: 'src/settle.ts#L1', evidence_summary: '排障记录',
+  };
+
+  it('E1: capture=false stops the radar and the capture tool, and keeps the library untouched', async () => {
+    const g = path.join(base, 'g-e1');
+    const rt = open(makeRepo('settle-e1'), g);
+    try {
+      assert.deepEqual(rt.store.repoSettings(), { capture: true, share: true }, '未写开关等于开启');
+      const saved = await rt.rpcHandlers['accremind.repo.setSettings']!({ capture: false });
+      assert.equal((saved as { capture: boolean }).capture, false);
+      assert.equal(JSON.parse(fs.readFileSync(rt.store.paths.repoProfileFile, 'utf8')).capture, false);
+
+      const radar = await rt.rpcHandlers['accremind.gov.bootstrapHistory']!({ maxCommits: 50, topK: 5 }) as { minedCommits: unknown[]; message?: string };
+      assert.deepEqual(radar.minedCommits, [], '被排除的项目不扫描提交历史');
+      assert.match(String(radar.message), /排除沉淀/);
+
+      const capture = rt.tools.find((t) => t.name === 'accremind_capture')!;
+      const blocked = await capture.execute(captureArgs, { sessionId: 'excl-1' });
+      assert.equal(blocked.isError, true);
+      assert.match(blocked.content[0]!.text, /排除沉淀/);
+      const written = fs.existsSync(rt.store.paths.projectEntriesDir)
+        ? fs.readdirSync(rt.store.paths.projectEntriesDir).filter((f) => f.endsWith('.md'))
+        : [];
+      assert.deepEqual(written, [], '排除期间一条经验也不落盘');
+
+      await rt.rpcHandlers['accremind.repo.setSettings']!({ capture: true });
+      assert.deepEqual(rt.store.repoSettings(), { capture: true, share: true });
+      const allowed = await capture.execute(captureArgs, { sessionId: 'excl-2' });
+      assert.notEqual(allowed.isError, true, '改回 true 之后捕获恢复正常');
+    } finally {
+      rt.dispose();
+    }
+  });
+
+  it('E2: share=false closes the cross-repository channel in both directions', async () => {
+    const g = path.join(base, 'g-e2');
+    const a = open(makeRepo('pay-api-e2'), g);
+    const b = open(makeRepo('pay-admin-e2'), g);
+    try {
+      await a.rpcHandlers['accremind.repo.setDomains']!({ domains: ['payment'] });
+      await b.rpcHandlers['accremind.repo.setDomains']!({ domains: ['payment'] });
+      const shared = put(a, card('K-DOMAINEXCL0001', {
+        layer: 'domain', domains: ['payment'], title: '退款必须晚于清算日结', claim: '清算日结完成之前不能发起退款。',
+        search_aliases: ['退款时机', '清算'],
+      }), 'project');
+      b.store.rebuildIndexFromScratch();
+      assert.equal(hits(b, '什么时候可以发起退款 清算').find((h) => h.entry.id === shared.id)?.scopeVerdict, 'domain_match');
+
+      await a.rpcHandlers['accremind.repo.setSettings']!({ share: false });
+      assert.deepEqual(a.store.repoSettings(), { capture: true, share: false });
+      b.store.rebuildIndexFromScratch();
+      const leaked = hits(b, '什么时候可以发起退款 清算').find((h) => h.entry.id === shared.id);
+      assert.equal(leaked, undefined, '关掉共享后，别的仓库不再检索到它的经验，连参考结果也不返回');
+
+      const mine = put(b, card('K-DOMAINEXCL0002', {
+        layer: 'domain', domains: ['payment'], title: '对账日切前不要回补流水', claim: '日切回补流水会落到下一账期。',
+        search_aliases: ['对账', '回补'],
+      }), 'project');
+      a.store.rebuildIndexFromScratch();
+      assert.equal(hits(a, '对账日切 回补流水').find((h) => h.entry.id === mine.id), undefined, '不共享的仓库也不读取别人的经验');
+    } finally {
+      a.dispose();
+      b.dispose();
+    }
+  });
+});
+
