@@ -34,6 +34,7 @@ AccreMind 是面向 AI 辅助研发的本地优先知识库。它把散落在各
 - [宿主接入](#宿主接入)
 - [独立工作台](#独立工作台)
 - [数据放在哪](#数据放在哪)
+- [排除某个仓库](#排除某个仓库)
 - [命令行](#命令行)
 - [模型配置（可选）](#模型配置可选)
 - [设计原则](#设计原则)
@@ -162,19 +163,52 @@ pnpm install:dsh -- --profile web     # 或指定其它 profile
 
 ### 从插件市场安装
 
-包名是 `@accremind/dsh-plugin`；在 DSH 的「自定义插件索引」里填这个地址：
+包名是 `@accremind/dsh-plugin`。你能看到什么，取决于宿主装的是哪个市场：
+
+- **官方插件市场**（`@deepseek-ai/dsh-experimental-plugin-market-bundle`）：打开 **管理索引源… → 添加索引源**，填入下面的索引地址，再到 **发现** 里安装 **AccreMind**。
+- **dshmarket**（第三方市场）：它读的是*插件目录*，不是索引。给它一个只含一条记录的目录文件：
+
+  ```json
+  {"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}
+  ```
+
+  dshmarket 接受 `http(s)://` 地址、`file://` 地址或本机绝对路径。
+- **没有市场**：走下面的命令行（`desktop` 之外的 profile），或把包装进 profile。
+
+官方市场用的索引地址：
 
 ```
 https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 ```
 
-路径是 **插件 → 实验性插件 → 自定义插件索引**，然后在 Discover 里安装 **AccreMind**。发布细节见 [docs/market-publishing.md](docs/market-publishing.md)。
+发布细节见 [docs/market-publishing.md](docs/market-publishing.md)。
 
 ## 宿主接入
 
 ### DeepSeek Harness（DSH）
 
-参考实现。安装后侧边栏会出现 `AccreMind` 面板，条目会在对话需要时自动注入，每个回合尾部追加一份回执。模型可以使用六个工具：
+参考实现。要求 **DSH ≥ 0.2.2-rc.5**（声明在 `engines.dsh`，低于该范围宿主会拒绝加载 bundle）与 **Node.js ≥ 24**。
+
+#### 在桌面应用里安装
+
+1. 按 [从插件市场安装](#从插件市场安装) 里对应你那个市场的方式，把索引（官方市场）或目录（dshmarket）指过来。
+2. 在市场列表里找到 `AccreMind` 并安装。
+3. bundle 激活是热加载的：侧边栏马上出现 **AccreMind** 入口，下面六个工具对模型可用。宿主不热加载时再重载窗口。
+
+不需要其它步骤：首次使用时自动在 `~/.dsh/accremind/` 与 `<仓库>/.accremind/` 建库。
+
+#### 装进其它 profile
+
+同一个包也发布在 npm 上。`dsh plugin` 会把参数原样转发给 profile 目录里的 pnpm，所以 `add`、`remove`、`why` 都能用：
+
+```bash
+dsh plugin --profile <profile> add @accremind/dsh-plugin
+dsh plugin --profile <profile> remove @accremind/dsh-plugin   # 卸载
+```
+
+`desktop` profile 由桌面应用独占管理，CLI 写入会被拒绝——桌面应用里请用界面安装。从未启动过的 profile 还不存在，需要先用它启动一次 DSH。
+
+安装后侧边栏会出现 `AccreMind` 面板，条目会在对话需要时自动注入，每个回合尾部追加一份回执。模型可以使用六个工具：
 
 | 工具 | 用途 |
 | --- | --- |
@@ -219,6 +253,25 @@ pnpm ui -- --port 3180
 | `~/.dsh/accremind/index/` | 可重建的 SQLite 索引 |
 | `~/.dsh/accremind/{personal,domain,shared-tech}/` | 跨仓库知识层 |
 | `~/.dsh/accremind/{registry,users,workspaces}/` | 仓库注册表、用户身份、按仓库的检索日志 |
+
+## 排除某个仓库
+
+有些仓库不该往知识库里沉淀任何东西，有些仓库不该和其它仓库交换经验。两个开关都写在仓库自己的
+`.accremind/repo.json` 里，跟着提交走，所以每个克隆、每台机器看到的都是同一份决定。
+
+| 字段 | 默认 | 设为 `false` 的效果 |
+| --- | --- | --- |
+| `capture` | `true` | Git 雷达跳过这个仓库，手工捕获与自动捕获都不再写入。库里已有的经验保留，照常被检索和提醒。 |
+| `share` | `true` | 双向隔离：本仓库的经验不外借，其它仓库来源的经验不读入。包括保存在全局索引里的仓库来源个人、领域、共享技术条目，以及共享规则文档；没有仓库来源的机器级知识保留可用。 |
+
+在工作台里打开 **Git 雷达 → 项目排除**，直接拨两个开关即可，面板会替你写 `repo.json` 并就地刷新。
+也可以直接改文件：
+
+```json
+{ "repo_id": "acme-payments", "domains": ["payments"], "capture": true, "share": false }
+```
+
+两个开关都落在内核里，不只是界面：`capture: false` 暂停新的手工与自动沉淀、Git 扫描及提炼，既有待办保留而不消耗；`share: false` 同时作用于检索、按 ID 读取、工作台知识库、重复候选建议和规则文档检索。已有知识及其治理历史保留，恢复开关无需重建共享索引。
 
 ## 命令行
 

@@ -34,6 +34,7 @@ Everything stays on your machine: Markdown is the source of truth, `node:sqlite`
 - [Host integrations](#host-integrations)
 - [Standalone workbench](#standalone-workbench)
 - [Where the data lives](#where-the-data-lives)
+- [Excluding a repository](#excluding-a-repository)
 - [CLI](#cli)
 - [Model access (optional)](#model-access-optional)
 - [Design principles](#design-principles)
@@ -160,21 +161,56 @@ pnpm install:dsh                      # desktop profile by default
 pnpm install:dsh -- --profile web     # or a specific profile
 ```
 
-### From the plugin marketplace
+### From a plugin marketplace
 
-The package is published as `@accremind/dsh-plugin`; the index URL for DSH's *Custom plugin indexes* is:
+The package is published as `@accremind/dsh-plugin`. What you see depends on which marketplace the host has installed:
+
+- **Official plugin market** (`@deepseek-ai/dsh-experimental-plugin-market-bundle`): open **Manage index sources… → Add index source**, paste the index URL below, then install **AccreMind** from **Discover**.
+- **dshmarket** (third-party): it reads *catalogs*, not indexes. Give it a catalog file that holds one entry:
+
+  ```json
+  {"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}
+  ```
+
+  dshmarket accepts an `http(s)://` URL, a `file://` URL or an absolute path.
+- **No marketplace**: install from the CLI (any profile except `desktop`) or copy the package into the profile by hand.
+
+Index URL used by the official market:
 
 ```
 https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 ```
 
-Add it under **Plugins → Experimental plugins → Custom plugin indexes**, then install **AccreMind** from Discover. Release mechanics are documented in [docs/market-publishing.md](docs/market-publishing.md).
+Release mechanics are documented in [docs/market-publishing.md](docs/market-publishing.md).
 
 ## Host integrations
 
 ### DeepSeek Harness (DSH)
 
-The reference adapter. After installation an `AccreMind` panel appears in the sidebar, entries are injected as the conversation needs them, and a receipt is appended to each turn. Six tools are available to the model:
+The reference adapter. Requires **DSH ≥ 0.2.2-rc.5** (declared as `engines.dsh`; the host refuses to load the bundle below that range) and **Node.js ≥ 24**.
+
+#### Install inside the desktop app
+
+1. Point the marketplace at the index (official market) or at a catalog (dshmarket), as described in
+   [From a plugin marketplace](#from-a-plugin-marketplace).
+2. Find `AccreMind` in the market list and install it.
+3. Bundle activation is hot: an **AccreMind** entry shows up in the sidebar and the six tools below become
+   available to the model. If your host does not hot-load bundles, reload the window.
+
+Nothing else is required: the store is created on first use under `~/.dsh/accremind/` and `<repo>/.accremind/`.
+
+#### Install into any other profile
+
+The same build is on npm. `dsh plugin` forwards its arguments to pnpm inside the profile directory, so `add`, `remove` and `why` all work:
+
+```bash
+dsh plugin --profile <profile> add @accremind/dsh-plugin
+dsh plugin --profile <profile> remove @accremind/dsh-plugin   # uninstall
+```
+
+The `desktop` profile is owned by the Electron application and rejects CLI writes — install there through the interface. A profile that has never been booted does not exist yet, so start DSH once with it before adding plugins.
+
+Once installed, an `AccreMind` panel appears in the sidebar, entries are injected as the conversation needs them, and a receipt is appended to each turn. Six tools are available to the model:
 
 | Tool | Purpose |
 | --- | --- |
@@ -219,6 +255,26 @@ For UI work use `pnpm dev:webui` (Vite HMR). Before releasing, always run `pnpm 
 | `~/.dsh/accremind/index/` | Rebuildable SQLite index |
 | `~/.dsh/accremind/{personal,domain,shared-tech}/` | Cross-repository knowledge layers |
 | `~/.dsh/accremind/{registry,users,workspaces}/` | Repository registry, user identity, per-repository retrieval logs |
+
+## Excluding a repository
+
+Some repositories should not feed the knowledge base at all, and some should not trade knowledge with
+sibling repositories. Both switches live inside the repository itself, in `.accremind/repo.json`, so they
+travel with its commits and every clone — and every machine — agrees on them.
+
+| Field | Default | Effect when `false` |
+| --- | --- | --- |
+| `capture` | `true` | The Git radar skips the repository, and manual plus automatic capture write nothing. Entries already in the library stay and keep being served. |
+| `share` | `true` | Two-way isolation: this repository's knowledge is not served elsewhere, and knowledge from other repositories is not served here. This includes repository-origin personal, domain and shared-tech entries stored in the global index, plus shared rule documents. Originless machine-wide knowledge remains available. |
+
+In the workbench open **Git radar → Exclude project** and flip the two switches; the panel writes
+`repo.json` for you and the radar refreshes in place. Or edit the file directly:
+
+```json
+{ "repo_id": "acme-payments", "domains": ["payments"], "capture": true, "share": false }
+```
+
+Both switches are enforced in the kernel, not only in the interface. `capture: false` stops new manual and automatic capture, skips Git scans and extraction, and pauses pending jobs without consuming them. `share: false` is checked on search, reads by ID, the workbench library, duplicate suggestions and rule-document retrieval. Existing knowledge and its governance history are retained. Re-enabling a switch takes effect without rebuilding the shared index.
 
 ## CLI
 

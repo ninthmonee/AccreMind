@@ -81,12 +81,30 @@ git add market/index.json && git commit -m 'chore(market): 刷新索引发布时
 https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 ```
 
-用户侧操作：
+用户侧操作（官方市场）：
 
-1. DSH → Plugins → Experimental plugins → 打开 **Custom plugin indexes**，出现 Installed / Discover 两个页签。
+1. 打开插件市场，点 **管理索引源… → 添加索引源**（英文界面是 **Manage index sources… → Add index source**）。
 2. 在索引列表里添加上面的 URL。
-3. 去 Discover 搜 `AccreMind`，详情页长描述读的就是 `packages/dsh-plugin/README.md`（npm 文件来自公共 CDN）。
-4. 安装后重启桌面，左侧栏出现 AccreMind 面板。
+3. 去 **发现 / Discover** 搜 `AccreMind`，详情页长描述读的就是 `packages/dsh-plugin/README.md`（npm 文件来自公共 CDN）。
+4. 安装后重载窗口，左侧栏出现 AccreMind 面板。
+
+如果宿主装的是**第三方市场 dshmarket**，这条路走不通：它不读这个索引，只读*插件目录*（`/dsh-market/catalogs`，
+接受 `http(s)://`、`file://`、绝对路径，单文件最多 8 个来源、至少留一个公开目录）。最小目录文件：
+
+```json
+{"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}
+```
+
+另外注意：dshmarket 的 `POST /dsh-market/install` 只接受**已在它当前 registry 里**的插件，否则返回
+`{"error":"plugin is not in the curated registry"}`；所以用户加的自定义目录必须先进 registry（加目录源即可），
+直接拿 npm 包名去装会被拒。进入公共目录（所有人可见）只能靠 awesome-dsh-plugin 收录后每日构建生成的新版
+`dsh-plugin-catalog`，与本仓库的索引是两套完全独立的机制。
+
+命令行另有一条路，注意 `desktop` profile 由桌面应用独占管理，CLI 只对自建 profile 有效：
+
+```bash
+dsh plugin --profile <profile> add @accremind/dsh-plugin
+```
 
 ## 5. 索引里各字段的硬约束
 

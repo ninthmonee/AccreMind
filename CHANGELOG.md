@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `docs/brand/` — SVG and PNG icon assets, monochrome variants, a size preview and a downloadable icon kit.
+- Repository exclusion: `.accremind/repo.json` now carries two switches — `capture` (default `true`) keeps a repository out of the knowledge pipeline, and `share` (default `true`) isolates it from cross-repository retrieval in both directions. Both live with the repository so every clone agrees, are exposed as **Git radar → Exclude project** in the workbench (`accremind.repo.setSettings`), and are enforced throughout the kernel: manual and automatic capture, pending queue drains, Git scans and extraction obey the capture switch. Sharing policy applies to search, direct reads, admin lists, duplicate suggestions and shared rule documents, including repository-origin global entries. Originless machine-wide knowledge remains available; pending work is paused rather than discarded.
 - `docs/legacy/` — the V1 product thinking note and the V2 PRD revision, restored verbatim from history (blob-identical to their last committed revision). They were removed from the tree while the V3.1 design became authoritative and are now archived next to it instead of being reachable only through `git log`.
 
 ### Changed
@@ -19,8 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The DSH sidebar entry now draws the same layered A as `packages/dsh-plugin/icon.svg` (rounded surface, two gradients, three strokes) instead of a `currentColor` outline, so the sidebar, the workbench header, the browser tab and the marketplace all show one mark. A test asserts the paths and gradient stops against the SVG so the two cannot drift apart.
+- Long commit bodies, diff rows and touched-file chips in the Git radar no longer widen the list: the expanded card is a `min-w-0` grid and long unbroken strings wrap (`break-words` / `[overflow-wrap:anywhere]`, `break-all` on file chips).
 - Select README wordmarks using GitHub's page theme markers, so manually selected dark mode shows light text even when the system theme is light.
 - Align the README title icon and text in self-contained SVG wordmarks with light and dark variants, avoiding GitHub's inline image baseline offset.
+- Corrected the DSH install instructions. `dsh plugin` forwards its arguments to pnpm inside the profile directory, so the previously documented `dsh plugin install <pkg>` never worked: `pnpm install` takes no package argument. The documented path is now the plugin index plus `dsh plugin --profile <profile> add @accremind/dsh-plugin`, and it states that the `desktop` profile is owned by the Electron application and only accepts interface installs.
+- Documented that a *plugin index* and a *plugin catalog* are two different mechanisms. The index (`market/index.json`) feeds DSH's official market only; the third-party dshmarket reads catalogs, refuses installs for anything outside its current registry (`{"error":"plugin is not in the curated registry"}`), and — on this desktop build — hides its catalog settings page entirely, so the catalog has to be registered through `POST /dsh-market/catalogs/add`. Both READMEs now branch on the marketplace the host actually ships instead of assuming one.
 
 ## [0.1.0] — 2026-11-25
 
