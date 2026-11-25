@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `docs/legacy/` — the V1 product thinking note and the V2 PRD revision, restored verbatim from history (blob-identical to their last committed revision). They were removed from the tree while the V3.1 design became authoritative and are now archived next to it instead of being reachable only through `git log`.
+
 ## [0.1.0] — first public release
 
 The first version that is installable as a DSH plugin and publishable to the plugin marketplace.

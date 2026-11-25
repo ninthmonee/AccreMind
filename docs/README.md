@@ -12,6 +12,7 @@ Start here, then dive into the document that matches your question.
 | [Product design V3.2](<AI 研发知识基座 DSH本地插件产品设计方案 V3.md>) | scope, data model, acceptance criteria, what is deliberately out of scope | reference |
 | [Technical design V3.2](<AI 研发知识基座 DSH本地插件技术实现方案 V3.md>) | module contracts, storage layout, retrieval and governance mechanics | reference |
 | [Marketplace publishing](market-publishing.md) | package shape, index schema, release order, the `engines.dsh` constraint | ~10 min |
+| [Legacy V1 / V2 design](legacy/README.md) | how the product was thought about before the current design, kept verbatim from September 2026 | archive |
 
 ## By task
 
@@ -36,6 +37,7 @@ The project's primary documentation language is **English** for the entry points
 | Product design V3.2 | Chinese |
 | Technical design V3.2 | Chinese |
 | market-publishing.md | Chinese |
+| legacy/ (V1 and V2 design documents) | Chinese, verbatim archive |
 
 English translations of the design documents are tracked as separate files (for example `ARCHITECTURE.en.md`) so the Chinese originals stay intact while both versions are compared during review.
 
@@ -45,4 +47,4 @@ English translations of the design documents are tracked as separate files (for 
 - State the mechanism, not just the conclusion — a reader should be able to predict what the code does from the document.
 - Prefer tables for enumerations (layers, dispositions, states) and prose for reasoning.
 - Update the affected document in the same pull request that changes the behaviour. A doc that contradicts the code is a bug.
-- Long-form prose for a general audience goes to `blog/`; normative design goes to the top level of `docs/`.
+- Long-form prose for a general audience goes to `blog/`; normative design goes to the top level of `docs/`; superseded design is archived verbatim under `legacy/` and never edited after the fact.

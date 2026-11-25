@@ -294,6 +294,7 @@ CI runs `pnpm verify`, `pnpm pack:check` and the market index check on every pus
 - [Product design V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>) — scope, data model, acceptance criteria
 - [Technical design V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>) — module contracts, retrieval and governance
 - [Marketplace publishing](docs/market-publishing.md) — package shape, index schema, release order
+- [Legacy V1 / V2 design](docs/legacy/README.md) — the September 2026 design notes, archived verbatim
 - [Introduction article](docs/blog/2026-11-23-accremind-introduction.md) — a long-form introduction for teams
 - [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 

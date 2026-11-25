@@ -294,6 +294,7 @@ CI 在每次 push 时运行 `pnpm verify`、`pnpm pack:check` 与市场索引校
 - [产品方案 V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>) —— 范围、数据模型、验收标准
 - [技术方案 V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>) —— 模块契约、检索与治理
 - [插件市场发布](docs/market-publishing.md) —— 包形态、索引 schema、发布顺序
+- [V1 / V2 历史设计](docs/legacy/README.md) —— 2026 年 9 月的两版设计稿，原样归档
 - [介绍长文](docs/blog/2026-11-23-accremind-introduction.md) —— 面向团队的完整介绍
 - [更新日志](CHANGELOG.md) · [安全策略](SECURITY.md) · [参与贡献](CONTRIBUTING.md)
 
