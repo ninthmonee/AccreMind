@@ -344,6 +344,7 @@ function DigestCard({ digest: d, loading }: { digest: Digest | undefined; loadin
           <p>文档修改提议 <span className="num font-semibold">{d.pending.docProposals}</span>（由你负责 {d.pending.docProposalsMine}）</p>
           <p>关联代码有变化 <span className="num font-semibold">{d.pending.reviewDue}</span></p>
           <p className="text-muted-foreground">提醒 {d.usage.reminders} 次 · 有帮助率 {pct(d.usage.helpfulRate)} · 不适用率 {pct(d.usage.inapplicableRate)}</p>
+          <p className="text-muted-foreground">模型调用 <span className="num">{d.models.calls}</span> 次 · <span className="num">{d.models.tokens}</span> tokens（提炼 {d.models.byKind.capture?.calls ?? 0} 次 / 标注 {d.models.byKind.tag?.calls ?? 0} 次）</p>
         </div>
         <ul className="grid content-start gap-1.5 text-xs">
           {events.length ? events.map((e, i) => (

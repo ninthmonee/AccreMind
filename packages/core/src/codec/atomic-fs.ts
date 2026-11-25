@@ -90,6 +90,10 @@ export interface SubprojectDef {
 
 /** Per-project overrides of machine-wide settings (committed with the repository). */
 export interface ProjectSettings {
+  /** `false` keeps AccreMind out of this repository entirely: no rules, no capture, no tuning. */
+  enabled?: boolean;
+  /** Repository-relative prefixes that get no file guard and no turn signals (vendored or generated trees). */
+  excludePaths?: string[];
   tuning?: Record<string, unknown>;
   autoDemotion?: Record<string, unknown>;
   budgets?: Record<string, number>;

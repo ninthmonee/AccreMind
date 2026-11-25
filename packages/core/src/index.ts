@@ -18,6 +18,7 @@ export * from './capture/auto-capture-coordinator.ts';
 export * from './capture/triage-engine.ts';
 export * from './capture/layer-shaping.ts';
 export * from './registry/repo-registry.ts';
+export * from './registry/repo-scope.ts';
 export * from './retrieval/applicability.ts';
 export * from './retrieval/cross-repo-feedback.ts';
 export * from './retrieval/evaluation.ts';

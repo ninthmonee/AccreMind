@@ -13,6 +13,9 @@ import {
   TriageEngine,
   ViewCompiler,
   runAutoTune,
+  isExcludedPath,
+  isProjectDisabled,
+  normalizeExcludePaths,
   LlmUsageMeter,
   meterLlm,
   wrapReadOnlyXmlBlock,
@@ -170,7 +173,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       }
       try {
         // Capture jobs queued before a restart are picked up again (in the background, never blocking the session).
-        if (!disposed && llmAdapter && consent.read() && config.autoCapture.enabled && autoCapture.hasRunnableJobs()) {
+        if (!disposed && llmAdapter && consent.read() && config.autoCapture.enabled && autoCapture.hasRunnableJobs() && !scope().paused) {
           void autoCapture.processPendingQueue().catch(() => undefined);
         }
       } catch (error) {
@@ -185,7 +188,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         resolve();
       }
       // Automatic tuning replays recorded turns, so it waits until the session has settled and yields often.
-      if (config.autoEvolve?.tune !== false && !demoMode && !disposed) {
+      if (config.autoEvolve?.tune !== false && !demoMode && !disposed && !scope().paused) {
         autoTuneTimer = setTimeout(() => {
           autoTuneTimer = null;
           if (disposed) return;
@@ -266,11 +269,26 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     try { return new URL(resolved.baseUrl).origin; }
     catch { return '自定义推理端点'; }
   };
+  // Repository scope is committed in `.accremind/repo.json`, so it is read live: pausing a repository from the
+  // settings page (or from a CLI) takes effect on the next turn without restarting the host.
+  const scope = () => {
+    const settings = store.projectSettings();
+    return { paused: isProjectDisabled(settings), excludePaths: normalizeExcludePaths(settings.excludePaths) };
+  };
   rpcHandlers['accremind.settings.get'] = () => ({
     writeGate: gate.read(), modelEndpoint: modelEndpoint(), modelAvailable: Boolean(llmAdapter),
     modelChannel: modelChannel(),
     autoCapture: config.autoCapture.enabled, modelUpload: consent.read(), shareLedger: ledgerSharing.read(),
+    paused: scope().paused, excludePaths: scope().excludePaths,
   });
+  rpcHandlers['accremind.settings.setPaused'] = ({ paused }) => {
+    store.setProjectSettings({ enabled: paused !== true });
+    return { paused: scope().paused };
+  };
+  rpcHandlers['accremind.settings.setExcludePaths'] = ({ excludePaths }) => {
+    store.setProjectSettings({ excludePaths: normalizeExcludePaths(excludePaths) });
+    return { excludePaths: scope().excludePaths };
+  };
   // Turning sharing on moves this machine's records of repository entries into `.accremind/ledger`
   // (preview them first with accremind.ledger.status); turning it off only stops new writes there.
   rpcHandlers['accremind.settings.setShareLedger'] = ({ shareLedger }) => {
@@ -377,10 +395,14 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     },
 
     compileResidentSystemSection(): string {
+      if (scope().paused) return '';
       return viewCompiler.compileTurnView({ sessionId: 'system-prefix' }).residentPrefix;
     },
 
     compileBeforeTurn(payload: DshTurnHookPayload): CompiledTurnView {
+      if (scope().paused) {
+        return { residentPrefix: '', radarBlock: '', surfacedIds: [], residentRuleIds: [], residentDroppedIds: [], docRefs: [] };
+      }
       receipts.begin(payload.sessionId, payload.turnId);
       const surfaced = getSessionSet(payload.sessionId);
       if (payload.userPrompt) {
@@ -455,7 +477,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     },
 
     async compileBeforeTurnAsync(payload: DshTurnHookPayload): Promise<CompiledTurnView> {
-      if (payload.tags || !payload.userPrompt) return this.compileBeforeTurn(payload);
+      if (payload.tags || !payload.userPrompt || scope().paused) return this.compileBeforeTurn(payload);
       let files = payload.activeFiles;
       let hint = payload.contextHint;
       try {
@@ -475,6 +497,9 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     },
 
     handleAfterTool(payload: DshToolAfterHookPayload) {
+      const current = scope();
+      if (current.paused) return payload.result;
+      const excluded = (relPath: string | null): boolean => Boolean(relPath) && isExcludedPath(relPath!, current.excludePaths);
       receipts.begin(payload.sessionId, payload.turnId);
       const surfaced = getSessionSet(payload.sessionId);
       const editedRelPath =
@@ -492,10 +517,11 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         (isCmd && /^\s*(?:FAIL|✗|not ok)\b/m.test(outputJoined));
 
       const sig = signalsFor(payload.sessionId);
-      if (editedRelPath) sig.files = [...sig.files.filter((f) => f !== editedRelPath), editedRelPath].slice(-10);
+      const quietPath = excluded(editedRelPath);
+      if (editedRelPath && !quietPath) sig.files = [...sig.files.filter((f) => f !== editedRelPath), editedRelPath].slice(-10);
       if (cmdFailed && outputJoined.trim()) sig.lastError = outputJoined.trim().slice(-600);
 
-      if (config.autoCapture.enabled) {
+      if (config.autoCapture.enabled && !quietPath) {
         autoCapture.recordToolActivity({
           sessionId: payload.sessionId,
           toolName: payload.toolName,
@@ -505,6 +531,8 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
         });
       }
 
+      // An excluded prefix gets no file guard: the agent reads and edits vendored code untouched.
+      if (quietPath) return payload.result;
       const intercepted = interceptFileToolResult({
         projectRoot,
         viewCompiler,
@@ -518,6 +546,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     },
 
     async handleTurnCompleted(payload) {
+      if (scope().paused) return;
       receipts.finish(payload.sessionId);
       if (!config.autoCapture.enabled) return;
       autoCapture.recordTurnConversation(

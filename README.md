@@ -265,6 +265,22 @@ pnpm accremind docs import my-prefs.md --category personal_preferences
 }
 ```
 
+**Keeping a repository out** uses the same `settings` block, reviewed with the repository and effective for everyone who clones it:
+
+```json
+{
+  "settings": {
+    "enabled": false,
+    "excludePaths": ["vendor/", "dist/", "third_party/protobuf/"]
+  }
+}
+```
+
+- `enabled: false` pauses the whole repository: no injected rules, no reminders, no file guard, no capture, no automatic tuning. Read-only commands such as `accremind search` and `accremind digest` keep working.
+- `excludePaths` only excludes prefixes inside the repository (vendored trees, generated code): those files get no file guard and stay out of the turn's changed-file signals. Absolute paths, `~` paths and entries containing `..` are ignored.
+- From the CLI: `accremind repo pause` / `repo resume` / `repo exclude vendor/ dist/` / `repo unexclude vendor/`; plain `accremind repo` prints the current scope.
+- The switches are re-read every turn, so a change applies on the next turn without restarting the host.
+
 A project with a custom `settings.tuning` opts out of automatic tuning. Owners decide who the to-do belongs to: experience looks for the domain owner → sub-project owner → repository owner, and the workbench can show "only mine"; `pnpm accremind digest` prints the last seven days (pending, automatic demotions, document changes, tuning, reminder quality), addressing the reader by their Git user name.
 
 ## Where the data lives
@@ -296,6 +312,9 @@ pnpm accremind bootstrap --top 10         # scan Git history for high-signal com
 pnpm accremind bootstrap --extract        # hand them to the model for triage
 pnpm accremind migrate                    # cross-repo migration rehearsal; --apply, --rollback
 pnpm accremind repo --domains payments,ledger:consumer [--new-domain]
+pnpm accremind repo                       # current scope: paused? which prefixes are excluded?
+pnpm accremind repo pause | resume        # pause the whole repository / resume it
+pnpm accremind repo exclude vendor/ dist/ # exclude repository prefixes (unexclude reverts)
 pnpm accremind team [set <dir> | unset]  # team knowledge base
 pnpm accremind domains [list | add | join | leave]
 pnpm accremind subprojects [list | add <id> --paths a/,b/ | remove <id>]

@@ -12,6 +12,7 @@ import {
   rollbackMigration,
   runArchaeologyBootstrap,
   scanGitHistorySignals,
+  normalizeExcludePaths,
   LlmUsageMeter,
 } from '@accremind/core';
 import { createAccreMindRuntime, startAccreMindWebuiServer } from './index.ts';
@@ -311,13 +312,35 @@ async function main(): Promise<void> {
         break;
       }
 
+      // Repository scope: repo [status] | pause | resume | exclude <前缀…> | unexclude <前缀…>
+      // Everything is committed in .accremind/repo.json, so teammates inherit the same exclusions.
       case 'repo': {
         const domainsFlag = getFlag(rest, '--domains');
+        const positional = rest.filter((a) => !a.startsWith('--'));
+        const action = positional[0];
+        const scopePaths = positional.slice(1);
         if (domainsFlag !== undefined) {
           const out = await runtime.rpcHandlers['accremind.repo.setDomains']!({ domains: domainsFlag.split(','), create: hasFlag(rest, '--new-domain') });
           console.log(JSON.stringify(out, null, 2));
+        } else if (action === 'pause' || action === 'resume') {
+          const settings = runtime.store.setProjectSettings({ enabled: action === 'resume' });
+          console.log(JSON.stringify({ paused: settings.enabled === false, file: runtime.store.paths.repoProfileFile }, null, 2));
+        } else if (action === 'exclude' || action === 'unexclude') {
+          if (!scopePaths.length) throw new Error('用法: accremind repo exclude <仓库内路径前缀…>');
+          const current = normalizeExcludePaths(runtime.store.projectSettings().excludePaths);
+          const requested = normalizeExcludePaths(scopePaths);
+          const next = action === 'exclude'
+            ? normalizeExcludePaths([...current, ...requested])
+            : current.filter((p) => !requested.includes(p));
+          const settings = runtime.store.setProjectSettings({ excludePaths: next });
+          console.log(JSON.stringify({ excludePaths: normalizeExcludePaths(settings.excludePaths) }, null, 2));
         } else {
-          console.log(JSON.stringify(await runtime.rpcHandlers['accremind.repo.profile']!({}), null, 2));
+          const profile = await runtime.rpcHandlers['accremind.repo.profile']!({});
+          console.log(JSON.stringify({
+            ...(profile as Record<string, unknown>),
+            scope: { paused: runtime.store.projectSettings().enabled === false,
+              excludePaths: normalizeExcludePaths(runtime.store.projectSettings().excludePaths) },
+          }, null, 2));
         }
         break;
       }

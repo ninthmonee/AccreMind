@@ -52,6 +52,7 @@ import { resolveGitUserName, resolveLocalActor } from '../governance/actor.ts';
 import { HostIdentityProvider, LocalIdentityProvider, type IdentityProvider, type UserIdentity } from '../identity/user-identity.ts';
 import { DocLibrary } from '../docs/doc-library.ts';
 import { RepoRegistry, readRepoDependencies, registryRecordFor, writeRepoProfile, type RegistryRecord } from '../registry/repo-registry.ts';
+import { normalizeExcludePaths } from '../registry/repo-scope.ts';
 import { DomainCatalog, resolveKnowledgeBase, type DomainMembership, type KnowledgeBaseInfo } from '../registry/knowledge-base.ts';
 import { parseDomainDeclaration, readRepoProfile, type RepoProfileFile, type SubprojectDef } from '../codec/atomic-fs.ts';
 import { CrossRepoFeedback, REPO_SUPPRESS_SESSIONS } from '../retrieval/cross-repo-feedback.ts';
@@ -616,6 +617,21 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   projectSettings(): NonNullable<RepoProfileFile['settings']> {
     const s = this.repoProfile().settings;
     return s && typeof s === 'object' ? s : {};
+  }
+
+  /** Writes the committed `settings` block of repo.json and returns it as stored. */
+  setProjectSettings(patch: NonNullable<RepoProfileFile['settings']>): NonNullable<RepoProfileFile['settings']> {
+    const next: NonNullable<RepoProfileFile['settings']> = { ...this.projectSettings(), ...patch };
+    if ('excludePaths' in patch) {
+      const cleaned = normalizeExcludePaths(patch.excludePaths);
+      if (cleaned.length) next.excludePaths = cleaned;
+      else delete next.excludePaths;
+    }
+    // Enabled is the default: keep the file free of noise when a repository is simply on.
+    if (next.enabled !== false) delete next.enabled;
+    writeRepoProfile(this.paths.projectRoot, this.projectDirName, { settings: next });
+    this.profileCache = null;
+    return this.projectSettings();
   }
 
   /** People responsible for this repository (or a sub-project of it). */

@@ -265,6 +265,22 @@ pnpm accremind docs import my-prefs.md --category personal_preferences
 }
 ```
 
+**把某个仓库排除在外**同样写在这份 `settings` 里，随仓库评审，队友拉下来即生效：
+
+```json
+{
+  "settings": {
+    "enabled": false,
+    "excludePaths": ["vendor/", "dist/", "third_party/protobuf/"]
+  }
+}
+```
+
+- `enabled: false`：整个仓库暂停 —— 不注入规范、不给提醒、不挂文件护栏、不捕获候选、不自动调参；`accremind search`、`digest` 这类读取命令照常可用。
+- `excludePaths`：只排除仓库内的路径前缀（自带库、生成代码），这些文件不触发文件护栏，也不进回合的改动信号；写成绝对路径、`~` 开头或带 `..` 的条目会被忽略。
+- 命令行：`accremind repo pause` / `repo resume` / `repo exclude vendor/ dist/` / `repo unexclude vendor/`；只跑 `accremind repo` 会打印当前范围。
+- 开关每回合重新读取，改完下一回合生效，不用重启宿主。
+
 自定义了 `settings.tuning` 的项目不参与自动调参。负责人决定待办归谁：经验按“领域负责人 → 子项目负责人 → 仓库负责人”找人，工作台可以“只看我的”，`pnpm accremind digest` 输出近 7 天的摘要（待办、自动降级、文档变更、调参、提醒效果），读者按 Git 用户名称呼。
 
 ## 数据放在哪
@@ -296,6 +312,9 @@ pnpm accremind bootstrap --top 10         # 从 Git 历史扫描高信号提交
 pnpm accremind bootstrap --extract        # 交给模型做分流
 pnpm accremind migrate                    # 跨仓库迁移演练；--apply、--rollback
 pnpm accremind repo --domains payments,ledger:consumer [--new-domain]
+pnpm accremind repo                         # 当前仓库范围（是否暂停、排除了哪些前缀）
+pnpm accremind repo pause | resume          # 整仓暂停 / 恢复
+pnpm accremind repo exclude vendor/ dist/   # 排除仓库内路径前缀（unexclude 撤销）
 pnpm accremind team [set <dir> | unset]  # 团队知识库
 pnpm accremind domains [list | add | join | leave]
 pnpm accremind subprojects [list | add <id> --paths a/,b/ | remove <id>]

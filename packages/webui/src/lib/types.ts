@@ -382,5 +382,7 @@ export interface Digest {
     tuning: Array<{ action: string; reason: string; at: string }>;
   };
   usage: { reminders: number; helpful: number; inapplicable: number; wrong: number; helpfulRate: number | null; inapplicableRate: number | null };
+  /** Model calls this window: auto-capture extraction and topic tagging, in calls and reported tokens. */
+  models: { calls: number; tokens: number; byKind: Record<string, { calls: number; tokens: number }> };
   markdown: string;
 }
