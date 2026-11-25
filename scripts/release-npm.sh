@@ -2,6 +2,7 @@
 # Publish @accremind/core and @accremind/dsh-plugin to the public npm registry.
 #
 #   NPM_TOKEN=npm_xxx ./scripts/release-npm.sh   # granular/automation token
+#   NPM_OTP=123456 ./scripts/release-npm.sh      # or account 2FA code for one publish
 #   ./scripts/release-npm.sh                     # or reuse a prior `npm login`
 #
 # Why a script instead of two `npm publish` calls:
@@ -28,6 +29,11 @@ if [ -n "${NPM_TOKEN:-}" ]; then
   trap 'rm -f "$TMP_NPMRC"' EXIT
 fi
 
+OTP_FLAG=()
+if [ -n "${NPM_OTP:-}" ]; then
+  OTP_FLAG=(--otp "$NPM_OTP")
+fi
+
 cd "$ROOT"
 
 echo "==> whoami (registry: $REGISTRY)"
@@ -52,10 +58,10 @@ node scripts/build.ts
 pnpm verify
 
 echo "==> publish @accremind/core"
-(cd packages/core && pnpm publish --access public --no-git-checks --registry "$REGISTRY")
+(cd packages/core && pnpm publish --access public --no-git-checks --registry "$REGISTRY" ${OTP_FLAG[@]+"${OTP_FLAG[@]}"})
 
 echo "==> publish @accremind/dsh-plugin"
-(cd packages/dsh-plugin && pnpm publish --access public --no-git-checks --registry "$REGISTRY")
+(cd packages/dsh-plugin && pnpm publish --access public --no-git-checks --registry "$REGISTRY" ${OTP_FLAG[@]+"${OTP_FLAG[@]}"})
 
 echo "==> published versions"
 npm view @accremind/core version
