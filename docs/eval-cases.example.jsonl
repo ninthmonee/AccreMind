@@ -1,0 +1,9 @@
+// accremind eval 的手写用例模板：复制到 <仓库>/.accremind/eval/cases.jsonl 后替换成你自己踩过的问题。
+// 每行一个 JSON，字段：query（当时的问题）、activeFiles（可选，当时在改的文件）、errorText（可选，报错原文）、
+// expect（必须提醒到的条目编号）、forbid（明确不该出现的条目编号）。
+// expect 与 forbid 都空 = 无关问题：本就不该有任何提醒，这类用例衡量噪声。
+// 用例要写真实问法，不要写关键词堆砌——回放时走的是和真实回合一样的检索路径。
+{"query":"给订单写入加一条新的幂等保护，重复回调会不会重复扣款","activeFiles":["src/order/service.ts"],"expect":["K-XXXXXX"],"forbid":[]}
+{"query":"这段重试为什么第二次执行就把钱扣了两遍","errorText":"duplicate key value violates unique constraint","expect":["K-XXXXXX"],"forbid":[]}
+{"query":"怎么把按钮的圆角从 8px 改成 12px","expect":[],"forbid":["K-XXXXXX"]}
+{"query":"pnpm verify 报 check:webui 指纹不一致怎么修","expect":[],"forbid":[]}

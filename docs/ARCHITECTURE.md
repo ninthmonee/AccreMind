@@ -244,7 +244,7 @@ flowchart LR
 
 自动调参只有在能"跟什么都不做比"的时候才有意义，所以四件事都是显式可见的：
 
-- **评测基线**：`accremind eval` 除了当前参数那一组，还跑两组对照：`off`（什么都不提醒）与 `rulesOnly`（只提醒常驻团队规范）。`baseline.lift` 是当前策略相对这两个基线的召回增益与噪声代价——没有这个差值，"提醒到底有没有用"只能靠感觉。手写用例放在 `.accremind/eval/cases.jsonl`，一行一个问题，`expect` 写该命中的条目 ID，无关问题写空数组。
+- **评测基线**：`accremind eval` 除了当前参数那一组，还跑两组对照：`off`（什么都不提醒）与 `rulesOnly`（只提醒常驻团队规范）。`baseline.lift` 是当前策略相对这两个基线的召回增益与噪声代价——没有这个差值，"提醒到底有没有用"只能靠感觉。手写用例放在 `.accremind/eval/cases.jsonl`，一行一个问题，`expect` 写该命中的条目 ID，无关问题写空数组；模板见 `docs/eval-cases.example.jsonl`。
 - **模型用量**：`LlmUsageMeter` 把自动提炼与主题标注的每次调用数与 token 追加到 `~/.dsh/accremind/usage/llm-usage.jsonl`（只追加、不修改，写失败静默且绝不影响回合）。`accremind usage` 与 `digest` 的"模型用量"段读的是同一个文件；拿不到 token 的调用按 0 计并单独计 `callsWithoutTokens`，不假装有数。
 - **按文件缓存检索**：文件护栏以 `<filePath, dataVersion>` 为键缓存上一次的检索结果，`dataVersion` 由 SQLite 的 `PRAGMA g.data_version` 与本机索引版本合成。同一个文件反复读、知识库没变时不重复检索；任何写入都会改版本号，缓存随之失效。`guardStats` 记录 `searches` 与 `cacheHits`，缓存是否真的省下了检索可以直接测。
 - **稳定的常驻前缀**：会话内第一次注入的常驻规则被固定下来，之后字节不变。只有转正规则或确认文档修改真的改变了内容时，才用一次 `<accremind-rule-update>` 临时块把差异补上——提示词缓存至多失效一次，且只在那一次里失效，而不是每次规则变动都重排整段前缀。
