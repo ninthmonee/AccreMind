@@ -342,4 +342,10 @@ export interface AccreMindConfig {
      */
     modelUpload?: boolean;
   };
+  /**
+   * Self-improvement that runs unattended. `demote`: confirmed entries feedback shows rarely fit go back to trial,
+   * and low-value paused entries nobody decided on are archived (both reversible). `tune`: retrieval settings are
+   * tuned on recorded feedback with guardrails, watched, and rolled back if they make things worse.
+   */
+  autoEvolve?: { demote?: boolean; tune?: boolean };
 }

@@ -8,6 +8,9 @@ import {
   GovernanceService,
   KNOWLEDGE_LAYERS,
   isCapturableLayer,
+  autoTuneStatus,
+  rollbackTuning,
+  runAutoTune,
   runEvaluation,
   writeRepoProfile,
   exportEntryToDshSkill,
@@ -507,6 +510,14 @@ export function createWebuiRpcHandlers(deps: {
     }),
 
     'accremind.eval.run': (params) => runEvaluation(store, { grid: params.grid === true, apply: params.apply === true }),
+    'accremind.tuning.status': () => autoTuneStatus(store),
+    'accremind.tuning.auto': async () => runAutoTune(store, { force: true }),
+    'accremind.tuning.rollback': (params) => rollbackTuning(store, typeof params.note === 'string' ? params.note : ''),
+    'accremind.gov.autoDemotions': (params) => ({ demotions: store.listAutoDemotions({ includeReverted: params.includeReverted === true }) }),
+    'accremind.gov.restoreAutoDemotion': (params) => {
+      const entry = store.restoreAutoDemotion(String(params.entryId ?? ''), typeof params.note === 'string' ? params.note : '');
+      return { entry: { id: entry.id, status: entry.status, serving: entry.serving } };
+    },
 
     // Repository identity and business domains: the domains decide which other repositories' domain
     // knowledge is served here. Saving writes `.accremind/repo.json` (commit it so every clone agrees).

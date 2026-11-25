@@ -1,4 +1,4 @@
-import { ArrowRight, BellOff, CircleCheckBig, ClipboardCheck, FlaskConical, GitCompareArrows, type LucideIcon, Stamp, Trash2 } from 'lucide-react';
+import { ArrowRight, BellOff, CircleCheckBig, ClipboardCheck, FlaskConical, GitCompareArrows, type LucideIcon, Stamp, Trash2, TrendingDown, Undo2 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { toast } from 'sonner';
 import { useApp } from '@/app/app-context';
@@ -56,6 +56,20 @@ export function InboxCard({
     }
   };
 
+  const restore = async (item: AttentionItem) => {
+    setBusy(item.entry_id);
+    try {
+      await rpc('accremind.gov.restoreAutoDemotion', { entryId: item.entry_id });
+      setLeaving((s) => new Set(s).add(`att-${item.entry_id}-${item.kind}`));
+      toast.success('已撤销自动降级，恢复为原来的状态');
+      setTimeout(refresh, 320);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const rows: Row[] = [
     ...pending.map<Row>((p) => ({
       key: `rev-${p.assessment.id}`,
@@ -72,10 +86,10 @@ export function InboxCard({
     })),
     ...attention.map<Row>((a) => ({
       key: `att-${a.entry_id}-${a.kind}`,
-      icon: a.kind === 'probation_silent' ? FlaskConical : BellOff,
+      icon: a.kind === 'probation_silent' ? FlaskConical : a.kind === 'auto_demoted' ? TrendingDown : BellOff,
       tone: 'warning',
       title: a.title,
-      hint: ATTENTION[a.kind]?.hint ?? a.reason,
+      hint: a.kind === 'auto_demoted' ? a.reason : ATTENTION[a.kind]?.hint ?? a.reason,
       tag: ATTENTION[a.kind]?.label ?? a.kind,
       actions:
         a.kind === 'probation_silent' ? (
@@ -85,6 +99,15 @@ export function InboxCard({
             </Button>
             <Button size="icon-sm" variant="ghost" aria-label="淘汰" title="淘汰" disabled={busy === a.entry_id} onClick={() => void decide(a, 'dismiss')}>
               <Trash2 />
+            </Button>
+          </div>
+        ) : a.kind === 'auto_demoted' ? (
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="outline" disabled={busy === a.entry_id} onClick={() => void restore(a)}>
+              <Undo2 />撤销
+            </Button>
+            <Button size="icon-sm" variant="ghost" aria-label="查看" title="查看" onClick={() => openEntry(a.entry_id)}>
+              <ArrowRight />
             </Button>
           </div>
         ) : (

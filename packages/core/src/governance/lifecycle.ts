@@ -23,7 +23,10 @@ export type LifecycleAction =
   | 'suspend'          // counterexample or repeated "doesn't apply"
   | 'resume'           // the counterexample was checked and does not hold
   | 'record_success'   // an independent task confirmed it
-  | 'revise';          // content edited: new revision; confirmations of the old wording no longer count
+  | 'revise'           // content edited: new revision; confirmations of the old wording no longer count
+  | 'auto_demote'      // confirmed → trial, because feedback shows it rarely fits (automatic, reversible)
+  | 'auto_archive'     // paused for low value and nobody decided for a long time → archived (automatic, reversible)
+  | 'restore';         // a person undoes the automatic demotion / archiving
 
 export interface TransitionContext {
   now?: string;
@@ -40,6 +43,8 @@ export interface TransitionContext {
   impact?: 'substantive' | 'editorial';
   /** For `revise`: the edit came from the code moving (anchor rebinding) and must be checked again. */
   needsReview?: boolean;
+  /** For `restore`: the status the entry had before the automatic steps. */
+  restoreStatus?: 'active' | 'probation';
 }
 
 export class LifecycleError extends Error {
@@ -140,6 +145,28 @@ export const LIFECYCLE: Record<LifecycleAction, Rule> = {
       updated_at: c.now,
     }),
     event: 'entry.revised',
+  },
+  auto_demote: {
+    summary: '正式 → 试用（反馈显示经常不适用或从未被用到；自动执行，可撤销）',
+    guard: (e) => (e.status !== 'active' ? '只有正式经验会被自动降为试用' : e.layer === 'team_rule' ? '团队规范不做自动降级' : null),
+    apply: (_e, c) => ({ status: 'probation', updated_at: c.now }),
+    event: 'entry.auto_demoted',
+  },
+  auto_archive: {
+    summary: '因价值低已暂停、长期无人处理 → 归档（自动执行，可撤销）',
+    guard: (e) => live(e) ?? (e.serving !== 'suspended' ? '只归档已经暂停提醒的经验' : e.layer === 'team_rule' ? '团队规范不做自动归档' : null),
+    apply: (_e, c) => ({ status: 'archived', serving: 'suspended', updated_at: c.now }),
+    event: 'entry.auto_archived',
+  },
+  restore: {
+    summary: '撤销自动降级 / 归档：回到原来的状态并恢复提醒（时效已失效的仍保持暂停）',
+    guard: (e) => (e.status === 'withdrawn' ? '已撤回的经验不能恢复' : null),
+    apply: (e, c) => ({
+      status: c.restoreStatus ?? (e.status === 'archived' ? 'probation' : e.status),
+      serving: e.freshness === 'stale' ? 'suspended' : 'enabled',
+      updated_at: c.now,
+    }),
+    event: 'entry.restored',
   },
 };
 

@@ -76,6 +76,7 @@ export const ATTENTION: Record<AttentionKind, { label: string; hint: string }> =
   probation_silent: { label: '试用期满', hint: '试用期满仍没有人反馈，决定是否保留' },
   inapplicable: { label: '不适用', hint: '多次被标记为“不适用”，已暂停提醒' },
   rule_conflict: { label: '与规范冲突', hint: '与团队规范相反且没有登记豁免，已停止提醒' },
+  auto_demoted: { label: '已自动降级', hint: '反馈显示经常不适用或从未用到，已降为试用；可一键撤销' },
 };
 export const EVIDENCE_SOURCE: Record<string, string> = {
   git_commit: 'Git 提交',

@@ -189,7 +189,7 @@ export interface Insights {
   attention: number;
 }
 
-export type AttentionKind = 'probation_silent' | 'inapplicable' | 'rule_conflict';
+export type AttentionKind = 'probation_silent' | 'inapplicable' | 'rule_conflict' | 'auto_demoted';
 export interface AttentionItem { entry_id: string; kind: AttentionKind; reason: string; revision: number; created_at: string; title: string; type: KnowledgeType | null }
 
 export interface ReviewItem {

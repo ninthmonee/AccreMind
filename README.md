@@ -55,6 +55,9 @@ AccreMind 在三个时刻把这些知识递回来：
 6. **跨仓库知识**：仓库身份取自 `.accremind/repo.json`，其次 `origin`，最后才是路径哈希；`domain` 与 `shared_tech` 层的经验可在同领域仓库间互相提醒。
 7. **回执与离线评测**：每轮对话回执保留脱敏问题文本，`accremind eval` 用真实反馈与手写用例回放提醒效果，`--grid` 试参数，`--apply` 只在更好时写回。
 8. **经验治理工作台**：七个视图覆盖总览、知识库、候选审核、规则文档、治理、回合记录与 Git 雷达；已验证经验可一键导出为 `.dsh/skills/<slug>/SKILL.md`。
+9. **自我改进（无人值守，均可撤销）**，可用插件配置 `autoEvolve: { tune: false, demote: false }` 关闭：
+   - **自动调参**：会话打开 1 分钟后在后台运行，每个仓库每周最多一次。要同时满足这几条才会应用：有标注样本 ≥ 30 个，得分至少高 0.03，召回降幅不超过 0.02，被否定的条目不会更多地出现。应用后进入观察期：3 天后用调整之后的新反馈对比新旧参数，同时对比调整前后实际的"不适用"比例，任何一项变差就自动回滚，30 天内不再尝试同一组参数。全部记录在 `~/.dsh/accremind/tuning-history.jsonl`。
+   - **低效经验自动降级**：正式经验在当前版本被 ≥ 2 个会话标为"不适用"且占提醒会话 ≥ 25%，或 30 天内在 ≥ 40 个会话中提醒过却从未被打开、引用或确认，会自动降为试用；卡片状态同步写回 Markdown，Git 里可见。因"不适用"暂停后 30 天无人处理会自动归档（试用期满无人决定的等 60 天）。团队规范、当前版本有过确认或反例的、跨仓库共享的经验不做自动处理。每一步都进入总览的「需要你处理」，可一键撤销；撤销后该版本不再自动降级。
 
 ## 仓库结构
 
@@ -152,6 +155,11 @@ pnpm accremind docs import ./adr --category business_rules
 pnpm accremind docs proposals             # 待审修改提议与词表提议
 pnpm accremind docs accept <提议编号>
 pnpm accremind eval --grid --apply        # 回放反馈，调参并只在更好时落盘
+pnpm accremind eval auto                  # 立即跑一轮自动调参（含观察期判定）
+pnpm accremind eval history               # 调参记录与观察状态
+pnpm accremind eval rollback              # 撤销最近一次调参
+pnpm accremind demotions [--all]          # 自动降级 / 归档记录
+pnpm accremind demotions restore K-XXXX   # 撤销某条经验的自动降级 / 归档
 pnpm accremind ui --port 3180
 ```
 
@@ -183,6 +191,7 @@ pnpm market:index   # 重新生成 market/index.json
 
 ## 文档
 
+- [架构与设计理念](docs/ARCHITECTURE.md)：愿景、七条原则、总体架构图、经验生命周期、检索流水线与自我改进（新同事建议先读）
 - [产品设计方案 V3.2](<docs/AI 研发知识基座 DSH本地插件产品设计方案 V3.md>)：产品边界、数据模型、验收口径
 - [技术实现方案 V3.2](<docs/AI 研发知识基座 DSH本地插件技术实现方案 V3.md>)：模块契约、检索与治理实现
 - [插件市场发布说明](docs/market-publishing.md)

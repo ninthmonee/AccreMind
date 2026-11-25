@@ -13,6 +13,9 @@ export interface AccreMindEvent {
     | 'entry.feedback_inapplicable'
   | 'entry.ledger_synced'
     | 'entry.suspended'
+    | 'entry.auto_demoted'
+    | 'entry.auto_archived'
+    | 'entry.restored'
     | 'governance.decided'
     | 'attention.raised';
   entryId: string;

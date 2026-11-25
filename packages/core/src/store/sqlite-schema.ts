@@ -314,6 +314,18 @@ export const ACCREMIND_SCHEMA_MIGRATIONS: ReadonlyArray<{ version: number; sql: 
       );
     `,
   },
+  {
+    // Automatic demotions / archiving of low-value entries, kept so a person can see why and undo them.
+    version: 11,
+    sql: `
+      CREATE TABLE IF NOT EXISTS auto_demotions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, entry_id TEXT NOT NULL, revision INTEGER NOT NULL,
+        step TEXT NOT NULL, from_status TEXT NOT NULL, from_serving TEXT NOT NULL, reason TEXT NOT NULL,
+        signals_json TEXT NOT NULL, created_at TEXT NOT NULL, reverted_at TEXT, reverted_by TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_auto_demotions_entry ON auto_demotions (entry_id, revision);
+    `,
+  },
 ];
 
 export const ACCREMIND_SCHEMA_VERSION = ACCREMIND_SCHEMA_MIGRATIONS.at(-1)?.version ?? 1;

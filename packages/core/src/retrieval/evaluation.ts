@@ -1,9 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { writeFileAtomicSync } from '../codec/atomic-fs.ts';
 import type { LocalMarkdownSqliteStore } from '../store/local-store.ts';
 import { ViewCompiler } from '../view/view-compiler.ts';
 import { mergeTuning, type RetrievalTuning } from './applicability.ts';
+import { recordManualApply } from './auto-tuning.ts';
 
 /** One replayable question with what should and should not be shown for it. */
 export interface EvalCase {
@@ -36,10 +36,10 @@ export interface EvalMetrics {
  * Turns recorded with their question become cases: entries confirmed helpful in that session are expected,
  * entries reported "does not apply" or wrong are forbidden. Turns without such feedback carry no label.
  */
-export function collectReceiptCases(store: LocalMarkdownSqliteStore, limit = 2000): EvalCase[] {
+export function collectReceiptCases(store: LocalMarkdownSqliteStore, limit = 2000, since?: string): EvalCase[] {
   const turns = store.rawDb.prepare(`SELECT session_id, turn_id, query_text, query_tags, active_files FROM turn_receipts
-    WHERE workspace_id = ? AND query_text IS NOT NULL ORDER BY created_at DESC LIMIT ?`)
-    .all(store.workspaceId, limit) as Array<{ session_id: string; turn_id: string; query_text: string; query_tags: string | null; active_files: string | null }>;
+    WHERE workspace_id = ? AND query_text IS NOT NULL AND created_at > ? ORDER BY created_at DESC LIMIT ?`)
+    .all(store.workspaceId, since ?? '', limit) as Array<{ session_id: string; turn_id: string; query_text: string; query_tags: string | null; active_files: string | null }>;
   const hitsOf = store.rawDb.prepare(`SELECT entry_id, revision FROM turn_hits WHERE workspace_id = ? AND session_id = ? AND turn_id = ?`);
   const positive = store.rawDb.prepare(`SELECT 1 FROM validation_records WHERE entry_id = ? AND outcome = 'success'
     AND (task_fingerprint = ? OR session_id = ?) LIMIT 1`);
@@ -83,45 +83,88 @@ export function loadHandCases(file: string): EvalCase[] {
   return out;
 }
 
-/** Replays every case through the real per-turn reminder path (preview: nothing is recorded). */
-export function evaluate(store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning): EvalMetrics {
+class Tally {
+  expected = 0;
+  found = 0;
+  forbidden = 0;
+  forbiddenShown = 0;
+  unrelated = 0;
+  noisy = 0;
+  misses: EvalMetrics['misses'] = [];
+  readonly cases: number;
+  constructor(cases: number) {
+    this.cases = cases;
+  }
+
+  add(c: EvalCase, shown: Set<string>): void {
+    const missing = c.expect.filter((id) => !shown.has(id));
+    const unwanted = c.forbid.filter((id) => shown.has(id));
+    this.expected += c.expect.length;
+    this.found += c.expect.length - missing.length;
+    this.forbidden += c.forbid.length;
+    this.forbiddenShown += unwanted.length;
+    const unrelated = !c.expect.length && !c.forbid.length;
+    if (unrelated) {
+      this.unrelated += 1;
+      if (shown.size) this.noisy += 1;
+    }
+    if (missing.length || unwanted.length || (unrelated && shown.size)) {
+      this.misses.push({ id: c.id, query: c.query.slice(0, 80), missing, unwanted: unwanted.length ? unwanted : (!c.expect.length ? [...shown] : []) });
+    }
+  }
+
+  metrics(): EvalMetrics {
+    const recall = this.expected ? this.found / this.expected : 1;
+    const fShown = this.forbidden ? this.forbiddenShown / this.forbidden : 0;
+    const noise = this.unrelated ? this.noisy / this.unrelated : 0;
+    return { cases: this.cases, recall, forbiddenShown: fShown, noise, score: recall - fShown - 0.5 * noise, misses: this.misses.slice(0, 50) };
+  }
+}
+
+/** Replays `cases[from, to)` with `tuning` swapped in only for the duration of this synchronous call. */
+function replay(store: LocalMarkdownSqliteStore, vc: ViewCompiler, cases: EvalCase[], from: number, to: number, tuning: RetrievalTuning, tally: Tally): void {
   const previous = store.tuning;
   store.setTuning(tuning);
-  const vc = new ViewCompiler(store, { residentRulesTokens: 500, turnRadarTokens: 300, toolGuardTokens: 240 });
-  let expected = 0;
-  let found = 0;
-  let forbidden = 0;
-  let forbiddenShown = 0;
-  let unrelated = 0;
-  let noisy = 0;
-  const misses: EvalMetrics['misses'] = [];
   try {
-    for (const c of cases) {
-      const shown = new Set(vc.compileTurnView({
+    for (let i = from; i < to; i++) {
+      const c = cases[i]!;
+      tally.add(c, new Set(vc.compileTurnView({
         sessionId: `eval:${c.id}`, preview: true, userPrompt: c.query, activeFiles: c.activeFiles, errorOutput: c.errorText,
         ...(c.tags ? { tags: c.tags } : {}),
-      }).surfacedIds);
-      const missing = c.expect.filter((id) => !shown.has(id));
-      const unwanted = c.forbid.filter((id) => shown.has(id));
-      expected += c.expect.length;
-      found += c.expect.length - missing.length;
-      forbidden += c.forbid.length;
-      forbiddenShown += unwanted.length;
-      if (!c.expect.length && !c.forbid.length) {
-        unrelated += 1;
-        if (shown.size) noisy += 1;
-      }
-      if (missing.length || unwanted.length || (!c.expect.length && !c.forbid.length && shown.size)) {
-        misses.push({ id: c.id, query: c.query.slice(0, 80), missing, unwanted: unwanted.length ? unwanted : (!c.expect.length ? [...shown] : []) });
-      }
+      }).surfacedIds));
     }
   } finally {
     store.setTuning(previous);
   }
-  const recall = expected ? found / expected : 1;
-  const fShown = forbidden ? forbiddenShown / forbidden : 0;
-  const noise = unrelated ? noisy / unrelated : 0;
-  return { cases: cases.length, recall, forbiddenShown: fShown, noise, score: recall - fShown - 0.5 * noise, misses: misses.slice(0, 50) };
+}
+
+function evalCompiler(store: LocalMarkdownSqliteStore): ViewCompiler {
+  return new ViewCompiler(store, { residentRulesTokens: 500, turnRadarTokens: 300, toolGuardTokens: 240 });
+}
+
+/** Replays every case through the real per-turn reminder path (preview: nothing is recorded). */
+export function evaluate(store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning): EvalMetrics {
+  const tally = new Tally(cases.length);
+  replay(store, evalCompiler(store), cases, 0, cases.length, tuning, tally);
+  return tally.metrics();
+}
+
+/**
+ * Same as {@link evaluate}, but yields to the event loop every `chunk` cases (default 4) so a running session is never held
+ * up. The trial tuning is only in effect inside each synchronous chunk, so real turns in between use the live one.
+ */
+export async function evaluateAsync(
+  store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning, options: { chunk?: number; isCancelled?: () => boolean } = {},
+): Promise<EvalMetrics> {
+  const chunk = options.chunk ?? 4;
+  const tally = new Tally(cases.length);
+  const vc = evalCompiler(store);
+  for (let i = 0; i < cases.length; i += chunk) {
+    if (options.isCancelled?.()) break; // the store may be closing: stop before touching it
+    replay(store, vc, cases, i, Math.min(cases.length, i + chunk), tuning, tally);
+    await new Promise<void>((r) => setImmediate(r));
+  }
+  return tally.metrics();
 }
 
 /** Variations around a tuning: stricter/looser thresholds, text saturation, tag weight, reference evidence. */
@@ -173,10 +216,8 @@ export function runEvaluation(store: LocalMarkdownSqliteStore, options: { casesF
   report.ranking = ranking.slice(0, 10).map((r) => ({ label: r.label, score: r.metrics.score, recall: r.metrics.recall,
     forbiddenShown: r.metrics.forbiddenShown, noise: r.metrics.noise }));
   if (options.apply && best.metrics.score > current.score) {
-    const file = path.join(store.paths.globalRoot, 'tuning.json');
-    writeFileAtomicSync(file, `${JSON.stringify(best.tuning, null, 2)}\n`);
-    store.setTuning(best.tuning);
-    report.appliedTo = file;
+    recordManualApply(store, store.tuning, best.tuning, best.label, current, best.metrics);
+    report.appliedTo = path.join(store.paths.globalRoot, 'tuning.json');
   }
   return report;
 }

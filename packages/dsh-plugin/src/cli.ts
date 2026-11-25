@@ -3,6 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   applyMigration,
+  autoTuneStatus,
+  rollbackTuning,
+  runAutoTune,
   runEvaluation,
   OpenAiCompatibleLlmClient,
   planMigration,
@@ -172,9 +175,36 @@ async function main(): Promise<void> {
 
       // Replays recorded feedback (and .accremind/eval/cases.jsonl) through the reminder path; --grid tries
       // variations of the retrieval settings, --apply saves the best to ~/.dsh/accremind/tuning.json.
+      // eval auto: one automatic tuning round now (judges a change on watch, else looks for a better setting);
+      // eval history: changes so far; eval rollback: undo the latest change still in effect.
       case 'eval': {
+        const evalAction = rest[0] && !rest[0].startsWith('-') ? rest[0] : undefined;
+        if (evalAction === 'auto') {
+          console.log(JSON.stringify(await runAutoTune(runtime.store, { force: true, casesFile: getFlag(rest, '--cases') }), null, 2));
+          break;
+        }
+        if (evalAction === 'history') {
+          console.log(JSON.stringify(autoTuneStatus(runtime.store), null, 2));
+          break;
+        }
+        if (evalAction === 'rollback') {
+          console.log(JSON.stringify(rollbackTuning(runtime.store, getFlag(rest, '--note')), null, 2));
+          break;
+        }
         const report = runEvaluation(runtime.store, { casesFile: getFlag(rest, '--cases'), grid: hasFlag(rest, '--grid'), apply: hasFlag(rest, '--apply') });
         console.log(JSON.stringify(report, null, 2));
+        break;
+      }
+
+      // Automatic demotions: list (in effect; --all includes undone ones) | restore <entry id>
+      case 'demotions': {
+        const [action = 'list', target] = rest.filter((a) => !a.startsWith('--'));
+        if (action === 'restore') {
+          if (!target) throw new Error('用法: accremind demotions restore <经验编号>');
+          console.log(JSON.stringify(runtime.store.restoreAutoDemotion(target, getFlag(rest, '--note')), null, 2));
+        } else {
+          console.log(JSON.stringify({ demotions: runtime.store.listAutoDemotions({ includeReverted: hasFlag(rest, '--all') }) }, null, 2));
+        }
         break;
       }
 
@@ -219,7 +249,7 @@ async function main(): Promise<void> {
 
       default:
         throw new Error(
-          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | eval | docs | ui`,
+          `未知子命令 "${subcommand}"。可用命令: status | search | get | rebuild | bootstrap | migrate | repo | eval | demotions | docs | ui`,
         );
     }
   } finally {

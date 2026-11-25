@@ -44,6 +44,7 @@ import {
   migrateSchema,
 } from './sqlite-schema.ts';
 import { transition, transitionBlocker } from '../governance/lifecycle.ts';
+import { archiveVerdict, demoteVerdict, mergeAutoDemotionPolicy, type AutoDemotionPolicy, type EntrySignals } from '../governance/auto-demotion.ts';
 import { EventLog, type AccreMindEvent } from './event-log.ts';
 import { EvidenceSnapshots } from '../evidence/snapshots.ts';
 import { deriveStanding, ValidationLedger, type LedgerDecision, type LedgerStanding } from '../ledger/ledger.ts';
@@ -158,13 +159,31 @@ export interface LocalStoreOptions {
   projectDirName?: string;
   workspaceId?: string;
   maxProbationExposures?: number;
+  /** Automatic, reversible demotion of low-value entries (`false` turns it off). Default: on. */
+  autoDemotion?: Partial<AutoDemotionPolicy> | boolean;
   /** Identity recorded on decisions and in the activity log; defaults to the repository's Git user. */
   actor?: string;
   /** Whether the validation ledger is written into the repository (team sharing). Default: off. */
   shareLedger?: () => boolean;
 }
 
-export type AttentionKind = 'probation_silent' | 'inapplicable' | 'rule_conflict';
+export type AttentionKind = 'probation_silent' | 'inapplicable' | 'rule_conflict' | 'auto_demoted';
+
+/** One automatic step taken on an entry, and whether a person undid it. */
+export interface AutoDemotionRecord {
+  id: number;
+  entry_id: string;
+  title: string | null;
+  revision: number;
+  step: 'demote' | 'archive';
+  from_status: string;
+  from_serving: string;
+  reason: string;
+  signals: EntrySignals;
+  created_at: string;
+  reverted_at: string | null;
+  reverted_by: string | null;
+}
 
 /** What this repository's own sessions said about one entry revision. */
 interface LocalFeedback {
@@ -467,6 +486,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
   readonly paths: StoreLayoutPaths;
   readonly workspaceId: string;
   readonly maxProbationExposures: number;
+  autoDemotionPolicy: AutoDemotionPolicy;
   readonly events: EventLog;
   private db: DatabaseSync;
   private statements = new Map<string, ReturnType<DatabaseSync['prepare']>>();
@@ -496,6 +516,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     }
     this.workspaceId = this.paths.workspaceId;
     this.maxProbationExposures = options.maxProbationExposures ?? 3;
+    this.autoDemotionPolicy = mergeAutoDemotionPolicy(options.autoDemotion);
     this.actorOverride = options.actor;
     if (!options.workspaceId) adoptLegacyWorkspace(this.paths);
     this.events = new EventLog(this.paths.eventsDir);
@@ -1038,7 +1059,9 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
    * - a trial that has waited for a decision longer than `attentionGraceDays` stops being shown to the
    *   agent (it stays in the inbox), so an unattended queue cannot keep injecting unconfirmed entries.
    */
-  runMaintenance(options: { now?: Date; retentionDays?: number; attentionGraceDays?: number } = {}): { rolledUp: number; turnsRemoved: number; paused: string[]; ledgerUpdated: string[] } {
+  runMaintenance(options: { now?: Date; retentionDays?: number; attentionGraceDays?: number } = {}): {
+    rolledUp: number; turnsRemoved: number; paused: string[]; ledgerUpdated: string[]; demoted: string[]; archived: string[];
+  } {
     const now = options.now ?? new Date();
     const cutoff = new Date(now.getTime() - (options.retentionDays ?? 90) * 86_400_000).toISOString();
     let rolledUp = 0;
@@ -1087,7 +1110,150 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     } catch (err) {
       console.warn(`[accremind] cross-repository feedback skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return { rolledUp, turnsRemoved, paused, ledgerUpdated };
+    let demoted: string[] = [];
+    let archived: string[] = [];
+    try {
+      ({ demoted, archived } = this.runAutoDemotion({ now }));
+    } catch (err) {
+      console.warn(`[accremind] automatic demotion skipped: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { rolledUp, turnsRemoved, paused, ledgerUpdated, demoted, archived };
+  }
+
+  /** Per entry revision: what this repository's sessions did with it (usage detail kept for the retention window). */
+  entrySignals(): Map<string, EntrySignals> {
+    const map = new Map<string, EntrySignals>();
+    const get = (id: string, rev: number) => {
+      const k = `${id}@${rev}`;
+      let f = map.get(k);
+      if (!f) map.set(k, (f = { shownSessions: 0, usedSessions: 0, inapplicableSessions: 0, successes: 0, failures: 0, firstShownAt: null }));
+      return f;
+    };
+    const usage = this.stmt(`SELECT entry_id, revision,
+        COUNT(DISTINCT CASE WHEN event_type IN ('radar_shown', 'guard_shown') THEN session_id END) AS shown,
+        COUNT(DISTINCT CASE WHEN event_type IN ('retrieved', 'cited') THEN session_id END) AS used,
+        COUNT(DISTINCT CASE WHEN event_type = 'feedback_inapplicable' THEN session_id END) AS inapplicable,
+        MIN(CASE WHEN event_type IN ('radar_shown', 'guard_shown') THEN created_at END) AS first_shown
+      FROM usage_events WHERE session_id NOT LIKE 'eval:%' GROUP BY entry_id, revision`)
+      .all() as Array<{ entry_id: string; revision: number; shown: number; used: number; inapplicable: number; first_shown: string | null }>;
+    for (const u of usage) {
+      const f = get(u.entry_id, Number(u.revision));
+      f.shownSessions = Number(u.shown);
+      f.usedSessions = Number(u.used);
+      f.inapplicableSessions = Number(u.inapplicable);
+      f.firstShownAt = u.first_shown;
+    }
+    const vals = this.stmt(`SELECT entry_id, revision, outcome, COUNT(*) AS n FROM validation_records GROUP BY entry_id, revision, outcome`)
+      .all() as Array<{ entry_id: string; revision: number; outcome: string; n: number }>;
+    for (const v of vals) {
+      const f = get(v.entry_id, Number(v.revision));
+      if (v.outcome === 'success') f.successes += Number(v.n);
+      if (v.outcome === 'failure') f.failures += Number(v.n);
+    }
+    return map;
+  }
+
+  /**
+   * The two automatic steps of {@link AutoDemotionPolicy}: confirmed entries that feedback shows rarely fit go back
+   * to trial; entries paused for low value that nobody decided on for a long time are archived. Each step is
+   * recorded (`auto_demotions`), raises an inbox item, and can be undone with {@link restoreAutoDemotion}.
+   */
+  runAutoDemotion(options: { now?: Date } = {}): { demoted: string[]; archived: string[] } {
+    const policy = this.autoDemotionPolicy;
+    const demoted: string[] = [];
+    const archived: string[] = [];
+    if (!policy.enabled) return { demoted, archived };
+    const now = options.now ?? new Date();
+    const signals = this.entrySignals();
+    const empty: EntrySignals = { shownSessions: 0, usedSessions: 0, inapplicableSessions: 0, successes: 0, failures: 0, firstShownAt: null };
+    const vetoed = this.stmt('SELECT 1 FROM auto_demotions WHERE entry_id = ? AND revision = ? AND reverted_at IS NOT NULL LIMIT 1');
+    const attention = this.stmt(`SELECT kind, created_at FROM attention_items WHERE workspace_id = ? AND entry_id = ?
+      AND kind IN ('inapplicable', 'probation_silent', 'auto_demoted') ORDER BY created_at`);
+    const decidedAfter = this.stmt('SELECT 1 FROM governance_decisions WHERE workspace_id = ? AND entry_id = ? AND created_at >= ? LIMIT 1');
+    const rows = this.stmt(`SELECT * FROM entries WHERE status IN ('active', 'probation') AND layer != 'team_rule'`).all() as unknown as EntryRow[];
+    for (const row of rows) {
+      if (!this.isOwnedSource(row.workspace_id)) continue;
+      const entry = rowToEntry(row);
+      if (vetoed.get(entry.id, entry.revision)) continue;
+      const s = signals.get(`${entry.id}@${entry.revision}`) ?? empty;
+      try {
+        // Shared entries: whether they fit is decided across repositories (cross-repository feedback), not here.
+        const verdict = isCrossRepoLayer(entry.layer) ? null : demoteVerdict(entry, s, policy, now);
+        if (verdict && !transitionBlocker(entry, 'auto_demote')) {
+          this.updateExistingEntryDirect(transition(entry, 'auto_demote', { now: now.toISOString() }));
+          this.recordAutoStep(entry, 'demote', verdict.reason, s, now);
+          this.raiseAttention(entry, 'auto_demoted', `${verdict.reason}试用期内有人确认会自动转回正式；也可以直接撤销或淘汰。`);
+          this.emit('entry.auto_demoted', entry, { reason: verdict.reason, signals: s });
+          demoted.push(entry.id);
+          continue;
+        }
+        if (entry.serving !== 'suspended') continue;
+        const open = attention.all(this.workspaceId, entry.id) as Array<{ kind: 'inapplicable' | 'probation_silent' | 'auto_demoted'; created_at: string }>;
+        // Count from when it was paused (its last change), not from when the inbox item first appeared.
+        const since = open[0] ? [open[0].created_at, entry.updated_at].filter(Boolean).sort().at(-1)! : '';
+        const paused = open[0] ? { kind: open[0].kind, since } : null;
+        const decided = paused ? Boolean(decidedAfter.get(this.workspaceId, entry.id, paused.since)) : false;
+        const archive = archiveVerdict(entry, s, paused, decided, policy, now);
+        if (archive && !transitionBlocker(entry, 'auto_archive')) {
+          this.updateExistingEntryDirect(transition(entry, 'auto_archive', { now: now.toISOString() }));
+          this.recordAutoStep(entry, 'archive', archive.reason, s, now);
+          this.emit('entry.auto_archived', entry, { reason: archive.reason, signals: s });
+          archived.push(entry.id);
+        }
+      } catch (err) {
+        // edited on disk meanwhile, or written by another window: try again next time
+        if (!(err instanceof ConcurrentModificationError)) {
+          console.warn(`[accremind] automatic demotion of ${entry.id} skipped: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    if (demoted.length || archived.length) this.invalidateSnapshot();
+    return { demoted, archived };
+  }
+
+  private recordAutoStep(entry: KnowledgeEntry, step: 'demote' | 'archive', reason: string, signals: EntrySignals, now: Date): void {
+    this.stmt(`INSERT INTO auto_demotions (workspace_id, entry_id, revision, step, from_status, from_serving, reason, signals_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(this.workspaceId, entry.id, entry.revision, step, entry.status, entry.serving, reason, JSON.stringify(signals), now.toISOString());
+  }
+
+  /** Automatic steps, newest first; by default only those still in effect. */
+  listAutoDemotions(options: { includeReverted?: boolean; limit?: number } = {}): AutoDemotionRecord[] {
+    const rows = this.stmt(`SELECT d.*, (SELECT title FROM entries e WHERE e.id = d.entry_id LIMIT 1) AS title FROM auto_demotions d
+      WHERE d.workspace_id = ? ${options.includeReverted ? '' : 'AND d.reverted_at IS NULL'} ORDER BY d.created_at DESC, d.id DESC LIMIT ?`)
+      .all(this.workspaceId, options.limit ?? 200) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id), entry_id: String(r.entry_id), title: (r.title as string | null) ?? null, revision: Number(r.revision),
+      step: r.step as 'demote' | 'archive', from_status: String(r.from_status), from_serving: String(r.from_serving), reason: String(r.reason),
+      signals: JSON.parse(String(r.signals_json)) as EntrySignals, created_at: String(r.created_at),
+      reverted_at: (r.reverted_at as string | null) ?? null, reverted_by: (r.reverted_by as string | null) ?? null,
+    }));
+  }
+
+  /**
+   * Undoes every automatic step still in effect on an entry: it returns to the status it had before them and is
+   * shown again. The revision is then left alone by automatic demotion (a person decided to keep it).
+   */
+  restoreAutoDemotion(entryId: string, note = ''): KnowledgeEntry {
+    const row = this.findRawEntryRow(entryId);
+    if (!row) throw new Error(`未找到条目: ${entryId}`);
+    this.assertOwnedRow(row);
+    const steps = this.stmt('SELECT id, from_status FROM auto_demotions WHERE workspace_id = ? AND entry_id = ? AND reverted_at IS NULL ORDER BY id')
+      .all(this.workspaceId, entryId) as Array<{ id: number; from_status: string }>;
+    if (!steps.length) throw new Error('这条经验没有尚未撤销的自动降级或归档');
+    const entry = rowToEntry(row);
+    const original = steps[0]!.from_status === 'active' ? 'active' : 'probation';
+    const restored = this.updateExistingEntryDirect(transition(entry, 'restore', { restoreStatus: original }));
+    const now = new Date().toISOString();
+    this.stmt('UPDATE auto_demotions SET reverted_at = ?, reverted_by = ? WHERE workspace_id = ? AND entry_id = ? AND reverted_at IS NULL')
+      .run(now, this.actor, this.workspaceId, entryId);
+    this.clearAttention(entryId, 'auto_demoted');
+    this.clearAttention(entryId, 'inapplicable');
+    this.clearAttention(entryId, 'probation_silent');
+    this.recordGovernanceDecision(restored, 'restore', note || '撤销自动降级 / 归档');
+    this.emit('entry.restored', restored, { to: original });
+    this.invalidateSnapshot();
+    return restored;
   }
 
   /**
@@ -2710,6 +2876,7 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
       throw err;
     }
     this.clearAttention(current.id, 'probation_silent');
+    this.clearAttention(current.id, 'auto_demoted');
     this.emit('entry.promoted', promoted, { from: row.storage_zone, to: targetZone });
     // Trial records and snapshots were kept on this machine; a repository entry takes them along.
     try {

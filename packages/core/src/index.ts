@@ -40,3 +40,5 @@ export * from './docs/vocabulary.ts';
 export * from './docs/doc-library.ts';
 export * from './evidence/snapshots.ts';
 export * from './ledger/ledger.ts';
+export * from './governance/auto-demotion.ts';
+export * from './retrieval/auto-tuning.ts';

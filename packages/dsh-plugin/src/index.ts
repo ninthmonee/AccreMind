@@ -11,6 +11,7 @@ import {
   resolveLlmEndpoint,
   TriageEngine,
   ViewCompiler,
+  runAutoTune,
   type AccreMindConfig,
   type CompiledTurnView,
   type LlmInferenceAdapter,
@@ -60,6 +61,7 @@ export const DEFAULT_ACCREMIND_CONFIG: AccreMindConfig = {
     enabled: true,
     modelUpload: false,
   },
+  autoEvolve: { demote: true, tune: true },
 };
 
 export interface AccreMindPluginInstance {
@@ -87,6 +89,9 @@ export interface AccreMindPluginInstance {
   }): Promise<void>;
   dispose(): void;
 }
+
+/** Automatic tuning starts this long after a session opens, so it never competes with the first turns. */
+const AUTO_TUNE_DELAY_MS = 60_000;
 
 const COMMAND_TOOL_NAMES = new Set([
   'run_command',
@@ -120,6 +125,10 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       ...DEFAULT_ACCREMIND_CONFIG.autoCapture,
       ...(rawOptions.autoCapture ?? {}),
     },
+    autoEvolve: {
+      ...DEFAULT_ACCREMIND_CONFIG.autoEvolve,
+      ...(rawOptions.autoEvolve ?? {}),
+    },
   };
 
   const projectRoot = rawOptions.projectRoot ?? process.cwd();
@@ -129,6 +138,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     projectDirName: config.projectDirName,
     workspaceId: rawOptions.workspaceId,
     maxProbationExposures: config.maxProbationExposures,
+    autoDemotion: config.autoEvolve?.demote !== false && !demoMode,
   });
   const ledgerSharing = repositoryLedgerSharing(store.paths);
   store.setShareLedger(() => ledgerSharing.read());
@@ -137,6 +147,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
   const stalenessScanner = new GitStalenessScanner(store);
   // The Git freshness scan shells out to git and can take seconds on large repositories. It runs
   // after the current host callback returns so opening a session is never blocked by it.
+  let autoTuneTimer: ReturnType<typeof setTimeout> | null = null;
   let startupScan: Promise<void> | null = new Promise<void>((resolve) => {
     setImmediate(() => {
       try {
@@ -158,6 +169,19 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
       } finally {
         startupScan = null;
         resolve();
+      }
+      // Automatic tuning replays recorded turns, so it waits until the session has settled and yields often.
+      if (config.autoEvolve?.tune !== false && !demoMode && !disposed) {
+        autoTuneTimer = setTimeout(() => {
+          autoTuneTimer = null;
+          if (disposed) return;
+          runAutoTune(store, { isCancelled: () => disposed }).then((out) => {
+            if (out.action === 'apply' || out.action === 'rollback') console.info(`[accremind] retrieval tuning ${out.action}: ${out.reason}`);
+          }).catch((error: unknown) => {
+            if (!disposed) console.warn(`[accremind] automatic tuning skipped: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }, AUTO_TUNE_DELAY_MS);
+        autoTuneTimer.unref?.();
       }
     });
   });
@@ -449,6 +473,7 @@ function createWorkspaceRuntime(rawOptions: DshPluginRuntimeOptions, demoMode: b
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (autoTuneTimer) clearTimeout(autoTuneTimer);
       demoSessions?.dispose();
       sessionSurfacedMap.clear();
       sessionSignals.clear();
