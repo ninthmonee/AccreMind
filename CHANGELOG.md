@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Select README wordmarks using GitHub's page theme markers, so manually selected dark mode shows light text even when the system theme is light.
 - Align the README title icon and text in self-contained SVG wordmarks with light and dark variants, avoiding GitHub's inline image baseline offset.
 
 ## [0.1.0] — 2026-11-25
