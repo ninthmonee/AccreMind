@@ -2,8 +2,9 @@
 // 发布前自检：确认包形态满足 DSH 插件市场的收录条件。
 // 用法：node packages/dsh-plugin/scripts/check-publishable.mjs [--pack]
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -151,15 +152,43 @@ if (process.argv.includes('--pack')) {
   } catch (error) {
     bad('build', error instanceof Error ? error.message : String(error));
   }
+  // 真打包到临时目录再读 tarball 清单：pnpm 各版本对 pack 的参数支持不一致
+  // （10.x 没有 --dry-run/--json），只有真的产出 tgz 才能确认发布形态。
+  const staging = mkdtempSync(join(tmpdir(), 'accremind-pack-'));
   try {
-    const out = execFileSync('pnpm', ['pack', '--dry-run', '--json'], { cwd: pkgDir, encoding: 'utf8' });
-    const packed = JSON.parse(out);
-    const count = packed?.files?.length ?? 0;
-    const hasDist = (packed?.files ?? []).some(file => file.path.startsWith('dist/'));
-    if (count > 0 && hasDist) ok('pnpm pack 产物', count + ' 个文件，含 dist');
-    else bad('pnpm pack 产物', count + ' 个文件，dist ' + (hasDist ? '在' : '缺失'));
+    execFileSync('pnpm', ['pack', '--pack-destination', staging], {
+      cwd: pkgDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const tgz = readdirSync(staging).find(name => name.endsWith('.tgz'));
+    if (!tgz) throw new Error('pnpm pack 没有产出 tarball：' + (readdirSync(staging).join(', ') || '目录为空'));
+    const tarball = join(staging, tgz);
+    const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' })
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.endsWith('/'))
+      .map(line => line.replace(/^package\//, ''));
+    const hasDist = entries.some(entry => entry.startsWith('dist/'));
+    if (entries.length > 0 && hasDist) ok('pnpm pack 产物', entries.length + ' 个文件，含 dist（' + tgz + '）');
+    else bad('pnpm pack 产物', entries.length + ' 个文件，dist ' + (hasDist ? '在' : '缺失'));
+    for (const need of ['LICENSE', 'README.md', 'client.js', 'cordis.patch.yml', 'icon.svg', 'dist/index.js', 'dist/cli.js']) {
+      if (entries.includes(need)) ok('tarball 含 ' + need);
+      else bad('tarball 含 ' + need, '缺失');
+    }
+    const packedManifest = JSON.parse(execFileSync('tar', ['-xzOf', tarball, 'package/package.json'], { encoding: 'utf8' }));
+    const packedDep = packedManifest.dependencies?.['@accremind/core'];
+    if (typeof packedDep === 'string' && packedDep && !packedDep.startsWith('workspace:')) {
+      ok('tarball 内依赖已替换', '@accremind/core@' + packedDep);
+    } else {
+      bad('tarball 内依赖已替换', String(packedDep) + '：workspace 协议没被替换，装插件会失败');
+    }
+    if (typeof packedManifest.engines?.dsh === 'string' && packedManifest.engines.dsh) ok('tarball 内含 engines.dsh', packedManifest.engines.dsh);
+    else bad('tarball 内含 engines.dsh', '缺失：宿主会放行任何版本');
   } catch (error) {
     bad('pnpm pack 产物', error instanceof Error ? error.message.split('\n')[0] : String(error));
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
   }
 }
 

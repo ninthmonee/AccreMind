@@ -21,7 +21,7 @@ node packages/dsh-plugin/scripts/check-publishable.mjs --pack
 node packages/dsh-plugin/scripts/market-index.mjs --check
 ```
 
-第一条编译 `dist/`（**必须**，包里不含构建脚本）；第二条按市场的收录条件逐项核对，`--pack` 还会实跑 `pnpm pack --dry-run` 确认 `dist/` 真的进了 tarball；第三条确认索引与清单没有漂移。
+第一条编译 `dist/`（**必须**，包里不含构建脚本）；第二条按市场的收录条件逐项核对，`--pack` 会真的打包到临时目录并读 tarball 清单，确认 `dist/`、`LICENSE`、`client.js`、`cordis.patch.yml`、`icon.svg` 都进包，同时校验 tarball 内的 `workspace:*` 已被替换成真实版本号；第三条确认索引与清单没有漂移。
 
 本机装了 DSH 时，第二条会自动找到 `@deepseek-ai/dsh-app-boot`，直接用宿主的 `evaluatePluginCompatibility` 验证版本门槛真的会拒绝旧版本（找不到时可加 `--host <DSH 的 node_modules 路径>` 指定；CI 上没有宿主，该项显示为跳过）。
 
