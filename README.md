@@ -1,6 +1,6 @@
 <div align="center">
 
-# <img src="packages/dsh-plugin/icon.svg" alt="" width="40" height="40" align="middle" /> AccreMind
+# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/brand/accremind-wordmark-dark.svg" /><img src="docs/brand/accremind-wordmark-light.svg" alt="AccreMind" width="210" height="40" /></picture>
 
 **Models are always superseded by the next generation. Knowledge is not.**
 
