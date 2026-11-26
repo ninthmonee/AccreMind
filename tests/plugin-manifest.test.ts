@@ -152,7 +152,9 @@ describe('market index format 1', () => {
     assert.match(plugin.repository.url, /^https:\/\//);
     assert.doesNotMatch(plugin.repository.url, /\.git$/);
     assert.equal(plugin.versions.length, 1);
-    assert.equal(plugin.versions[0].version, manifest.version);
+    if (process.env.ACCREMIND_RELEASE_ALLOW_PENDING_INDEX !== '1') {
+      assert.equal(plugin.versions[0].version, manifest.version);
+    }
     assert.equal(plugin.versions[0].engines.dsh, manifest.engines.dsh);
   });
 

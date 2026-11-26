@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Rolled the npm `latest` tags and both marketplace manifests back to `0.2.0` after the erroneous duplicate `0.2.1`–`0.2.3` bumps. `@accremind/dsh-plugin@0.2.1` was removed; the three core duplicates remain published because npm blocks unpublishing a package that has dependents, but they are no longer selected by default.
+- `scripts/release-npm.sh` can resume a partially completed release: it verifies that both packages carry the same version, skips versions already present on npm, then publishes the missing package and refreshes the marketplace index. Previously a successful core publish followed by a plugin failure made every retry stop at the already-published core version.
 - The DSH sidebar entry now draws the same layered A as `packages/dsh-plugin/icon.svg` (rounded surface, two gradients, three strokes) instead of a `currentColor` outline, so the sidebar, the workbench header, the browser tab and the marketplace all show one mark. A test asserts the paths and gradient stops against the SVG so the two cannot drift apart.
 - Long commit bodies, diff rows and touched-file chips in the Git radar no longer widen the list: the expanded card is a `min-w-0` grid and long unbroken strings wrap (`break-words` / `[overflow-wrap:anywhere]`, `break-all` on file chips).
 - Select README wordmarks using GitHub's page theme markers, so manually selected dark mode shows light text even when the system theme is light.

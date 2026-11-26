@@ -36,16 +36,21 @@ node packages/dsh-plugin/scripts/market-index.mjs --check
 一条命令跑完全流程（自检 → 发 core → 发插件 → 回读版本 → 刷新索引 → 校验索引）：
 
 ```bash
-npm login                                  # 一次性，需要能写 @accremind scope
+npm login --registry=https://registry.npmjs.org/   # 一次性，需要能写 @accremind scope
 ./scripts/release-npm.sh                   # 或者 NPM_TOKEN=npm_xxx ./scripts/release-npm.sh
 ```
+
+发布前会先要求两个包的版本完全一致。已经存在于 npm 的精确版本会被跳过，所以
+“core 发成功、插件失败”之后，重新登录并执行同一个脚本即可从插件继续，不需要为了
+绕过 `EPUBLISHCONFLICT` 再 bump 一次 core。跳过的版本不会重新上传：如果该版本发布后
+源码又变了，必须同时 bump 两个包的版本。
 
 脚本存在的理由，每一条都是踩过的坑：
 
 - **必须用 `pnpm publish`，不能用 `npm publish`**：实测同一个包 `npm pack` 出来的 tarball 里 `@accremind/core` 依赖不会被改写，`pnpm pack` 出来的才是 `0.1.0`。
 - **强制 `--registry https://registry.npmjs.org/`**：本机 `~/.npmrc` 常指向镜像（npmmirror），不显式指定会把发布打到镜像上。
 - **npm 缓存重定向到临时目录**：受限 shell 里 `~/.npm` 不可写，`npm whoami` 会直接 EPERM。
-- **token 必须走环境变量，不能只写 `.npmrc`**：`pnpm publish` 不读 userconfig / 项目 `.npmrc` 里的 `_authToken`。只写配置文件时，即使 token 已带 Bypass 2FA，发布仍报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required`——这条错误极易被误判成"token 没开 Bypass 2FA"。脚本因此把 token 同时注入成 `npm_config_//registry.npmjs.org/:_authToken`，发布步骤一次通过。
+- **发布步骤里 token 必须作为环境变量传给 pnpm**：`pnpm publish` 不读 userconfig / 项目 `.npmrc` 里的 `_authToken`。只写配置文件时，即使 token 已带 Bypass 2FA，发布仍报 `403 Two-factor authentication or granular access token with bypass 2fa enabled is required`——这条错误极易被误判成"token 没开 Bypass 2FA"。脚本会读取 `NPM_TOKEN` 或 `npm login` 写入的 token，并注入成 `npm_config_//registry.npmjs.org/:_authToken`；每次使用独立 npm 缓存，避免旧的 `whoami` 缓存把失效 token 误判为已登录。
 
 判断 token 到底是"权限不足"还是"没被读到"，看 `GET /-/npm/v1/tokens` 的返回：`bypass_2fa: true` 且权限含 package write 就说明 token 本身没问题，问题在客户端没带上它。
 
