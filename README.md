@@ -173,7 +173,11 @@ The package is published as `@accremind/dsh-plugin`. What you see depends on whi
   {"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}
   ```
 
-  dshmarket accepts an `http(s)://` URL, a `file://` URL or an absolute path.
+  dshmarket accepts an `http(s)://` URL, a `file://` URL or an absolute path. This repository ships the full entry as
+  [`market/dshmarket-catalog.json`](market/dshmarket-catalog.json) — point dshmarket at that file (raw URL or a local path)
+  and `AccreMind` shows up in its list; adding the catalog is what registers the plugin, since dshmarket refuses to install
+  anything outside its current registry. The catalog's `installCommand` field is informational: it is the CLI line for
+  hosts without a marketplace (any profile except `desktop`), not something dshmarket runs.
 - **No marketplace**: install from the CLI (any profile except `desktop`) or copy the package into the profile by hand.
 
 Index URL used by the official market:

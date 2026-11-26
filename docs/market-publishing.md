@@ -95,6 +95,11 @@ https://raw.githubusercontent.com/ninthmonee/AccreMind/main/market/index.json
 {"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}
 ```
 
+仓库里已经有成品：`market/dshmarket-catalog.json`。它把索引里的那条记录展开成目录格式（`name` / `url` / `npm` /
+`category` / `title` / `description` / `icon` / `engines` 与索引同源），另加两个**仅供人看**的字段：`installCommand`
+是 `desktop` 之外 profile 的 CLI 装法（带精确版本），`installNote` 说明桌面端为什么必须走界面。dshmarket 不读这两个字段，
+它按 registry 里的 `npm` 自己去装，所以页面上的安装按钮与 CLI 那条命令走的是同一条 npm 来源，只是入口不同。
+
 另外注意：dshmarket 的 `POST /dsh-market/install` 只接受**已在它当前 registry 里**的插件，否则返回
 `{"error":"plugin is not in the curated registry"}`；所以用户加的自定义目录必须先进 registry（加目录源即可），
 直接拿 npm 包名去装会被拒。进入公共目录（所有人可见）只能靠 awesome-dsh-plugin 收录后每日构建生成的新版

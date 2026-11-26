@@ -4,21 +4,50 @@
     "en": "AccreMind",
     "zh": "AccreMind"
   },
-  "updated": "2026-11-25",
+  "updated": "2026-11-26",
+  "description": {
+    "en": "Turn the experience scattered across your projects into reusable knowledge assets, then hand it back at the moment it matters. Markdown source of truth plus a node:sqlite FTS5 index, entirely on your machine.",
+    "zh": "把散落在项目里的经验沉淀成可复用的知识资产，再在需要的那一刻交还给模型和开发者。Markdown 为事实来源，node:sqlite FTS5 只做索引，数据不出本机。"
+  },
+  "homepage": "https://github.com/ninthmonee/AccreMind",
+  "notes": {
+    "en": "dshmarket reads only the fields in plugins[] below. installCommand is informational: dshmarket itself installs the npm package from its own registry, the CLI line is for hosts without a marketplace (any profile except desktop).",
+    "zh": "dshmarket 只读下面 plugins[] 里的字段。installCommand 仅供人看：dshmarket 自己从它的 registry 装 npm 包，命令行那条是给没有市场的宿主用的（desktop 之外的 profile）。"
+  },
   "plugins": [
     {
-      "name": "ninthmonee/AccreMind#dsh-plugin",
+      "name": "@accremind/dsh-plugin",
+      "title": {
+        "en": "AccreMind",
+        "zh": "AccreMind 经验引擎"
+      },
       "owner": "ninthmonee",
       "url": "https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin",
-      "page": "https://github.com/ninthmonee/AccreMind",
-      "category": "memory",
       "description": {
-        "en": "Captures engineering experience from a coding session into a local Markdown knowledge base and hands the relevant parts back at the start of each turn; ships a CLI, a standalone workbench and a DeepSeek Harness adapter.",
-        "zh": "把编码过程中的工程经验沉淀成本地 Markdown 知识库，并在每回合开始时把相关的部分交还给模型；带 CLI、独立工作台与 DeepSeek Harness 适配层。"
+        "en": "Turn the experience scattered across your projects into reusable knowledge assets, then hand it back at the moment it matters. Markdown source of truth plus a node:sqlite FTS5 index, entirely on your machine.",
+        "zh": "把散落在项目里的经验沉淀成可复用的知识资产，再在需要的那一刻交还给模型和开发者。Markdown 为事实来源，node:sqlite FTS5 只做索引，数据不出本机。"
       },
+      "category": "knowledge",
+      "icon": "https://raw.githubusercontent.com/ninthmonee/AccreMind/main/packages/dsh-plugin/icon.svg",
       "npm": "@accremind/dsh-plugin",
       "version": "0.1.0",
-      "install": "dsh plugin add @accremind/dsh-plugin"
+      "engines": {
+        "dsh": ">=0.2.2-rc.5"
+      },
+      "installCommand": "dsh plugin --profile <profile> add @accremind/dsh-plugin@0.1.0",
+      "installNote": {
+        "en": "Any profile except desktop; the desktop profile is owned by the app and installs through the marketplace UI.",
+        "zh": "desktop 之外的 profile 用这条命令；desktop profile 由桌面应用独占，请走市场界面安装。"
+      },
+      "keywords": [
+        "experience",
+        "memory",
+        "knowledge-base",
+        "engineering",
+        "sqlite",
+        "local-first",
+        "capture"
+      ]
     }
   ]
 }

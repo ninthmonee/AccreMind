@@ -173,7 +173,10 @@ pnpm install:dsh -- --profile web     # 或指定其它 profile
   {"plugins":[{"name":"ninthmonee/AccreMind#dsh-plugin","url":"https://github.com/ninthmonee/AccreMind/tree/main/packages/dsh-plugin","category":"memory","npm":"@accremind/dsh-plugin"}]}
   ```
 
-  dshmarket 接受 `http(s)://` 地址、`file://` 地址或本机绝对路径。
+  dshmarket 接受 `http(s)://` 地址、`file://` 地址或本机绝对路径。本仓库已经把完整条目放在
+  [`market/dshmarket-catalog.json`](market/dshmarket-catalog.json)，把它指过去（raw 地址或本机路径），`AccreMind` 就会出现在列表里；
+  加这个目录本身就是注册动作，因为 dshmarket 不接受 registry 之外的插件。目录里的 `installCommand` 字段只给人看：
+  它是没有市场的宿主走的那条 CLI（`desktop` 之外的 profile），dshmarket 不会执行它。
 - **没有市场**：走下面的命令行（`desktop` 之外的 profile），或把包装进 profile。
 
 官方市场用的索引地址：
