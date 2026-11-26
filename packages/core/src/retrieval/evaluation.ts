@@ -121,17 +121,24 @@ class Tally {
   }
 }
 
+/** What AccreMind actually shows: the control arm is "no reminders at all", the middle arm "resident rules only". */
+export type ReplayMode = 'full' | 'rules-only' | 'off';
+
 /** Replays `cases[from, to)` with `tuning` swapped in only for the duration of this synchronous call. */
-function replay(store: LocalMarkdownSqliteStore, vc: ViewCompiler, cases: EvalCase[], from: number, to: number, tuning: RetrievalTuning, tally: Tally): void {
+function replay(store: LocalMarkdownSqliteStore, vc: ViewCompiler, cases: EvalCase[], from: number, to: number, tuning: RetrievalTuning, tally: Tally, mode: ReplayMode = 'full'): void {
   const previous = store.tuning;
   store.setTuning(tuning);
   try {
     for (let i = from; i < to; i++) {
       const c = cases[i]!;
-      tally.add(c, new Set(vc.compileTurnView({
+      const compiled = vc.compileTurnView({
         sessionId: `eval:${c.id}`, preview: true, userPrompt: c.query, activeFiles: c.activeFiles, errorOutput: c.errorText,
         ...(c.tags ? { tags: c.tags } : {}),
-      }).surfacedIds));
+      });
+      const shown = mode === 'off' ? new Set<string>()
+        : mode === 'rules-only' ? new Set(compiled.residentRuleIds)
+          : new Set(compiled.surfacedIds);
+      tally.add(c, shown);
     }
   } finally {
     store.setTuning(previous);
@@ -143,9 +150,9 @@ function evalCompiler(store: LocalMarkdownSqliteStore): ViewCompiler {
 }
 
 /** Replays every case through the real per-turn reminder path (preview: nothing is recorded). */
-export function evaluate(store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning): EvalMetrics {
+export function evaluate(store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning, mode: ReplayMode = 'full'): EvalMetrics {
   const tally = new Tally(cases.length);
-  replay(store, evalCompiler(store), cases, 0, cases.length, tuning, tally);
+  replay(store, evalCompiler(store), cases, 0, cases.length, tuning, tally, mode);
   return tally.metrics();
 }
 
@@ -154,14 +161,15 @@ export function evaluate(store: LocalMarkdownSqliteStore, cases: EvalCase[], tun
  * up. The trial tuning is only in effect inside each synchronous chunk, so real turns in between use the live one.
  */
 export async function evaluateAsync(
-  store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning, options: { chunk?: number; isCancelled?: () => boolean } = {},
+  store: LocalMarkdownSqliteStore, cases: EvalCase[], tuning: RetrievalTuning,
+  options: { chunk?: number; isCancelled?: () => boolean; mode?: ReplayMode } = {},
 ): Promise<EvalMetrics> {
   const chunk = options.chunk ?? 4;
   const tally = new Tally(cases.length);
   const vc = evalCompiler(store);
   for (let i = 0; i < cases.length; i += chunk) {
     if (options.isCancelled?.()) break; // the store may be closing: stop before touching it
-    replay(store, vc, cases, i, Math.min(cases.length, i + chunk), tuning, tally);
+    replay(store, vc, cases, i, Math.min(cases.length, i + chunk), tuning, tally, options.mode ?? 'full');
     await new Promise<void>((r) => setImmediate(r));
   }
   return tally.metrics();
@@ -192,9 +200,19 @@ export function tuningGrid(base: RetrievalTuning): Array<{ label: string; tuning
 export interface EvalReport {
   cases: { receipt: number; hand: number };
   current: EvalMetrics;
+  /**
+   * The control arms the raw rates cannot show: nothing shown at all (no AccreMind) and resident rules only
+   * (rules already in the repository's instructions). `lift` is what the radar and the tool guard add on top.
+   */
+  baseline: {
+    off: EvalMetrics;
+    rulesOnly: EvalMetrics;
+    lift: { recall: number; noise: number; score: number };
+  };
   best?: { label: string; metrics: EvalMetrics; tuning: RetrievalTuning };
   ranking?: Array<{ label: string; score: number; recall: number; forbiddenShown: number; noise: number }>;
   appliedTo?: string;
+  notApplied?: string;
 }
 
 /**
@@ -207,7 +225,19 @@ export function runEvaluation(store: LocalMarkdownSqliteStore, options: { casesF
   const hand = loadHandCases(options.casesFile ?? path.join(store.paths.projectAccreMindDir, 'eval', 'cases.jsonl'));
   const cases = [...receipt, ...hand];
   const current = evaluate(store, cases, store.tuning);
-  const report: EvalReport = { cases: { receipt: receipt.length, hand: hand.length }, current };
+  const off = evaluate(store, cases, store.tuning, 'off');
+  const rulesOnly = evaluate(store, cases, store.tuning, 'rules-only');
+  const baseline = {
+    off,
+    rulesOnly,
+    // Recall gained over the rules-only arm, noise it removes, and the resulting score difference.
+    lift: {
+      recall: Number((current.recall - rulesOnly.recall).toFixed(3)),
+      noise: Number((rulesOnly.noise - current.noise).toFixed(3)),
+      score: Number((current.score - rulesOnly.score).toFixed(3)),
+    },
+  };
+  const report: EvalReport = { cases: { receipt: receipt.length, hand: hand.length }, current, baseline };
   if (!options.grid || !cases.length) return report;
   const ranking = tuningGrid(store.tuning).map((v) => ({ ...v, metrics: evaluate(store, cases, v.tuning) }))
     .sort((a, b) => b.metrics.score - a.metrics.score || b.metrics.recall - a.metrics.recall);
@@ -215,8 +245,10 @@ export function runEvaluation(store: LocalMarkdownSqliteStore, options: { casesF
   report.best = { label: best.label, metrics: best.metrics, tuning: best.tuning };
   report.ranking = ranking.slice(0, 10).map((r) => ({ label: r.label, score: r.metrics.score, recall: r.metrics.recall,
     forbiddenShown: r.metrics.forbiddenShown, noise: r.metrics.noise }));
-  if (options.apply && best.metrics.score > current.score) {
-    recordManualApply(store, store.tuning, best.tuning, best.label, current, best.metrics);
+  if (options.apply && store.hasProjectTuning()) {
+    report.notApplied = '本项目在 repo.json 中自定义了检索参数：请把更优的参数写进 repo.json 的 settings.tuning，而不是全机参数';
+  } else if (options.apply && best.metrics.score > current.score) {
+    recordManualApply(store, store.globalTuning, best.tuning, best.label, current, best.metrics);
     report.appliedTo = path.join(store.paths.globalRoot, 'tuning.json');
   }
   return report;

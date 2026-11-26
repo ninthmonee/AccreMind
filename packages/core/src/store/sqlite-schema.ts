@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS corrupted_files (
  * database as schema `g`. Unqualified `entries` / `entries_fts` / `entry_symbol_anchors` resolve to it.
  * It carries its own version; a mismatch rebuilds it (it can always be rebuilt from the cards).
  */
-export const ACCREMIND_INDEX_SCHEMA_VERSION = 3;
+export const ACCREMIND_INDEX_SCHEMA_VERSION = 4;
 export const ACCREMIND_INDEX_DDL = `
 PRAGMA g.journal_mode = WAL;
 PRAGMA g.synchronous = NORMAL;
@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS g.doc_sections (
   category TEXT NOT NULL, doc_title TEXT NOT NULL, heading TEXT NOT NULL, body TEXT NOT NULL,
   domains_csv TEXT NOT NULL DEFAULT '', tags_csv TEXT NOT NULL DEFAULT '',
   file_path TEXT NOT NULL, section_sha TEXT NOT NULL, doc_version INTEGER NOT NULL, ord INTEGER NOT NULL,
+  scope TEXT, audience TEXT, subproject TEXT,
   PRIMARY KEY (workspace_id, doc_id, section_id)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS g.doc_fts USING fts5(doc_title, heading, body, tokenize = 'trigram');
@@ -193,6 +194,7 @@ CREATE TABLE IF NOT EXISTS g.doc_files (
   workspace_id TEXT NOT NULL, doc_id TEXT NOT NULL, file_path TEXT NOT NULL, category TEXT NOT NULL,
   title TEXT NOT NULL, domains_csv TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
   version INTEGER NOT NULL, file_sha TEXT NOT NULL, mtime_ms INTEGER, size INTEGER,
+  scope TEXT, audience TEXT, subproject TEXT,
   PRIMARY KEY (workspace_id, doc_id)
 );
 `;
@@ -324,6 +326,13 @@ export const ACCREMIND_SCHEMA_MIGRATIONS: ReadonlyArray<{ version: number; sql: 
         signals_json TEXT NOT NULL, created_at TEXT NOT NULL, reverted_at TEXT, reverted_by TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_auto_demotions_entry ON auto_demotions (entry_id, revision);
+    `,
+  },
+  {
+    // Why each entry was shown in a turn (match reasons), so people see it in the receipt.
+    version: 12,
+    sql: `
+      ALTER TABLE turn_hits ADD COLUMN reasons TEXT;
     `,
   },
 ];

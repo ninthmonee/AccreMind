@@ -157,7 +157,7 @@ function commit(store: LocalMarkdownSqliteStore, record: TuningHistoryRecord): v
   writeFileAtomicSync(f.tuning, `${JSON.stringify(record.to, null, 2)}\n`);
   fs.mkdirSync(path.dirname(f.history), { recursive: true });
   fs.appendFileSync(f.history, `${JSON.stringify(record)}\n`, 'utf8');
-  store.setTuning(record.to);
+  store.setGlobalTuning(record.to);
 }
 
 function log(store: LocalMarkdownSqliteStore, record: TuningHistoryRecord): void {
@@ -226,7 +226,10 @@ export async function runAutoTune(
   const state = readState(f.state);
   // Another window may have changed the settings since this one started.
   const live = loadTuning(f.tuning);
-  if (tuningHash(live) !== tuningHash(store.tuning)) store.setTuning(live);
+  if (tuningHash(live) !== tuningHash(store.globalTuning)) store.setGlobalTuning(live);
+  // A project that sets its own retrieval settings (repo.json) is not tuned automatically: its overrides would
+  // otherwise be written into every other project's settings.
+  if (store.hasProjectTuning()) return { action: 'skipped', reason: '本项目在 repo.json 中自定义了检索参数，不参与自动调参' };
 
   if (state.watching) {
     const w = state.watching;
@@ -288,7 +291,7 @@ export async function runAutoTune(
     markRun();
     return { action: 'skipped', reason: `有标注的样本不足（${cases.length}/${policy.minCases}），不调整` };
   }
-  const base = store.tuning;
+  const base = store.globalTuning;
   const current = await score(cases, base);
   if (options.isCancelled?.()) return { action: 'skipped', reason: '已取消' };
   let best: { label: string; tuning: RetrievalTuning; metrics: EvalMetrics } | null = null;

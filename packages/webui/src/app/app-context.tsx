@@ -13,6 +13,8 @@ export interface LibraryPreset {
   type?: KnowledgeType;
   status?: EntryStatus;
   freshness?: Freshness;
+  /** Catalog domain ID (from the domain list on the rule documents page). */
+  domain?: string;
 }
 
 interface AppState {

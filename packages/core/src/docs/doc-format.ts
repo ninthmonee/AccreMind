@@ -6,13 +6,32 @@ import { createHash } from 'node:crypto';
  * project's norms, its basic business attributes and its business rules — and grow during development
  * through proposals a person accepts.
  */
-export const DOC_CATEGORIES = ['domain', 'business_rules', 'project_norms', 'project_profile'] as const;
+export const DOC_CATEGORIES = ['domain', 'business_rules', 'project_norms', 'project_profile', 'personal_preferences'] as const;
 export type DocCategory = (typeof DOC_CATEGORIES)[number];
 export const DOC_CATEGORY_LABEL: Record<DocCategory, string> = {
   domain: '业务领域',
   business_rules: '业务规则',
   project_norms: '项目规范',
   project_profile: '项目基本业务属性',
+  personal_preferences: '个人偏好',
+};
+
+/**
+ * Where a document is mounted, which decides where it is stored and who gets it:
+ * project — this repository only (`.accremind/docs/`, committed);
+ * domain — every project in its business domains (the knowledge base, or the repository that hosts it);
+ * personal — only its owner, in every repository (this machine, never committed).
+ */
+export type DocScope = 'project' | 'domain' | 'personal';
+export const DOC_SCOPE_LABEL: Record<DocScope, string> = { project: '项目', domain: '领域', personal: '个人' };
+
+/** Scopes a category may be mounted on; the first is the default. */
+export const SCOPES_FOR_CATEGORY: Record<DocCategory, DocScope[]> = {
+  domain: ['domain'],
+  business_rules: ['domain', 'project'],
+  project_norms: ['project'],
+  project_profile: ['project'],
+  personal_preferences: ['personal'],
 };
 export function isDocCategory(v: unknown): v is DocCategory {
   return typeof v === 'string' && (DOC_CATEGORIES as readonly string[]).includes(v);
@@ -28,6 +47,14 @@ export function isShareableCategory(c: DocCategory): boolean {
 export interface DocMeta {
   id: string;
   title: string;
+  /** Absent in older documents: derived from the category and where the file lives. */
+  scope?: DocScope;
+  /** Domain documents: `core` = only the domain's core projects; `all` (default) = consumers too. */
+  audience?: 'core' | 'all';
+  /** Monorepo sub-project the document is about (project scope). */
+  subproject?: string;
+  /** Personal documents: the owner's user ID. */
+  owner?: string;
   category: DocCategory;
   domains: string[];
   tags: string[];
@@ -128,11 +155,17 @@ export function parseDoc(markdown: string, fallback: { id: string; category: Doc
   }
   flush();
   const category = isDocCategory(unquote(fields.category)) ? (unquote(fields.category) as DocCategory) : fallback.category;
+  const scope = unquote(fields.scope);
+  const audience = unquote(fields.audience);
   return {
     meta: {
       id: unquote(fields.id) || fallback.id,
       title: title || fallback.id,
       category,
+      ...(scope === 'project' || scope === 'domain' || scope === 'personal' ? { scope } : {}),
+      ...(audience === 'core' || audience === 'all' ? { audience } : {}),
+      ...(unquote(fields.subproject) ? { subproject: unquote(fields.subproject) } : {}),
+      ...(unquote(fields.owner) ? { owner: unquote(fields.owner) } : {}),
       domains: parseList(fields.domains),
       tags: parseList(fields.tags),
       version: Number.parseInt(unquote(fields.version), 10) || 1,
@@ -151,7 +184,11 @@ export function serializeDoc(doc: ParsedDoc): string {
     `id: ${JSON.stringify(m.id)}`,
     `title: ${JSON.stringify(m.title)}`,
     `category: ${JSON.stringify(m.category)}`,
+    ...(m.scope ? [`scope: ${JSON.stringify(m.scope)}`] : []),
     `domains: ${JSON.stringify(m.domains)}`,
+    ...(m.audience && m.audience !== 'all' ? [`audience: ${JSON.stringify(m.audience)}`] : []),
+    ...(m.subproject ? [`subproject: ${JSON.stringify(m.subproject)}`] : []),
+    ...(m.owner ? [`owner: ${JSON.stringify(m.owner)}`] : []),
     `tags: ${JSON.stringify(m.tags)}`,
     `version: ${m.version}`,
     `updated_at: ${JSON.stringify(m.updated_at)}`,

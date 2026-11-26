@@ -91,13 +91,17 @@ export class AutoCaptureCoordinator {
     userText?: string,
     assistantText?: string,
   ): void {
-    if (!this.store.repoSettings().capture) {
+    if (this.store.repoSettings().capture === false) {
       this.sessions.delete(sessionId);
       return;
     }
     const s = this.getSession(sessionId);
-    if (userText?.trim()) s.userMessages.push(userText.trim());
-    if (assistantText?.trim()) s.assistantMessages.push(assistantText.trim());
+    // The host reports the same user message at every model step of a turn (and again when it ends); kept once,
+    // or the last few messages handed to the model would all be the current one and push earlier context out.
+    const u = userText?.trim();
+    if (u && s.userMessages.at(-1) !== u) s.userMessages.push(u);
+    const a = assistantText?.trim();
+    if (a && s.assistantMessages.at(-1) !== a) s.assistantMessages.push(a);
   }
 
   recordToolActivity(options: {
@@ -107,7 +111,7 @@ export class AutoCaptureCoordinator {
     isCommandOrTest?: boolean;
     failed?: boolean;
   }): void {
-    if (!this.store.repoSettings().capture) {
+    if (this.store.repoSettings().capture === false) {
       this.sessions.delete(sessionIdFrom(options.sessionId));
       return;
     }
@@ -156,7 +160,7 @@ export class AutoCaptureCoordinator {
     };
 
     const signalResult = evaluateSessionSignals(snapshot);
-    if (!this.store.repoSettings().capture) {
+    if (this.store.repoSettings().capture === false) {
       this.sessions.delete(sessionId);
       return { signalResult: { ...signalResult, shouldCapture: false }, enqueuedJob: null };
     }
@@ -189,7 +193,7 @@ export class AutoCaptureCoordinator {
     touchedFiles: string[];
     rawCandidateContext: string;
   }): QueuedCaptureJob {
-    if (!this.store.repoSettings().capture) {
+    if (this.store.repoSettings().capture === false) {
       throw new Error('本项目已排除沉淀（capture: false），没有创建捕获队列任务。');
     }
     const job: QueuedCaptureJob = {
@@ -255,12 +259,39 @@ export class AutoCaptureCoordinator {
     return pruned;
   }
 
+  /** Jobs that used up their automatic attempts (shown with their last error; retry or discard by hand). */
+  failedJobs(): QueuedCaptureJob[] {
+    return this.listQueuedJobs().filter((j) => j.attempts >= MAX_AUTO_RETRIES);
+  }
+
+  /** Whether any job can be worked on now (not waiting for its backoff, attempts left). */
+  hasRunnableJobs(nowMs = Date.now()): boolean {
+    return this.listQueuedJobs().some((j) => j.attempts < MAX_AUTO_RETRIES && j.nextRetryAtMs <= nowMs);
+  }
+
+  /** Gives a failed job its automatic attempts back. */
+  retryJob(jobId: string): boolean {
+    const job = this.listQueuedJobs().find((j) => j.jobId === jobId);
+    if (!job) return false;
+    writeFileAtomicSync(path.join(this.store.paths.queueDir, `${job.jobId}.json`),
+      `${JSON.stringify({ ...job, attempts: 0, nextRetryAtMs: 0 }, null, 2)}\n`);
+    return true;
+  }
+
+  discardJob(jobId: string): boolean {
+    const file = path.join(this.store.paths.queueDir, `${jobId.replace(/[^\w.-]+/g, '_')}.json`);
+    if (!fs.existsSync(file)) return false;
+    fs.unlinkSync(file);
+    return true;
+  }
+
   /**
    * Drains eligible queued jobs via `EvidenceCollector -> DeltaAssessor -> TriageEngine`.
    * Transient LLM failures apply exponential backoff + jitter up to 5 attempts (PRD §9.4).
+   * `force`: a person asked for it now, so jobs waiting out a backoff run too.
    */
-  async processPendingQueue(nowMs = Date.now()): Promise<SingleTriageOutcome[]> {
-    if (this.draining || !this.llm || !this.store.repoSettings().capture) return [];
+  async processPendingQueue(nowMs = Date.now(), options: { force?: boolean } = {}): Promise<SingleTriageOutcome[]> {
+    if (this.draining || !this.llm || this.store.repoSettings().capture === false) return [];
     this.draining = true;
     const outcomes: SingleTriageOutcome[] = [];
 
@@ -273,9 +304,9 @@ export class AutoCaptureCoordinator {
 
       const jobs = this.listQueuedJobs();
       for (const job of jobs) {
-        if (!this.store.repoSettings().capture) break;
+        if (this.store.repoSettings().capture === false) break;
         if (job.attempts >= MAX_AUTO_RETRIES) continue;
-        if (job.nextRetryAtMs > nowMs) continue;
+        if (job.nextRetryAtMs > nowMs && !options.force) continue;
 
         const jobFile = path.join(this.store.paths.queueDir, `${job.jobId}.json`);
         try {
@@ -289,7 +320,7 @@ export class AutoCaptureCoordinator {
 
           const triagedInput = await assessor.assess(bundle, this.assessmentMode);
           // A switch changed while inference was running pauses the original job without consuming it.
-          if (!this.store.repoSettings().capture) break;
+          if (this.store.repoSettings().capture === false) break;
           const outcome = this.triageEngine.processCandidate(triagedInput);
           outcomes.push(outcome);
 
@@ -297,7 +328,7 @@ export class AutoCaptureCoordinator {
             fs.unlinkSync(jobFile);
           }
         } catch (err) {
-          if (!this.store.repoSettings().capture) break;
+          if (this.store.repoSettings().capture === false) break;
           const nextAttempts = job.attempts + 1;
           const jitter = Math.floor(Math.random() * 300);
           const backoff = Math.min(60_000, 1000 * 2 ** job.attempts) + jitter;
@@ -339,7 +370,7 @@ export async function runArchaeologyBootstrap(options: {
   minedCommits: ArchaeologyCommitCandidate[];
   triageReport: BatchTriageReport;
 }> {
-  if (!options.store.repoSettings().capture) {
+  if (options.store.repoSettings().capture === false) {
     throw new Error('本项目已排除沉淀（capture: false），Git 雷达与提炼已暂停。');
   }
   const scanned = scanGitHistorySignals({
@@ -361,7 +392,7 @@ export async function runArchaeologyBootstrap(options: {
 
   const candidateInputs = [];
   for (const commit of minedCommits) {
-    if (!options.store.repoSettings().capture) {
+    if (options.store.repoSettings().capture === false) {
       throw new Error('本项目已排除沉淀（capture: false），历史提炼已暂停。');
     }
     const rawContext = [

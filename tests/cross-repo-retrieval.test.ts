@@ -703,7 +703,8 @@ describe('Repository exclusion: the capture and share switches', () => {
       assert.deepEqual(rt.store.repoSettings(), { capture: true, share: true }, '未写开关等于开启');
       const saved = await rt.rpcHandlers['accremind.repo.setSettings']!({ capture: false });
       assert.equal((saved as { capture: boolean }).capture, false);
-      assert.equal(JSON.parse(fs.readFileSync(rt.store.paths.repoProfileFile, 'utf8')).capture, false);
+      // 开关落在 .accremind/repo.json 的 settings 里（与「整仓暂停」同一个状态源，避免两套真相）。
+      assert.equal(JSON.parse(fs.readFileSync(rt.store.paths.repoProfileFile, 'utf8')).settings.enabled, false);
 
       const radar = await rt.rpcHandlers['accremind.gov.bootstrapHistory']!({ maxCommits: 50, topK: 5 }) as { minedCommits: unknown[]; message?: string };
       assert.deepEqual(radar.minedCommits, [], '被排除的项目不扫描提交历史');

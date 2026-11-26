@@ -178,6 +178,7 @@ describe('Repository exclusion: every repository-derived sharing read', () => {
     assert.ok(b.store.docs.getSection(section.ref));
     a.store.setRepoSettings({ share: false });
     assert.ok(b.store.sessionContext({ share: true, mutedRepos: [] }).mutedRepos?.includes(a.store.workspaceId));
+    // 会话上下文里的仓库身份不可被宿主或调用方改写（否则隔离就成了摆设）。
     assert.equal(b.store.sessionContext({ repoId: a.store.workspaceId }).repoId, b.store.workspaceId);
     assert.equal(b.store.search({ workspaceId: b.store.workspaceId, context: { repoId: a.store.workspaceId },
       query: 'fork 后 pg 连接池 socket', scope: 'all', limit: 30 }).items.some(h => ids.includes(h.entry.id)), false);

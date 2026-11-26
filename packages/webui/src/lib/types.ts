@@ -193,7 +193,7 @@ export interface Insights {
 }
 
 export type AttentionKind = 'probation_silent' | 'inapplicable' | 'rule_conflict' | 'auto_demoted';
-export interface AttentionItem { entry_id: string; kind: AttentionKind; reason: string; revision: number; created_at: string; title: string; type: KnowledgeType | null }
+export interface AttentionItem { entry_id: string; kind: AttentionKind; reason: string; revision: number; created_at: string; title: string; type: KnowledgeType | null; owners?: string[]; assignedToMe?: boolean }
 
 export interface ReviewItem {
   assessment: Assessment;
@@ -240,6 +240,8 @@ export interface ReceiptHit {
   currentRevision: number | null;
   currentServing: Serving | null;
   feedback: 'success' | 'failure' | 'inconclusive' | null;
+  /** Why it was shown: same domain, path anchor, topic tags… */
+  reasons?: string[];
 }
 export interface TurnReceipt { sessionId: string; turnId: string; createdAt: string; hits: ReceiptHit[] }
 
@@ -333,13 +335,21 @@ export interface LedgerStanding {
 export interface LedgerStatus { shared: boolean; sharedFile: string; pendingCount: number; preview: LedgerRecord[] }
 
 // ---- rule document sets ----
-export type DocCategory = 'domain' | 'business_rules' | 'project_norms' | 'project_profile';
-export interface DocListItem { docId: string; title: string; category: DocCategory; domains: string[]; tags: string[]; version: number; sections: number; file: string; originRepo: string | null }
+export type DocCategory = 'domain' | 'business_rules' | 'project_norms' | 'project_profile' | 'personal_preferences';
+/** Where a document applies: one project, every project of its domains, or only the person who imported it. */
+export type DocScope = 'project' | 'domain' | 'personal';
+export interface DocListItem {
+  docId: string; title: string; category: DocCategory; domains: string[]; tags: string[]; version: number; sections: number; file: string; originRepo: string | null;
+  scope?: DocScope; audience?: 'core' | 'all'; subproject?: string | null;
+  /** `repo` (this repository) · `kb` (team knowledge base) · `personal` · another repository's ID */
+  home?: string;
+}
 export interface DocSection { id: string; heading: string; body: string; sha: string }
 export interface DocChange {
   id: string; at: string; actor: string; docId: string; docTitle: string; category: DocCategory;
   op: 'create_doc' | 'add_section' | 'update_section' | 'delete_section' | 'import' | 'manual_edit' | 'delete_doc';
   section: string | null; before: string | null; after: string | null; rationale: string; proposalId: string | null; version: number;
+  home?: string;
 }
 export interface DocDetail {
   meta: { id: string; title: string; category: DocCategory; domains: string[]; tags: string[]; version: number; updated_at: string };
@@ -350,5 +360,32 @@ export interface DocProposal {
   op: 'create_doc' | 'add_section' | 'update_section' | 'delete_section'; content: string; baseSha: string | null;
   rationale: string; evidence: string | null; source: string; sessionId: string | null; status: 'pending' | 'accepted' | 'rejected';
   createdAt: string; decidedAt: string | null; decidedBy: string | null; decisionNote: string | null;
+  owners?: string[]; assignedToMe?: boolean;
 }
 export interface TagProposal { id: string; label: string; kind: string; count: number; example: string | null; status: string; createdAt: string }
+
+export type DomainRole = 'core' | 'consumer';
+export interface DomainInfo {
+  id: string; name: string; aliases: string[]; parent?: string | null; owners: string[]; description?: string;
+  members: Array<{ repo: string; role: DomainRole; subproject?: string; name: string; isThisRepo: boolean }>;
+  myRole: DomainRole | null;
+}
+export interface KnowledgeBaseInfo { root: string; kind: 'team' | 'local' }
+export interface DomainsOverview {
+  catalogFile: string; knowledgeBase: KnowledgeBaseInfo; domains: DomainInfo[];
+  mine: Array<{ id: string; name: string; role: DomainRole; known: boolean }>; unknown: string[];
+}
+export interface SubprojectDef { id: string; name?: string; paths: string[]; domains?: string[]; owners?: string[] }
+export interface Digest {
+  repo: string; since: string; until: string; user: string;
+  pending: { candidates: number; attention: number; attentionMine: number; docProposals: number; docProposalsMine: number; reviewDue: number };
+  happened: {
+    autoDemotions: Array<{ entryId: string; title: string | null; step: string; reason: string; at: string }>;
+    docChanges: Array<{ doc: string; section: string | null; op: string; actor: string; at: string; home?: string }>;
+    tuning: Array<{ action: string; reason: string; at: string }>;
+  };
+  usage: { reminders: number; helpful: number; inapplicable: number; wrong: number; helpfulRate: number | null; inapplicableRate: number | null };
+  /** Model calls this window: auto-capture extraction and topic tagging, in calls and reported tokens. */
+  models: { calls: number; tokens: number; byKind: Record<string, { calls: number; tokens: number }> };
+  markdown: string;
+}

@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, Skeleton } from '@/components/ui/primitives';
 import { TYPES } from '@/lib/labels';
 import { rpc } from '@/lib/rpc';
-import type { AttentionItem, Insights, KnowledgeType, ReviewQueue } from '@/lib/types';
+import type { AttentionItem, Digest, Insights, KnowledgeType, ReviewQueue } from '@/lib/types';
 import { useAsync } from '@/lib/use-async';
 import { percent } from '@/lib/utils';
 import { DonutCard } from '../library/charts';
@@ -47,6 +47,7 @@ export function HomePage() {
   const insights = useAsync(() => rpc<Insights>('accremind.insights.overview', { days, tzOffsetMinutes: -new Date().getTimezoneOffset() }), [days, revision]);
   const queue = useAsync(() => rpc<ReviewQueue>('accremind.review.listQueue', { reviewState: 'pending', limit: 5 }), [revision]);
   const attention = useAsync(() => rpc<{ items: AttentionItem[] }>('accremind.attention.list'), [revision]);
+  const digest = useAsync(() => rpc<Digest>('accremind.digest', { days: 7 }), [revision]);
 
   const c = overview.data?.counts;
   const ins = insights.data;
@@ -296,6 +297,61 @@ export function HomePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* ---------- 本周摘要 ---------- */}
+      <DigestCard digest={digest.data} loading={digest.loading && !digest.data} />
     </div>
+  );
+}
+
+const DIGEST_OP: Record<string, string> = {
+  create_doc: '新建文档', add_section: '新增章节', update_section: '修改章节', delete_section: '删除章节', import: '导入', manual_edit: '直接编辑', delete_doc: '删除文档',
+};
+
+/** 近 7 天：哪些事等你决定、系统自己做了什么（自动降级、文档变更、调参）、提醒效果如何。命令行同样可用：accremind digest。 */
+function DigestCard({ digest: d, loading }: { digest: Digest | undefined; loading: boolean }) {
+  const [copied, setCopied] = useState(false);
+  if (loading) return <Skeleton className="mt-4 h-40 rounded-xl" />;
+  if (!d) return null;
+  const pct = (x: number | null) => (x === null ? '—' : `${Math.round(x * 100)}%`);
+  const events = [
+    ...d.happened.autoDemotions.map((a) => ({ at: a.at, text: `${a.title ?? a.entryId} 被自动${a.step === 'demote' ? '降为试用' : '归档'}：${a.reason}` })),
+    ...d.happened.docChanges.map((c) => ({ at: c.at, text: `${c.doc}${c.section ? ` › ${c.section}` : ''}：${DIGEST_OP[c.op] ?? c.op}（${c.actor}）` })),
+    ...d.happened.tuning.map((t) => ({ at: t.at, text: `检索参数${t.action}：${t.reason}` })),
+  ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(d.markdown);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  return (
+    <Card className="rise mt-4">
+      <CardHeader>
+        <div>
+          <CardTitle>本周摘要</CardTitle>
+          <CardDescription>{d.since.slice(0, 10)} 至 {d.until.slice(0, 10)}。可以复制成 Markdown 发到团队群。</CardDescription>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => void copy()}>{copied ? '已复制' : '复制 Markdown'}</Button>
+      </CardHeader>
+      <CardContent className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-1.5 text-sm">
+          <p>待审核候选 <span className="num font-semibold">{d.pending.candidates}</span></p>
+          <p>待决定的经验 <span className="num font-semibold">{d.pending.attention}</span>（由你负责 {d.pending.attentionMine}）</p>
+          <p>文档修改提议 <span className="num font-semibold">{d.pending.docProposals}</span>（由你负责 {d.pending.docProposalsMine}）</p>
+          <p>关联代码有变化 <span className="num font-semibold">{d.pending.reviewDue}</span></p>
+          <p className="text-muted-foreground">提醒 {d.usage.reminders} 次 · 有帮助率 {pct(d.usage.helpfulRate)} · 不适用率 {pct(d.usage.inapplicableRate)}</p>
+          <p className="text-muted-foreground">模型调用 <span className="num">{d.models.calls}</span> 次 · <span className="num">{d.models.tokens}</span> tokens（提炼 {d.models.byKind.capture?.calls ?? 0} 次 / 标注 {d.models.byKind.tag?.calls ?? 0} 次）</p>
+        </div>
+        <ul className="grid content-start gap-1.5 text-xs">
+          {events.length ? events.map((e, i) => (
+            <li key={i} className="flex gap-2"><span className="num shrink-0 text-muted-foreground">{e.at.slice(5, 10)}</span><span className="min-w-0">{e.text}</span></li>
+          )) : <li className="text-muted-foreground">这段时间没有自动调整或文档变更。</li>}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }

@@ -18,7 +18,8 @@ const OVERRIDE_PATTERNS: RegExp[] = [
 export function sanitizeKnowledgeText(raw: string): string {
   let text = raw
     // Our own wrapper tags: a body must never close or open a reference block.
-    .replace(/<\/?accremind-(?:rules|radar|guard|entry)[^>]*>/gi, '[escaped-tag]')
+    // Any accremind-* tag, including ones added later (profile, doc, preferences…).
+    .replace(/<\s*\/?\s*accremind-[a-z-]*[^>]*>/gi, '[escaped-tag]')
     // Chat-role and tool-call markup used by common agent hosts.
     .replace(/<\|(?:im_start|im_end|system|user|assistant|endoftext)\|>/gi, '[escaped-token]')
     .replace(/<\/?(?:system|assistant|user|developer|instructions?|tool_use|tool_result|function_calls?|invoke|antml:[a-z_]+)\b[^>]*>/gi, '[escaped-tag]')
@@ -29,7 +30,8 @@ export function sanitizeKnowledgeText(raw: string): string {
 }
 
 export function wrapReadOnlyXmlBlock(
-  tagName: 'accremind-rules' | 'accremind-radar' | 'accremind-guard' | 'accremind-entry' | 'accremind-profile' | 'accremind-doc',
+  tagName: 'accremind-rules' | 'accremind-radar' | 'accremind-guard' | 'accremind-entry' | 'accremind-profile' | 'accremind-doc'
+    | 'accremind-preferences' | 'accremind-rule-update',
   body: string,
 ): string {
   const safeBody = sanitizeKnowledgeText(body).trim();

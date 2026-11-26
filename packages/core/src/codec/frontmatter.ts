@@ -30,14 +30,14 @@ export function entryUsesV2Fields(entry: KnowledgeEntry): boolean {
   return Boolean(
     entry.origin_repo || entry.domains?.length || a.languages?.length || a.dependencies?.length ||
     a.repos?.length || a.exclude_repos?.length || entry.portable_patterns?.length || entry.owner ||
-    entry.visibility || entry.overrides?.length || entry.specializes || entry.tags?.length,
+    entry.visibility || entry.overrides?.length || entry.specializes || entry.tags?.length || entry.audience || entry.subproject,
   );
 }
 
 /** Drops every v2 field (used by the rollback that downgrades cards to the v1 format). */
 export function stripV2Fields(entry: KnowledgeEntry): KnowledgeEntry {
   const { origin_repo: _o, domains: _d, applies_to: _a, portable_patterns: _p, owner: _w, visibility: _v,
-    overrides: _r, specializes: _s, tags: _t, ...rest } = entry;
+    overrides: _r, specializes: _s, tags: _t, audience: _au, subproject: _sp, ...rest } = entry;
   return rest;
 }
 
@@ -235,6 +235,8 @@ export function serializeEntryMarkdown(entry: KnowledgeEntry): string {
     overrides: nonEmpty(entry.overrides),
     specializes: entry.specializes || undefined,
     tags: nonEmpty(entry.tags),
+    audience: entry.audience || undefined,
+    subproject: entry.subproject || undefined,
   } : {};
   const frontmatterData: Record<string, unknown> = {
     format_version: v2 ? 2 : 1,
@@ -413,6 +415,9 @@ export function parseEntryMarkdown(markdown: string, filePath?: string): Knowled
   if (str(meta.owner)) entry.owner = str(meta.owner)!;
   const visibility = str(meta.visibility);
   if (visibility === 'private' || visibility === 'team' || visibility === 'org') entry.visibility = visibility;
+  const audience = str(meta.audience);
+  if (audience === 'core' || audience === 'all') entry.audience = audience;
+  if (str(meta.subproject)) entry.subproject = str(meta.subproject)!;
   if (Array.isArray(meta.overrides) && meta.overrides.length) {
     entry.overrides = (meta.overrides as Array<Record<string, unknown>>).map((o) => ({
       rule_id: String(o.rule_id ?? ''), reason: String(o.reason ?? ''),

@@ -16,6 +16,7 @@ export interface AccreMindEvent {
     | 'entry.auto_demoted'
     | 'entry.auto_archived'
     | 'entry.restored'
+    | 'entry.review_due'
     | 'governance.decided'
     | 'attention.raised';
   entryId: string;

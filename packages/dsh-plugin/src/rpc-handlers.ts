@@ -12,7 +12,13 @@ import {
   rollbackTuning,
   runAutoTune,
   runEvaluation,
-  writeRepoProfile,
+  mountKnowledgeBase,
+  gitShareStatus,
+  browseDirs,
+  inspectProjectDir,
+  LocalMarkdownSqliteStore,
+  buildDigest,
+  pendingNotice,
   exportEntryToDshSkill,
   runArchaeologyBootstrap,
   scanGitHistorySignals,
@@ -29,7 +35,6 @@ import {
   type KnowledgeLayer,
   type KnowledgeType,
   type LlmInferenceAdapter,
-  type LocalMarkdownSqliteStore,
   type ServingStatus,
   type TriageEngine,
   type ViewCompiler,
@@ -39,6 +44,54 @@ export type RpcHandlerMap = Record<
   string,
   (params: Record<string, unknown>) => Promise<unknown> | unknown
 >;
+
+/** Why a reminder did not fit, as offered next to the feedback buttons; the label is kept with the detail. */
+export const FEEDBACK_REASONS: Record<string, string> = {
+  wrong_domain: '领域不对',
+  wrong_project: '不是这个项目或子项目',
+  wrong_version: '版本不对',
+  outdated: '已过时',
+  unrelated: '和这次问题无关',
+};
+
+function feedbackDetail(reason: unknown, detail: string): string {
+  const label = typeof reason === 'string' ? FEEDBACK_REASONS[reason] : undefined;
+  if (!label) return detail;
+  return detail.trim() ? `[${label}] ${detail.trim()}` : `[${label}]`;
+}
+
+function domainFilterKeys(store: LocalMarkdownSqliteStore, domain: string): Set<string> {
+  const catalog = store.domainCatalog;
+  const id = catalog.resolve(domain);
+  if (!id) return new Set([domain.trim().toLowerCase()]);
+  const keys = new Set<string>();
+  for (const d of catalog.list()) {
+    if (!catalog.lineage(d.id).some((x) => x.id === id)) continue;
+    for (const k of [d.id, d.name, ...d.aliases]) keys.add(k.trim().toLowerCase());
+  }
+  return keys;
+}
+
+function importDocParams(store: LocalMarkdownSqliteStore, params: Record<string, unknown>) {
+  return store.docs.importDoc({
+    content: String(params.content ?? ''), fileName: String(params.fileName ?? 'doc.md'), category: params.category as never,
+    title: typeof params.title === 'string' ? params.title : undefined,
+    domains: Array.isArray(params.domains) ? params.domains.map(String) : undefined,
+    tags: Array.isArray(params.tags) ? params.tags.map(String) : undefined, replace: params.replace === true,
+    scope: params.scope === 'project' || params.scope === 'domain' || params.scope === 'personal' ? params.scope : undefined,
+    home: params.home === 'kb' || params.home === 'repo' ? params.home : undefined,
+    audience: params.audience === 'core' || params.audience === 'all' ? params.audience : undefined,
+    subproject: typeof params.subproject === 'string' && params.subproject ? params.subproject : undefined,
+    createDomains: params.createDomains === true,
+  });
+}
+
+/** Paths from the workbench must be absolute: they name folders on this machine, never relative to the server. */
+function requireAbsolute(value: unknown): string {
+  const p = typeof value === 'string' ? value.trim() : '';
+  if (!p || !path.isAbsolute(p)) throw new Error('请提供文件夹的完整路径');
+  return path.resolve(p);
+}
 
 function emptyScopeCounts(): Record<KnowledgeLayer, number> {
   return Object.fromEntries(KNOWLEDGE_LAYERS.map(layer => [layer, 0])) as Record<KnowledgeLayer, number>;
@@ -66,6 +119,24 @@ export function createWebuiRpcHandlers(deps: {
   autoCapture: AutoCaptureCoordinator;
   getLlmAdapter: () => LlmInferenceAdapter | null;
 }): RpcHandlerMap {
+  const projectDirName = () => path.basename(deps.store.paths.projectAccreMindDir);
+  /**
+   * A project document for a project other than the one open here: that project's own store writes it (into
+   * its `.accremind/docs/`, with its change log), so it is indexed and served there like any other.
+   */
+  const importIntoOtherProject = (root: string, params: Record<string, unknown>) => {
+    const info = inspectProjectDir(root, projectDirName());
+    if (!info.exists) throw new Error(`目录不存在：${root}`);
+    if (params.scope && params.scope !== 'project') throw new Error('只有“本项目”范围的文档可以挂到其他项目；领域文档请选择领域，个人偏好只属于你');
+    const target = new LocalMarkdownSqliteStore({ projectRoot: root, globalDir: deps.store.paths.globalRoot, projectDirName: projectDirName() });
+    try {
+      target.initializeAndReconcile();
+      const out = importDocParams(target, { ...params, scope: 'project', domains: [] });
+      return { ...out, file: path.isAbsolute(out.file) ? out.file : path.join(root, out.file), project: { root, name: target.identity.name, repoId: target.workspaceId, isGit: info.isGit } };
+    } finally {
+      target.close();
+    }
+  };
   const {
     store,
     viewCompiler,
@@ -209,7 +280,12 @@ export function createWebuiRpcHandlers(deps: {
           type: (params.type as KnowledgeType | undefined) || undefined,
           query: typeof params.query === 'string' ? params.query : undefined,
         });
+        // A domain filter also matches the domain's other spellings and its sub-domains (as retrieval does).
+        const domainKeys = typeof params.domain === 'string' && params.domain ? domainFilterKeys(store, params.domain) : null;
+        const subproject = typeof params.subproject === 'string' && params.subproject ? params.subproject : null;
         const matching = items.filter(({ entry, storageZone }) =>
+          (!domainKeys || (entry.domains ?? []).some((d) => domainKeys.has(d.trim().toLowerCase()))) &&
+          (!subproject || (subproject === '__none__' ? !entry.subproject : entry.subproject === subproject)) &&
           (!params.storageZone || storageZone === params.storageZone) &&
           (!params.maturity || (params.maturity === 'verified_or_proven'
             ? entry.maturity === 'verified' || entry.maturity === 'proven'
@@ -302,7 +378,7 @@ export function createWebuiRpcHandlers(deps: {
 
     'accremind.feedback.submit': (params) => governance.submitFeedback(currentEntry(params), {
       kind: String(params.kind ?? ''),
-      detail: typeof params.detail === 'string' ? params.detail : '',
+      detail: feedbackDetail(params.reason, typeof params.detail === 'string' ? params.detail : ''),
       sessionId: typeof params.sessionId === 'string' ? params.sessionId : undefined,
       turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
       taskFingerprint: typeof params.taskFingerprint === 'string' ? params.taskFingerprint : undefined,
@@ -483,18 +559,91 @@ export function createWebuiRpcHandlers(deps: {
     },
 
     // ---- rule document sets ----
-    'accremind.docs.list': () => ({ docs: store.docs.listDocs(), docsDir: store.docs.docsDir }),
+    'accremind.docs.list': () => ({ docs: store.docs.listDocs(), docsDir: store.docs.docsDir, duplicates: store.docs.duplicateDocIds() }),
     'accremind.docs.get': (params) => {
       const doc = store.docs.getDoc(String(params.id ?? ''));
       if (!doc) throw new Error('未找到文档');
       return { ...doc, file: path.relative(store.paths.projectRoot, doc.file), changes: store.docs.listChanges({ docId: doc.meta.id, limit: 50 }) };
     },
-    'accremind.docs.import': (params) => store.docs.importDoc({
-      content: String(params.content ?? ''), fileName: String(params.fileName ?? 'doc.md'), category: params.category as never,
-      title: typeof params.title === 'string' ? params.title : undefined,
-      domains: Array.isArray(params.domains) ? params.domains.map(String) : undefined,
-      tags: Array.isArray(params.tags) ? params.tags.map(String) : undefined, replace: params.replace === true,
+    // Which project a document is mounted on: the one open in the host, another known one, or any folder.
+    // What AccreMind wrote that has not reached the team yet (it never commits or pushes by itself).
+    'accremind.share.status': () => {
+      const kb = store.knowledgeBase;
+      return {
+        project: { root: store.paths.projectRoot, ...gitShareStatus(store.paths.projectRoot, path.relative(store.paths.projectRoot, store.paths.projectAccreMindDir) || undefined) },
+        knowledgeBase: kb.kind === 'team' ? { root: kb.root, ...gitShareStatus(kb.root) } : null,
+      };
+    },
+    'accremind.projects.list': () => {
+      const current = path.resolve(store.paths.projectRoot);
+      const others = store.registry.list()
+        .filter((r) => path.resolve(r.root) !== current && fs.existsSync(r.root))
+        .sort((a, b) => b.last_seen.localeCompare(a.last_seen))
+        .map((r) => ({ root: r.root, name: r.name, repoId: r.repo_id, domains: r.domains, lastSeen: r.last_seen }));
+      return { current: { ...inspectProjectDir(current, projectDirName()), name: store.identity.name, repoId: store.workspaceId }, others };
+    },
+    'accremind.projects.inspect': (params) => inspectProjectDir(requireAbsolute(params.root), projectDirName()),
+    'accremind.fs.browse': (params) => browseDirs(typeof params.path === 'string' && params.path
+      ? requireAbsolute(params.path) : path.dirname(path.resolve(store.paths.projectRoot)), projectDirName()),
+
+    'accremind.docs.import': (params) => {
+      const targetRoot = typeof params.projectRoot === 'string' && params.projectRoot
+        ? requireAbsolute(params.projectRoot) : null;
+      if (targetRoot && targetRoot !== path.resolve(store.paths.projectRoot)) return importIntoOtherProject(targetRoot, params);
+      return importDocParams(store, params);
+    },
+    'accremind.docs.citedBy': (params) => ({ entries: store.docs.citedBy(String(params.docId ?? ''), typeof params.sectionId === 'string' ? params.sectionId : undefined) }),
+
+    // The knowledge base outside this project (a mounted team repository) and its domain catalog.
+    'accremind.knowledge.info': () => {
+      const kb = store.knowledgeBase;
+      return { root: kb.root, kind: kb.kind, catalogFile: store.domainCatalog.file, docsDir: store.docs.kbDocsDir,
+        domains: store.domainCatalog.list().length, personalDocsDir: store.docs.personalDocsDir };
+    },
+    'accremind.knowledge.mount': (params) => {
+      mountKnowledgeBase(store.paths.globalRoot, typeof params.path === 'string' && params.path ? params.path : null);
+      const kb = store.refreshKnowledgeBase();
+      store.docs.reconcile();
+      return { root: kb.root, kind: kb.kind };
+    },
+    'accremind.domains.list': () => {
+      const names = new Map(store.registry.list().map((r) => [r.repo_id, r.name]));
+      const membership = store.domainMembership();
+      return {
+        catalogFile: store.domainCatalog.file,
+        knowledgeBase: store.knowledgeBase,
+        domains: store.domainCatalog.list().map((d) => ({
+          ...d,
+          members: d.members.map((m) => ({ ...m, name: names.get(m.repo) ?? m.repo, isThisRepo: m.repo === store.workspaceId })),
+          myRole: membership.find((m) => m.id === d.id)?.role ?? null,
+        })),
+        mine: membership,
+        unknown: membership.filter((m) => !m.known).map((m) => m.id),
+      };
+    },
+    'accremind.domains.upsert': (params) => store.domainCatalog.upsert({
+      ...(typeof params.id === 'string' && params.id ? { id: params.id } : {}),
+      ...(typeof params.name === 'string' && params.name ? { name: params.name } : {}),
+      ...(Array.isArray(params.aliases) ? { aliases: params.aliases.map(String) } : {}),
+      ...(typeof params.parent === 'string' ? { parent: params.parent || null } : {}),
+      ...(Array.isArray(params.owners) ? { owners: params.owners.map(String) } : {}),
+      ...(typeof params.description === 'string' ? { description: params.description } : {}),
     }),
+    'accremind.domains.join': (params) => {
+      const domain = String(params.domain ?? '');
+      const role = params.role === 'consumer' ? 'consumer' : 'core';
+      const subproject = typeof params.subproject === 'string' && params.subproject ? params.subproject : undefined;
+      if (subproject) return { domain: store.domainCatalog.addMember(domain, { repo: store.workspaceId, role, subproject }) };
+      const current = store.domainMembership().filter((m) => m.known || m.id !== domain).map((m) => (m.role === 'consumer' ? `${m.id}:consumer` : m.id));
+      const id = store.domainCatalog.resolve(domain) ?? domain;
+      const next = [...current.filter((d) => d.replace(/:consumer$/, '') !== id), role === 'consumer' ? `${id}:consumer` : id];
+      return store.setDomains(next, { create: params.create === true });
+    },
+    'accremind.domains.leave': (params) => {
+      const id = store.domainCatalog.resolve(String(params.domain ?? '')) ?? String(params.domain ?? '');
+      const next = store.domainMembership().filter((m) => m.id !== id).map((m) => (m.role === 'consumer' ? `${m.id}:consumer` : m.id));
+      return store.setDomains(next, { create: true });
+    },
     'accremind.docs.search': (params) => ({ hits: store.searchDocs({ query: String(params.query ?? ''), limit: Number(params.limit ?? 10) }) }),
     'accremind.docs.propose': (params) => store.docs.propose({
       docId: typeof params.docId === 'string' ? params.docId : null, category: params.category as never,
@@ -535,6 +684,8 @@ export function createWebuiRpcHandlers(deps: {
       return {
         repoId: store.workspaceId, idSource: store.identity.source, name: store.identity.name, remote: store.identity.remote,
         org: store.identity.org, domains: store.identity.domains, languages: ctx.languages,
+        membership: store.domainMembership(), subprojects: store.subprojects(), owners: store.repoOwners(),
+        settings: store.projectSettings(), knowledgeBase: store.knowledgeBase,
         dependencies: Object.keys(ctx.dependencies).length, profileFile: store.paths.repoProfileFile,
         ...store.repoSettings(),
         knownRepositories: store.registry.list().map((r) => ({ repoId: r.repo_id, name: r.name, domains: r.domains, lastSeen: r.last_seen })),
@@ -552,14 +703,27 @@ export function createWebuiRpcHandlers(deps: {
     'accremind.repo.setDomains': (params) => {
       const domains = Array.isArray(params.domains) ? params.domains.map(String).map((d) => d.trim()).filter(Boolean) : null;
       if (!domains) throw new Error('请提供业务领域列表');
-      if (domains.some((d) => !/^[a-z0-9][a-z0-9_-]{0,40}$/.test(d))) throw new Error('领域标识只能使用小写字母、数字、连字符和下划线');
-      const written = writeRepoProfile(store.paths.projectRoot, path.basename(store.paths.projectAccreMindDir), {
-        repo_id: store.workspaceId, domains,
-        ...(store.identity.org ? { org: store.identity.org } : {}),
-      });
-      store.updateRepoProfile({ domains });
-      return { repoId: store.workspaceId, domains: written.domains ?? [], profileFile: store.paths.repoProfileFile };
+      if (domains.some((d) => d.length > 60)) throw new Error('领域名称过长');
+      const out = store.setDomains(domains, { create: params.create === true });
+      return { repoId: store.workspaceId, ...out, profileFile: store.paths.repoProfileFile, catalogFile: store.domainCatalog.file };
     },
+
+    'accremind.repo.upsertSubproject': (params) => ({
+      subproject: store.upsertSubproject({
+        id: String(params.id ?? ''),
+        name: typeof params.name === 'string' ? params.name : undefined,
+        paths: Array.isArray(params.paths) ? params.paths.map(String) : [],
+        domains: Array.isArray(params.domains) ? params.domains.map(String) : undefined,
+        owners: Array.isArray(params.owners) ? params.owners.map(String) : undefined,
+      }),
+      subprojects: store.subprojects(),
+    }),
+    'accremind.repo.removeSubproject': (params) => ({ removed: store.removeSubproject(String(params.id ?? '')), subprojects: store.subprojects() }),
+
+    // What needs people (the reader's own first) and what changed by itself, for the workbench and the CLI.
+    'accremind.digest': (params) => buildDigest(store, { days: Number(params.days ?? 7) || 7 }),
+    // The one-line reminder a host shows (to the person, never to the model) when decisions are waiting.
+    'accremind.inbox.summary': () => pendingNotice(store),
 
     'accremind.gov.rebuildIndex': () => {
       const stats = store.rebuildIndexFromScratch();
@@ -570,13 +734,24 @@ export function createWebuiRpcHandlers(deps: {
     },
 
     'accremind.queue.list': () => {
-      return { jobs: autoCapture.listQueuedJobs() };
+      const jobs = autoCapture.listQueuedJobs().map((j) => ({ ...j, failed: j.attempts >= 5 }));
+      return { jobs, failed: jobs.filter((j) => j.failed).length, modelAvailable: Boolean(deps.getLlmAdapter()) };
     },
 
     'accremind.queue.drain': async () => {
-      const outcomes = await autoCapture.processPendingQueue();
-      return { processed: outcomes.length, outcomes };
+      if (!deps.getLlmAdapter()) throw new Error('没有可用的模型，无法提炼。请在设置中配置模型或使用 DSH 内置模型。');
+      const before = autoCapture.listQueuedJobs().length;
+      const outcomes = await autoCapture.processPendingQueue(Date.now(), { force: true });
+      const failed = autoCapture.failedJobs().length;
+      const left = autoCapture.listQueuedJobs().length;
+      return { processed: outcomes.length, remaining: left, failed, attempted: before };
     },
+    'accremind.queue.retry': async (params) => {
+      if (!autoCapture.retryJob(String(params.jobId ?? ''))) throw new Error('任务已不存在');
+      const outcomes = deps.getLlmAdapter() ? await autoCapture.processPendingQueue(Date.now(), { force: true }) : [];
+      return { processed: outcomes.length, failed: autoCapture.failedJobs().length };
+    },
+    'accremind.queue.discard': (params) => ({ discarded: autoCapture.discardJob(String(params.jobId ?? '')) }),
 
     ...createDemoHandlers({ store, stalenessScanner, demoMode: deps.demoMode === true }),
   };

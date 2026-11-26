@@ -393,41 +393,70 @@ function FilesCard({ corrupted, onDone }: { corrupted: StalenessScan['corruptedF
   );
 }
 
+interface QueueJob { jobId: string; sessionId?: string; createdAtIso?: string; attempts: number; lastError: string | null; nextRetryAtMs: number; failed: boolean; sourceRef?: string }
+
 function QueueCard() {
   const { revision, refresh } = useApp();
-  const jobs = useAsync(() => rpc<{ jobs: { jobId?: string; id?: string; createdAt?: string; sessionId?: string }[] }>('accremind.queue.list'), [revision]);
-  const [busy, setBusy] = useState(false);
-  const n = jobs.data?.jobs.length ?? 0;
+  const jobs = useAsync(() => rpc<{ jobs: QueueJob[]; failed: number; modelAvailable: boolean }>('accremind.queue.list'), [revision]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const list = jobs.data?.jobs ?? [];
+  const failed = list.filter((j) => j.failed);
+  const waiting = list.length - failed.length;
+  const run = async (key: string, fn: () => Promise<string>) => {
+    setBusy(key);
+    try {
+      toast.success(await fn());
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
     <Card>
       <CardHeader>
         <div>
           <CardTitle>自动捕获队列</CardTitle>
-          <CardDescription>任务结束时识别到的经验信号，等模型提炼成候选。</CardDescription>
+          <CardDescription>任务结束时识别到的经验信号，等模型提炼成候选。模型出错会自动重试，重试用完会停在这里等你处理。</CardDescription>
         </div>
         <IconTile icon={Bot} tone="primary" />
       </CardHeader>
       <CardContent className="grid gap-4">
-        <div className="flex items-baseline gap-2">
-          <span className="num font-display text-3xl font-semibold">{n}</span>
-          <span className="text-sm text-muted-foreground">项等待处理</span>
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <span><span className="num font-display text-3xl font-semibold">{waiting}</span> <span className="text-sm text-muted-foreground">项等待处理</span></span>
+          {failed.length > 0 && <span className="text-sm text-danger">{failed.length} 项提炼失败</span>}
         </div>
+        {jobs.data && !jobs.data.modelAvailable && list.length > 0 && (
+          <p className="text-xs text-warning">当前没有可用的模型，队列里的信号暂时无法提炼。</p>
+        )}
+        {list.filter((j) => j.lastError).slice(0, 5).map((j) => (
+          <div key={j.jobId} className={j.failed ? 'rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs' : 'rounded-lg border p-3 text-xs'}>
+            <p className="truncate font-medium">{j.sourceRef || j.sessionId || j.jobId}</p>
+            <p className="mt-0.5 line-clamp-2 text-muted-foreground">
+              {j.failed ? '已重试 ' + j.attempts + ' 次仍失败：' : '第 ' + j.attempts + ' 次失败，稍后自动重试：'}{j.lastError}
+            </p>
+            {j.failed && (
+              <div className="mt-2 flex gap-1.5">
+                <Button size="sm" variant="outline" disabled={busy !== null}
+                  onClick={() => void run(j.jobId, async () => {
+                    const out = await rpc<{ processed: number; failed: number }>('accremind.queue.retry', { jobId: j.jobId });
+                    return out.processed ? '已提炼成候选' : '已重新排队';
+                  })}>重试</Button>
+                <Button size="sm" variant="ghost" disabled={busy !== null}
+                  onClick={() => void run(j.jobId, async () => { await rpc('accremind.queue.discard', { jobId: j.jobId }); return '已丢弃'; })}>丢弃</Button>
+              </div>
+            )}
+          </div>
+        ))}
         <Button
           variant="outline"
           className="justify-self-start"
-          disabled={!n || busy}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              const out = await rpc<{ processed: number }>('accremind.queue.drain');
-              toast.success(`已处理 ${out.processed} 项`);
-              refresh();
-            } catch (err) {
-              toast.error(err instanceof Error ? err.message : String(err));
-            } finally {
-              setBusy(false);
-            }
-          }}
+          disabled={!waiting || busy !== null || jobs.data?.modelAvailable === false}
+          onClick={() => void run('drain', async () => {
+            const out = await rpc<{ processed: number; remaining: number; failed: number }>('accremind.queue.drain');
+            return out.processed ? `已提炼 ${out.processed} 项` : out.failed ? `没有成功的，${out.failed} 项失败，看上面的错误` : '没有可处理的项';
+          })}
         >
           <Cpu />立即提炼
         </Button>

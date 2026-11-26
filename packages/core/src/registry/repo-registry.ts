@@ -65,6 +65,40 @@ export function languageOfPath(filePath: string): string | null {
 }
 
 /** Languages making up at least 5% of the tracked source files (Git), most common first. */
+const SKIP_DIRS = new Set(['node_modules', 'vendor', 'dist', 'build', 'target', 'out', 'coverage', 'Library', '__pycache__']);
+
+/**
+ * Up to `limit` file paths under `root`, breadth-first, at most `maxDepth` folders deep, without hidden or
+ * dependency folders. A folder that is not a Git repository can be anything (a home directory), so the walk
+ * stops early instead of listing the whole tree first; it runs in the host process.
+ */
+function boundedFileList(root: string, limit: number, maxDepth: number): string[] {
+  const out: string[] = [];
+  const queue: Array<{ rel: string; depth: number }> = [{ rel: '', depth: 0 }];
+  let visitedDirs = 0;
+  while (queue.length && out.length < limit && visitedDirs < 5_000) {
+    const { rel, depth } = queue.shift()!;
+    visitedDirs++;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (depth < maxDepth && !SKIP_DIRS.has(e.name)) queue.push({ rel: r, depth: depth + 1 });
+      } else if (e.isFile()) {
+        out.push(r);
+        if (out.length >= limit) break;
+      }
+    }
+  }
+  return out;
+}
+
 export function detectLanguages(root: string): string[] {
   let files: string[] = [];
   try {
@@ -72,12 +106,7 @@ export function detectLanguages(root: string): string[] {
       cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024,
     }).split('\0').filter(Boolean);
   } catch {
-    try {
-      files = fs.readdirSync(root, { recursive: true, encoding: 'utf8' })
-        .filter((f) => !f.includes('node_modules') && !f.startsWith('.git')).slice(0, 20_000);
-    } catch {
-      files = [];
-    }
+    files = boundedFileList(root, 20_000, 6);
   }
   const counts = new Map<string, number>();
   let total = 0;

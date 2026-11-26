@@ -175,6 +175,18 @@ stateDiagram-v2
 
 用户身份默认是"本机用户"（同一人在不同仓库用不同 Git 邮箱也算一个人），宿主可以通过 `store.setUserIdentity()` 接入登录用户。
 
+### 团队知识库、领域目录与挂载范围
+
+项目之外还需要一个“团队的地方”：领域有哪些、叫法有哪些、谁负责、哪些项目属于它，以及不属于任何单个项目的领域文档。它是一个独立的 Git 仓库（`accremind team set`），未挂载时退回本机 `~/.dsh/accremind/knowledge/`。
+
+- **领域目录**：`domains/<id>.json`（`id / name / aliases / parent / owners`）+ `members/<仓库>.json`（`memberships[{domain, role, subproject}]`）。按领域、按仓库拆成独立文件，团队仓库里并发修改不会落到同一个文件上；旧版 `domains.json` 读取兼容，首次修改时迁移。名称、别名大小写不敏感地归一到 id；上级领域的知识提供给下级领域的项目；成员分**核心**和**使用方**，`audience: core` 的领域知识只给核心项目。
+- **挂载范围**：每份文档有 `scope`（`project | domain | personal`），由类别限定可选范围（业务领域只能挂领域，业务规则可挂领域或项目，规范与概况只能挂项目，个人偏好只能挂个人）。领域文档在挂载了团队知识库时写入知识库，修改提议也回到知识库并记在那里的变更日志里。
+- **子项目**：monorepo 在 `repo.json.projects` 按路径前缀划分；当前改动的文件决定会话属于哪个子项目，项目经验和文档可以限定到子项目。
+- **个人偏好**：按用户存放在本机，常驻但排在最后，并附优先级说明（团队规范 > 项目 > 领域 > 个人）。身份切换（本机身份 ↔ 宿主登录账号，二者已关联）时，偏好文档移到当前身份下；同机的另一个人登录不会拿到。
+- **仓库范围**：`repo.json.settings` 里的两个开关决定 AccreMind 在哪些仓库、哪些目录里出现，它们不改任何一台机器上的配置：`enabled: false` 让整个仓库退出（不注入、不捕获、不调参，读取类命令照旧可用），`excludePaths` 只把仓库内的前缀（自带库、生成代码）挡在文件护栏与回合改动信号之外。插件每回合按 mtime 缓存重新读这份文件，改动在下一回合生效，不需要重启宿主。
+- **文档编号**：编号是引用、提议和变更记录的锚点，导入或新建时若已被其他来源占用会自动加序号；残留的重复编号在工作台提示。
+- **文档与经验的关联**：证据引用 `D:<文档>#<章节>` 的经验，在该章节被修改或删除时自动转为待复核。
+
 ## 检索流水线
 
 ```mermaid
@@ -231,6 +243,22 @@ flowchart LR
 
 团队规范、当前版本有过确认或反例的、跨仓库共享的经验不做自动处理。撤销后该版本不再被自动降级。两项都可以通过插件配置 `autoEvolve: { tune: false, demote: false }` 关闭。
 
+### 看得见的成本与对照
+
+自动调参只有在能"跟什么都不做比"的时候才有意义，所以四件事都是显式可见的：
+
+- **评测基线**：`accremind eval` 除了当前参数那一组，还跑两组对照：`off`（什么都不提醒）与 `rulesOnly`（只提醒常驻团队规范）。`baseline.lift` 是当前策略相对这两个基线的召回增益与噪声代价——没有这个差值，"提醒到底有没有用"只能靠感觉。手写用例放在 `.accremind/eval/cases.jsonl`，一行一个问题，`expect` 写该命中的条目 ID，无关问题写空数组；模板见 `docs/eval-cases.example.jsonl`。
+- **模型用量**：`LlmUsageMeter` 把自动提炼与主题标注的每次调用数与 token 追加到 `~/.dsh/accremind/usage/llm-usage.jsonl`（只追加、不修改，写失败静默且绝不影响回合）。`accremind usage` 与 `digest` 的"模型用量"段读的是同一个文件；拿不到 token 的调用按 0 计并单独计 `callsWithoutTokens`，不假装有数。工作台的「本周摘要」把次数与 token 和提醒效果并列显示，不必去翻日志文件。
+- **按文件缓存检索**：文件护栏以 `<filePath, dataVersion>` 为键缓存上一次的检索结果，`dataVersion` 由 SQLite 的 `PRAGMA g.data_version` 与本机索引版本合成。同一个文件反复读、知识库没变时不重复检索；任何写入都会改版本号，缓存随之失效。`guardStats` 记录 `searches` 与 `cacheHits`，缓存是否真的省下了检索可以直接测。
+- **稳定的常驻前缀**：会话内第一次注入的常驻规则被固定下来，之后字节不变。只有转正规则或确认文档修改真的改变了内容时，才用一次 `<accremind-rule-update>` 临时块把差异补上——提示词缓存至多失效一次，且只在那一次里失效，而不是每次规则变动都重排整段前缀。
+
+### 负责人、摘要与团队反馈
+
+- **负责人**：领域负责人（目录）→ 子项目负责人 → 仓库负责人（`repo.json.owners`）。待办与文档提议带上负责人，当前用户是负责人时标为“由你负责”。
+- **摘要**：`buildDigest()` 汇总近 N 天的待办、自动降级、文档变更、调参与提醒效果，输出结构化数据和 Markdown（工作台“本周摘要”、`accremind digest`、`accremind.digest`）。DSH 回合页脚每天最多提示一次待处理事项（只给人看，不进入模型上下文）。
+- **团队反馈汇总**：维护任务把本机对本仓库经验的使用计数写到 `<知识库>/feedback/<仓库>/<用户哈希>.json`，只有计数，没有提问、会话或路径；自动降级读取同事的计数一起判断。`autoEvolve.teamFeedback: false` 关闭。
+- **项目级参数**：`repo.json.settings` 可覆盖注入预算、检索参数和自动降级阈值；有自己检索参数的项目不参与自动调参。
+
 ## 存储布局
 
 ```
@@ -240,7 +268,13 @@ flowchart LR
 ├── docs/<类别>/*.md               # 规则文档集 + changes.ndjson + CHANGELOG.md
 ├── vocabulary.json                # 受控词表
 ├── eval/cases.jsonl               # 手写评测用例（可选）
-└── repo.json                      # 仓库身份与业务领域
+└── repo.json                      # 仓库身份、领域、子项目、负责人、项目级设置
+
+<团队知识库>/                      # 独立 Git 仓库（accremind team set）
+├── domains/<领域>.json            # 领域定义（每个领域一个文件）
+├── members/<仓库>.json            # 仓库所属领域（每个仓库一个文件）
+├── docs/<类别>/*.md               # 领域文档 + changes.ndjson + CHANGELOG.md
+└── feedback/<仓库>/<用户哈希>.json # 团队使用计数
 
 ~/.dsh/accremind/                  # 本机，不进 Git
 ├── probation/                     # 试用稿
@@ -248,8 +282,12 @@ flowchart LR
 ├── index/global.sqlite            # 本机所有仓库共享的派生索引（可重建）
 ├── workspaces/<仓库>/index.sqlite # 每个仓库的状态：审核、回执、使用与反馈
 ├── personal/ · shared-tech/ · domain/
+├── knowledge.json                 # 挂载的团队知识库位置
+├── knowledge/                     # 未挂载时的本机知识库（同样布局）
+├── personal/docs/<用户>/           # 个人偏好文档
 ├── registry/repos.json            # 本机仓库注册表
 ├── users/local.json               # 本机用户身份
+├── usage/llm-usage.jsonl          # 提炼/标注的调用次数与 token（只追加）
 └── tuning.json · tuning-history.jsonl
 ```
 
@@ -259,12 +297,13 @@ flowchart LR
 | --- | --- | --- |
 | `core/src/capture/` | 信号检测、增量评估、五路分流、自动捕获、首轮信号 | `delta-assessor.ts` `triage-engine.ts` `workspace-signals.ts` |
 | `core/src/retrieval/` | 适用性闸门、主题标签、离线评测、自动调参、跨仓库反馈 | `applicability.ts` `query-tagger.ts` `evaluation.ts` `auto-tuning.ts` |
-| `core/src/governance/` | 生命周期表、审核、时效巡检、Git 考古、自动降级、技能导出 | `lifecycle.ts` `git-staleness.ts` `auto-demotion.ts` |
+| `core/src/governance/` | 生命周期表、审核、时效巡检、Git 考古、自动降级、摘要、技能导出 | `lifecycle.ts` `git-staleness.ts` `auto-demotion.ts` `digest.ts` |
 | `core/src/store/` | Markdown + SQLite 存储、索引、迁移、活动日志 | `local-store.ts` `sqlite-schema.ts` |
 | `core/src/view/` | 三层注入编译与内容清洗 | `view-compiler.ts` `sanitizer.ts` |
 | `core/src/docs/` | 规则文档集、受控词表 | `doc-library.ts` `vocabulary.ts` |
 | `core/src/identity/` | 本机用户与登录用户身份 | `user-identity.ts` |
-| `core/src/symbol/` `evidence/` `ledger/` `registry/` | 符号锚点、证据快照、验证台账、仓库注册表 | — |
+| `core/src/registry/` | 仓库注册表、团队知识库与领域目录 | `repo-registry.ts` `knowledge-base.ts` |
+| `core/src/symbol/` `evidence/` `ledger/` | 符号锚点（按语言区分注释）、证据快照、验证台账 | `symbol-anchor.ts` |
 | `dsh-plugin/src/` | DSH 钩子、对话工具、RPC、CLI、工作台服务 | `index.ts` `tools.ts` `rpc-handlers.ts` `cli.ts` |
 | `webui/src/` | 工作台界面（总览、知识库、审核、规则文档、治理、回执） | `features/*` |
 

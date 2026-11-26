@@ -99,12 +99,19 @@ export function ReceiptsPage() {
   );
 }
 
+/** Why a reminder did not fit; sent with the feedback so the entry's owner knows what to narrow. */
+const INAPPLICABLE_REASONS: Array<[string, string]> = [
+  ['wrong_domain', '领域不对'], ['wrong_project', '不是这个项目或子项目'], ['wrong_version', '版本不对'], ['outdated', '已过时'], ['unrelated', '和这次问题无关'],
+];
+
 function TurnCard({ receipt: r, index }: { receipt: TurnReceipt; index: number }) {
   const { openEntry, refresh } = useApp();
   const [wrong, setWrong] = useState<ReceiptHit | null>(null);
-  const send = async (h: ReceiptHit, kind: 'verified_effective' | 'inapplicable' | 'suspected_error', detail = '') => {
+  const [notFit, setNotFit] = useState<string | null>(null);
+  const send = async (h: ReceiptHit, kind: 'verified_effective' | 'inapplicable' | 'suspected_error', detail = '', reason?: string) => {
     try {
-      await rpc('accremind.feedback.submit', { id: h.id, revision: h.revision, kind, detail, sessionId: r.sessionId, turnId: r.turnId });
+      await rpc('accremind.feedback.submit', { id: h.id, revision: h.revision, kind, detail, sessionId: r.sessionId, turnId: r.turnId, ...(reason ? { reason } : {}) });
+      setNotFit(null);
       toast.success(kind === 'verified_effective' ? '感谢反馈：有帮助' : kind === 'inapplicable' ? '已记录：这里不适用' : '已记录疑似错误，经验已暂停提醒');
       refresh();
     } catch (err) {
@@ -138,6 +145,16 @@ function TurnCard({ receipt: r, index }: { receipt: TurnReceipt; index: number }
                     {h.filePath && <> · <span className="font-mono">{h.filePath}</span></>}
                     {changed && <> · 之后已更新到 r{h.currentRevision}</>}
                   </p>
+                  {(h.reasons?.length ?? 0) > 0 && <p className="text-xs text-muted-foreground">为什么提醒：{h.reasons!.join('；')}</p>}
+                  {notFit === h.id + h.source && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs" role="group" aria-label="为什么不适用">
+                      <span className="text-muted-foreground">为什么不适用？</span>
+                      {INAPPLICABLE_REASONS.map(([reason, label]) => (
+                        <Button key={reason} size="sm" variant="outline" onClick={() => void send(h, 'inapplicable', '', reason).catch(() => undefined)}>{label}</Button>
+                      ))}
+                      <Button size="sm" variant="ghost" onClick={() => void send(h, 'inapplicable').catch(() => undefined)}>不说明</Button>
+                    </div>
+                  )}
                 </div>
                 {h.feedback ? (
                   <Badge tone={h.feedback === 'success' ? 'success' : h.feedback === 'failure' ? 'danger' : 'neutral'} dot>
@@ -148,7 +165,7 @@ function TurnCard({ receipt: r, index }: { receipt: TurnReceipt; index: number }
                 ) : (
                   <div className="flex gap-1">
                     <Button size="sm" variant="outline" onClick={() => void send(h, 'verified_effective').catch(() => undefined)}><ThumbsUp />有帮助</Button>
-                    <Button size="icon-sm" variant="ghost" title="这里不适用" aria-label="这里不适用" onClick={() => void send(h, 'inapplicable').catch(() => undefined)}><CircleSlash /></Button>
+                    <Button size="icon-sm" variant="ghost" title="这里不适用" aria-label="这里不适用" onClick={() => setNotFit(notFit === h.id + h.source ? null : h.id + h.source)}><CircleSlash /></Button>
                     <Button size="icon-sm" variant="ghost" title="内容有误" aria-label="内容有误" onClick={() => setWrong(h)}><Bug /></Button>
                   </div>
                 )}
