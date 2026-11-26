@@ -194,7 +194,7 @@ export class AutoCaptureCoordinator {
     rawCandidateContext: string;
   }): QueuedCaptureJob {
     if (this.store.repoSettings().capture === false) {
-      throw new Error('本项目已排除沉淀（capture: false），没有创建捕获队列任务。');
+      throw new Error('本项目已排除沉淀（settings.enabled: false），没有创建捕获队列任务。');
     }
     const job: QueuedCaptureJob = {
       jobId: `JOB-${Date.now()}-${randomUUID().slice(0, 6)}`,
@@ -371,7 +371,7 @@ export async function runArchaeologyBootstrap(options: {
   triageReport: BatchTriageReport;
 }> {
   if (options.store.repoSettings().capture === false) {
-    throw new Error('本项目已排除沉淀（capture: false），Git 雷达与提炼已暂停。');
+    throw new Error('本项目已排除沉淀（settings.enabled: false），Git 雷达与提炼已暂停。');
   }
   const scanned = scanGitHistorySignals({
     repoRoot: options.store.paths.projectRoot,
@@ -393,7 +393,7 @@ export async function runArchaeologyBootstrap(options: {
   const candidateInputs = [];
   for (const commit of minedCommits) {
     if (options.store.repoSettings().capture === false) {
-      throw new Error('本项目已排除沉淀（capture: false），历史提炼已暂停。');
+      throw new Error('本项目已排除沉淀（settings.enabled: false），历史提炼已暂停。');
     }
     const rawContext = [
       `Commit: ${commit.commitSha} (${commit.committedAtIso})`,

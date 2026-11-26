@@ -110,7 +110,7 @@ async function main(): Promise<void> {
 
         if (!runtime.store.repoSettings().capture) {
           console.log(JSON.stringify({ mode: 'repository_excluded', repoRoot, scannedCandidatesCount: 0, candidates: [],
-            message: '本项目已排除沉淀（capture: false），Git 雷达与提炼已暂停。' }, null, 2));
+            message: '本项目已排除沉淀（settings.enabled: false），Git 雷达与提炼已暂停。' }, null, 2));
           break;
         }
 

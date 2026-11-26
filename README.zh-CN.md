@@ -352,7 +352,7 @@ pnpm accremind docs import my-prefs.md --category personal_preferences
 { "repo_id": "acme-payments", "domains": ["payments"], "capture": true, "share": false }
 ```
 
-两个开关都落在内核里，不只是界面：`capture: false` 暂停新的手工与自动沉淀、Git 扫描及提炼，既有待办保留而不消耗；`share: false` 同时作用于检索、按 ID 读取、工作台知识库、重复候选建议和规则文档检索。已有知识及其治理历史保留，恢复开关无需重建共享索引。
+两个开关都落在内核里，不只是界面：`settings.enabled: false` 暂停新的手工与自动沉淀、Git 扫描及提炼，既有待办保留而不消耗；`share: false` 同时作用于检索、按 ID 读取、工作台知识库、重复候选建议和规则文档检索。已有知识及其治理历史保留，恢复开关无需重建共享索引。
 
 ## 命令行
 

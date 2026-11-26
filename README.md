@@ -355,7 +355,7 @@ In the workbench open **Git radar → Exclude project** and flip the two switche
 { "repo_id": "acme-payments", "domains": ["payments"], "capture": true, "share": false }
 ```
 
-Both switches are enforced in the kernel, not only in the interface. `capture: false` stops new manual and automatic capture, skips Git scans and extraction, and pauses pending jobs without consuming them. `share: false` is checked on search, reads by ID, the workbench library, duplicate suggestions and rule-document retrieval. Existing knowledge and its governance history are retained. Re-enabling a switch takes effect without rebuilding the shared index.
+Both switches are enforced in the kernel, not only in the interface. `settings.enabled: false` stops new manual and automatic capture, skips Git scans and extraction, and pauses pending jobs without consuming them. `share: false` is checked on search, reads by ID, the workbench library, duplicate suggestions and rule-document retrieval. Existing knowledge and its governance history are retained. Re-enabling a switch takes effect without rebuilding the shared index.
 
 ## CLI
 

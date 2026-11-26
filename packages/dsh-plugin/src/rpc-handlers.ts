@@ -524,7 +524,7 @@ export function createWebuiRpcHandlers(deps: {
       if (!store.repoSettings().capture) {
         return {
           minedCommits: [], modelAvailable: Boolean(llm),
-          message: '本项目已在 .accremind/repo.json 里排除沉淀（capture: false），雷达不会扫描。改回 true 或删掉该字段即可恢复。',
+          message: '本项目已在 .accremind/repo.json 里排除沉淀（settings.enabled: false），雷达不会扫描。改回 true 或删掉该字段即可恢复。',
           triageReport: null as null | { dispositionCounts: Record<Disposition, number> },
         };
       }

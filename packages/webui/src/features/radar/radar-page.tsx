@@ -131,7 +131,7 @@ export function RadarPage() {
             <span className="inline-flex size-16 items-center justify-center rounded-2xl bg-warning/12 text-warning ring-1 ring-inset ring-warning/25"><ShieldOff className="size-7" /></span>
             <div>
               <p className="text-lg font-semibold">本项目已排除沉淀</p>
-              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground"><code>.accremind/repo.json</code> 里写着 <code>capture: false</code>：雷达不扫描，手工与自动捕获也不写入；库里已有的经验照常服务。恢复后要重新扫描一次，才会看到新候选。</p>
+              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground"><code>.accremind/repo.json</code> 里写着 <code>settings.enabled: false</code>：雷达不扫描，手工与自动捕获也不写入，规则注入与文件护栏照旧；库里已有的经验照常服务。恢复后要重新扫描一次，才会看到新候选。</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <Button size="lg" disabled={savingFlag !== null} onClick={() => void setFlag('capture', true)}><ShieldOff />恢复沉淀</Button>
