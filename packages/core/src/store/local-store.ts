@@ -2497,6 +2497,11 @@ export class LocalMarkdownSqliteStore implements KnowledgeStoreProvider {
     zone: StorageZone,
     assessment: CaptureAssessment | null,
   ): KnowledgeEntry {
+    // share:false 只挡机器级层的写入：spec 说的是「它的经验不被别处读到」，本机独有的
+    // 领域/通用技术条目反而没有跨仓暴露的风险；项目层条目照样写进自己的目录。
+    if (!this.repoSettings().share && (zone === 'domain' || zone === 'shared_tech')) {
+      throw new Error('本仓库已关闭共享（share: false），领域与通用技术经验只写到机器级目录，这里不会代为共享。');
+    }
     return this.withWriteLock(() => this.withMachineWideLock(isMachineWideZone(zone), () => this.upsertEntryLocked(entry, zone, assessment)));
   }
 

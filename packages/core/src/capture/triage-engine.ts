@@ -52,7 +52,7 @@ export class TriageEngine {
 
   processCandidate(input: TriageCandidateInput): SingleTriageOutcome {
     if (this.store.repoSettings?.().capture === false) {
-      throw new Error('本项目已排除沉淀（capture: false），没有写入评估或候选。');
+      throw new Error('本项目已排除沉淀（settings.enabled: false），没有写入评估或候选。');
     }
     // 1. Idempotency check by source_fingerprint (PRD §3.4 / §6.6)
     const existing = this.store.findAssessmentByFingerprint(input.assessment.source_fingerprint);
@@ -181,6 +181,15 @@ export class TriageEngine {
           knowledge_delta: redactSensitiveText(input.candidateEntry.knowledge_delta).redactedText,
           rationale: redactSensitiveText(input.candidateEntry.rationale).redactedText,
         };
+
+        // share:false 只挡机器级层（domain / shared_tech）：它们写进全机共享的目录，等于把本仓经验发给所有仓库。
+        // 试用区也是机器级的，所以判定要在写 probation 之前，不能只靠 upsertEntry 兜底。
+        if (
+          this.store.repoSettings?.().share === false &&
+          (sanitizedEntry.layer === 'domain' || sanitizedEntry.layer === 'shared_tech')
+        ) {
+          throw new Error('本项目已关闭共享（share: false），领域与通用技术经验不会写进机器级目录。');
+        }
 
         // Team rules are normative: a capture can only propose one for a human decision.
         if (sanitizedEntry.layer === 'team_rule') {
